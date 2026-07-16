@@ -123,6 +123,7 @@
     <div class="field" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
     <div class="field"><label>FPS</label><input type="range" id="fRange" min="30" max="120" step="10"><span class="val" id="fVal"></span></div>
     <div class="field"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
+    <div class="field"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
     <button class="apply" id="screenApply">套用</button>
     <button class="modal-close" id="screenClose">關閉</button>
   </div>
@@ -326,6 +327,7 @@ $("#pickerClose").onclick = closePicker;
 
 // ===== 觸控板滑鼠（Steam Link 觸控板模式） =====
 let accX=0, accY=0;
+let sensitivity = parseFloat(localStorage.getItem("maple_sens")||"3");   // 觸控板靈敏度
 const tp = { lastX:0, lastY:0, moved:false, lastTapEnd:0, dragLockPending:false, dragging:false, maxFingers:0 };
 function tpReset(){ tp.moved=false; tp.maxFingers=0; tp.dragLockPending=false; }
 const look = $("#look");
@@ -356,7 +358,7 @@ const lookEnd = e => {
 };
 look.addEventListener("touchend", lookEnd, {passive:false});
 look.addEventListener("touchcancel", e => { if(tp.dragging){ send({t:"mu",b:"left"}); tp.dragging=false; } tpReset(); }, {passive:false});
-function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:Math.round(accX), dy:Math.round(accY)}); accX=0; accY=0; } requestAnimationFrame(flush); }
+function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:Math.round(accX*sensitivity), dy:Math.round(accY*sensitivity)}); accX=0; accY=0; } requestAnimationFrame(flush); }
 requestAnimationFrame(flush);
 
 // ===== 畫面設定 =====
@@ -381,9 +383,11 @@ function renderScreenPanel(){
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
   $("#fRange").value=cfg.fps; $("#fVal").textContent=cfg.fps;
   $("#bRange").value=cfg.bitrate; $("#bVal").textContent=cfg.bitrate+"M";
+  $("#sRange").value=sensitivity; $("#sVal").textContent=sensitivity+"x";
 }
 $("#fRange").oninput = e => { cfg.fps=+e.target.value; $("#fVal").textContent=cfg.fps; };
 $("#bRange").oninput = e => { cfg.bitrate=+e.target.value; $("#bVal").textContent=cfg.bitrate+"M"; };
+$("#sRange").oninput = e => { sensitivity=+e.target.value; $("#sVal").textContent=sensitivity+"x"; localStorage.setItem("maple_sens", sensitivity); };
 $("#screenBtn").onclick = async () => {
   try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
   try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
