@@ -16,6 +16,8 @@
 
   #status { position:fixed; top:6px; left:10px; z-index:60; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
   #status.bad { color:#f55; }
+  #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
+            border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
   #target { position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:55; font-size:12px;
             color:#ffd479; background:rgba(0,0,0,.5); padding:3px 12px; border-radius:10px;
             max-width:40vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:none; }
@@ -82,6 +84,7 @@
 <body>
   <video id="video" autoplay muted playsinline></video>
   <div id="padbg"></div>
+  <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
   <div id="target">🎯 全螢幕</div>
 
@@ -213,6 +216,20 @@ function connect(){
   ws.onopen = ()=>setStatus("已連線",true);
   ws.onclose = ()=>{ setStatus("斷線，重連中…",false); setTimeout(connect,1500); };
   ws.onerror = ()=>setStatus("連線錯誤",false);
+  ws.onmessage = e => { try{ const m=JSON.parse(e.data); if(m.t==="cur") updateCursor(m.x,m.y); }catch(_){} };
+}
+// 虛擬游標：依伺服器回報的座標，畫在影像內容(object-fit:contain)對應位置
+function updateCursor(nx,ny){
+  const c=$("#cursor");
+  if(!watching){ c.style.display="none"; return; }
+  const v=$("#video"), vr=v.getBoundingClientRect();
+  const vw=v.videoWidth, vh=v.videoHeight;
+  if(!vw||!vh){ c.style.display="none"; return; }
+  const scale=Math.min(vr.width/vw, vr.height/vh);
+  const dw=vw*scale, dh=vh*scale;
+  const ox=vr.left+(vr.width-dw)/2, oy=vr.top+(vr.height-dh)/2;
+  c.style.display="block";
+  c.style.left=(ox+nx*dw)+"px"; c.style.top=(oy+ny*dh)+"px";
 }
 const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 
@@ -254,7 +271,7 @@ async function startVideo(){
   }
   if(watching) setStatus("影像連線失敗（檢查防火牆 8889 / Tailscale）", false);
 }
-function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; }
+function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; $("#cursor").style.display="none"; }
 
 // ===== 注視狀態 =====
 function setWatching(on){

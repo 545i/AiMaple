@@ -62,6 +62,69 @@ class _MONITORINFO(ctypes.Structure):
                 ("rcWork", _RECT), ("dwFlags", wintypes.DWORD)]
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+_user32.GetCursorPos.argtypes = [ctypes.c_void_p]
+_user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+_user32.MonitorFromPoint.argtypes = [_POINT, wintypes.DWORD]
+_user32.MonitorFromPoint.restype = ctypes.c_void_p
+
+
+def _abs_rect(hwnd):
+    """視窗的絕對螢幕矩形（優先 DWM 邊界，與 window_crop 一致）。"""
+    r = _RECT()
+    ok = False
+    try:
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                wintypes.HWND(hwnd), 9, ctypes.byref(r), ctypes.sizeof(r)) == 0:
+            ok = True
+    except Exception:
+        ok = False
+    if not ok:
+        _user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+    return r
+
+
+def cursor_norm():
+    """游標在目前擷取區內的正規化座標 (0-1)。超出範圍或失敗回 None。"""
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    if state["source"] == "window" and state["hwnd"] and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        r = _abs_rect(state["hwnd"])
+        w, h = r.right - r.left, r.bottom - r.top
+        if w <= 0 or h <= 0:
+            return None
+        nx, ny = (pt.x - r.left) / w, (pt.y - r.top) / h
+    else:
+        mi = _MONITORINFO(); mi.cbSize = ctypes.sizeof(_MONITORINFO)
+        _user32.GetMonitorInfoW(_user32.MonitorFromPoint(pt, 2), ctypes.byref(mi))  # 2=NEAREST
+        m = mi.rcMonitor
+        w, h = m.right - m.left, m.bottom - m.top
+        if w <= 0 or h <= 0:
+            return None
+        nx, ny = (pt.x - m.left) / w, (pt.y - m.top) / h
+    if nx < 0 or nx > 1 or ny < 0 or ny > 1:
+        return None
+    return (nx, ny)
+
+
+def clamp_cursor():
+    """把游標鎖在目標視窗內（參考 Steam 串流，游標不可超出視窗）。僅視窗來源時作用。"""
+    if state["source"] != "window" or not state["hwnd"]:
+        return
+    if not _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        return
+    r = _abs_rect(state["hwnd"])
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    x = min(max(pt.x, r.left + 1), r.right - 2)
+    y = min(max(pt.y, r.top + 1), r.bottom - 2)
+    if x != pt.x or y != pt.y:
+        _user32.SetCursorPos(x, y)
+
+
 def window_crop(hwnd):
     """回傳目標視窗相對其所在螢幕的 (x, y, w, h)，實體像素、偶數對齊。失敗回 None。"""
     if not hwnd or not _user32.IsWindow(wintypes.HWND(hwnd)):

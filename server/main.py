@@ -188,9 +188,11 @@ def _dispatch(msg):
     elif t == "mm":
         mouse.move_relative(msg.get("dx", 0) * MOUSE_SENSITIVITY,
                             msg.get("dy", 0) * MOUSE_SENSITIVITY)
+        video_pipeline.clamp_cursor()      # 鎖在目標視窗內
     elif t == "mms":
         mouse.move_relative_smooth(msg.get("dx", 0) * MOUSE_SENSITIVITY,
                                    msg.get("dy", 0) * MOUSE_SENSITIVITY)
+        video_pipeline.clamp_cursor()
     elif t == "md":
         mouse.button_down(msg.get("b", "left"))
     elif t == "mu":
@@ -206,6 +208,19 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
         return
     await ws.accept()
     print("[WS] 客戶端連線")
+
+    async def cursor_loop():
+        # 定期回傳游標在擷取區內的正規化座標，讓網頁畫虛擬游標（遊戲藏游標也看得到）
+        try:
+            while True:
+                c = video_pipeline.cursor_norm()
+                if c is not None:
+                    await ws.send_text(json.dumps({"t": "cur", "x": round(c[0], 4), "y": round(c[1], 4)}))
+                await asyncio.sleep(0.05)
+        except Exception:
+            pass
+
+    sender = asyncio.create_task(cursor_loop())
     try:
         while True:
             raw = await ws.receive_text()
@@ -218,6 +233,7 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
     except WebSocketDisconnect:
         print("[WS] 客戶端離線")
     finally:
+        sender.cancel()
         # 斷線時放開所有滑鼠鍵，避免卡住
         for b in ("left", "right", "middle"):
             mouse.button_up(b)
