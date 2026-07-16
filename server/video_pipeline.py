@@ -221,9 +221,9 @@ def _build_args():
     else:
         # 全螢幕（或取不到視窗座標時退回全螢幕）
         vf = f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra"
-    sw = int(state.get("scale", 0))
-    if sw > 0:
-        vf += f",scale={sw}:-2:flags=fast_bilinear"   # 降解析度：省頻寬、降延遲
+    sh = int(state.get("scale", 0))   # 目標高度(p)，0=原始
+    if sh > 0:
+        vf += f",scale=-2:min(ih\\,{sh}):flags=fast_bilinear"   # 降到指定高度、不放大；寬度自動維持比例
     if int(state.get("gray", 0)):
         vf += ",hue=s=0"                               # 黑白：chroma 壓到最省
     return base + ["-filter_complex", vf] + _encode_args(fps, br)

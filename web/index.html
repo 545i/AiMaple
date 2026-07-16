@@ -7,7 +7,7 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   html,body { width:100%; height:100%; overflow:hidden; background:#000; font-family:system-ui,"Microsoft JhengHei",sans-serif; touch-action:none; }
-  #video { position:fixed; background:#000; z-index:0; object-fit:contain; }
+  #video { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
 
   /* 連線畫面 */
   #setup { position:fixed; inset:0; z-index:100; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
@@ -28,15 +28,17 @@
                  background:rgba(40,40,50,.7); border:1px solid rgba(255,255,255,.25); }
   #tools .tool.on { background:#ffb020; color:#000; }
 
-  /* 直立時控制區背景 */
+  /* 直立時控制區背景（由 JS 的 body.lay-port / lay-land 控制，非物理方向） */
   #padbg { position:fixed; display:none; z-index:6; }
-  @media (orientation:portrait){ #padbg{ display:block; top:36vh; left:0; right:0; bottom:0;
-    background:linear-gradient(#15151c,#0a0a0f); border-top:2px solid #2a2a35; } }
+  body.lay-port #padbg{ display:block; top:36vh; left:0; right:0; bottom:0;
+    background:linear-gradient(#15151c,#0a0a0f); border-top:2px solid #2a2a35; }
 
-  /* 滑鼠觸控板區（依方向定位） */
+  /* 滑鼠觸控板區（依佈局定位） */
   .look { position:fixed; z-index:8; pointer-events:auto; }
-  @media (orientation:landscape){ #video{ inset:0; width:100%; height:100%; } .look{ left:24%; right:24%; top:0; bottom:0; } }
-  @media (orientation:portrait){ #video{ top:0; left:0; width:100%; height:36vh; } .look{ top:0; left:0; width:100%; height:36vh; } }
+  body.lay-land #video{ inset:0; width:100%; height:100%; }
+  body.lay-land .look{ left:24%; right:24%; top:0; bottom:0; }
+  body.lay-port #video{ inset:auto; top:0; left:0; width:100%; height:36vh; }
+  body.lay-port .look{ left:auto; right:auto; bottom:auto; top:0; left:0; width:100%; height:36vh; }
 
   /* 自由擺放按鈕 */
   #pad { position:fixed; inset:0; z-index:12; pointer-events:none; }
@@ -53,7 +55,7 @@
 
   /* 桌面(電腦)模式：隱藏虛擬按鍵/觸控板/編輯，直接捕捉實體鍵鼠 */
   body.desktop #pad, body.desktop #look, body.desktop #padbg,
-  body.desktop #editBtn, body.desktop #addBtn { display:none !important; }
+  body.desktop #editBtn, body.desktop #addBtn, body.desktop #layBtn { display:none !important; }
   #deskhint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:45;
               display:none; font-size:14px; color:#fff; background:rgba(0,0,0,.6);
               padding:8px 18px; border-radius:12px; pointer-events:none; }
@@ -64,7 +66,7 @@
   #watch.show { display:flex; }
   #watch button { pointer-events:auto; font-size:20px; font-weight:700; padding:18px 40px; border-radius:16px;
                   border:none; background:rgba(70,160,120,.92); color:#fff; }
-  @media (orientation:portrait){ #watch{ inset:0 0 auto 0; height:36vh; } }
+  body.lay-port #watch{ inset:0 0 auto 0; height:36vh; }
 
   /* 模擬鍵盤 / 畫面設定 */
   #picker,#screen { position:fixed; inset:0; z-index:120; background:rgba(0,0,0,.92); display:none;
@@ -106,6 +108,7 @@
   <div id="tools" style="display:none">
     <div class="tool" id="focusBtn">🎯 對準</div>
     <div class="tool" id="watchBtn">👁 注視中</div>
+    <div class="tool" id="layBtn">↕ 自動</div>
     <div class="tool" id="screenBtn">🎬 畫面</div>
     <div class="tool" id="editBtn">⚙ 編輯</div>
     <div class="tool" id="addBtn" style="display:none">➕ 新增鍵</div>
@@ -180,8 +183,23 @@ function defaultButtons(){ return [
 ]; }
 let buttons = JSON.parse(localStorage.getItem("maple_buttons")||"null") || defaultButtons();
 const saveButtons = () => localStorage.setItem("maple_buttons", JSON.stringify(buttons));
-const isPortrait = () => matchMedia("(orientation:portrait)").matches;
+const isPortrait = () => document.body.classList.contains("lay-port");
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+
+// ===== 佈局方向：手動鎖定(不靠物理旋轉) =====
+let layoutMode = localStorage.getItem("maple_layout") || "auto";   // auto | port | land
+function curPortrait(){
+  if(document.body.classList.contains("desktop")) return false;    // 桌面一律橫向
+  return layoutMode==="auto" ? matchMedia("(orientation:portrait)").matches : layoutMode==="port";
+}
+function applyLayout(){
+  const port = curPortrait();
+  document.body.classList.toggle("lay-port", port);
+  document.body.classList.toggle("lay-land", !port);
+  const b=document.getElementById("layBtn");
+  if(b) b.textContent = layoutMode==="auto" ? "↕ 自動" : (port ? "▯ 直向" : "▭ 橫向");
+  renderButtons();
+}
 
 function renderButtons(){
   const pad=$("#pad"); pad.innerHTML="";
@@ -224,7 +242,12 @@ function bindButton(el,b,del){
   del.addEventListener("touchstart", e=>{ if(!editMode) return; e.preventDefault(); e.stopPropagation();
     buttons = buttons.filter(x=>x!==b); saveButtons(); renderButtons(); }, {passive:false});
 }
-matchMedia("(orientation:portrait)").addEventListener("change", renderButtons);
+matchMedia("(orientation:portrait)").addEventListener("change", () => { if(layoutMode==="auto") applyLayout(); });
+document.getElementById("layBtn").onclick = () => {
+  layoutMode = layoutMode==="auto" ? "port" : (layoutMode==="port" ? "land" : "auto");
+  localStorage.setItem("maple_layout", layoutMode);
+  applyLayout();
+};
 
 // ===== 連線 =====
 const setStatus = (t,ok)=>{ const s=$("#status"); s.textContent=t; s.className= ok?"":"bad"; };
@@ -400,8 +423,8 @@ function renderScreenPanel(){
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
   // 解析度
   const sc=$("#scaleSegs"); sc.innerHTML="";
-  [[0,"原始"],[1920,"1080p"],[1280,"720p"],[960,"540p"],[854,"480p"]].forEach(([w,label])=>{
-    const s=seg(w===cfg.scale); s.textContent=label; s.onclick=()=>{ cfg.scale=w; renderScreenPanel(); }; sc.appendChild(s); });
+  [[0,"原始"],[1080,"1080p"],[720,"720p"],[540,"540p"],[480,"480p"]].forEach(([h,label])=>{
+    const s=seg(h===cfg.scale); s.textContent=label; s.onclick=()=>{ cfg.scale=h; renderScreenPanel(); }; sc.appendChild(s); });
   // 黑白
   const gy=$("#graySegs"); gy.innerHTML="";
   [[0,"彩色"],[1,"黑白"]].forEach(([v,label])=>{
@@ -421,10 +444,10 @@ $("#screenBtn").onclick = async () => {
 $("#screenClose").onclick = () => $("#screen").classList.remove("on");
 // 一鍵預設：畫質 / 流暢 / 快速
 const PRESETS = {
-  quality: { scale:1920, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
-  smooth:  { scale:1280, fps:60, bitrate:15, gray:0 },   // 流暢：720p 平衡
-  fast:    { scale:960,  fps:60, bitrate:8,  gray:0 },   // 快速：540p 低延遲省頻寬
-  turbo:   { scale:640,  fps:60, bitrate:4,  gray:1 },   // 急速：更低畫質 + 黑白，最省
+  quality: { scale:1080, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
+  smooth:  { scale:720,  fps:60, bitrate:15, gray:0 },   // 流暢：720p 平衡
+  fast:    { scale:540,  fps:60, bitrate:8,  gray:0 },   // 快速：540p 低延遲
+  turbo:   { scale:480,  fps:30, bitrate:4,  gray:1 },   // 急速：480p / 30fps / 黑白，最穩最省
 };
 document.querySelectorAll("#presetSegs .seg").forEach(el => {
   el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); $("#screen").classList.remove("on"); applyVideo(); };
@@ -484,6 +507,8 @@ if(!isTouch){
     e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
   setTimeout(showHint, 800);
 }
+
+applyLayout();   // 依裝置/鎖定套用直橫佈局並繪製按鈕
 </script>
 </body>
 </html>
