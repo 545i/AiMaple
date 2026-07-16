@@ -7,6 +7,11 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   html,body { width:100%; height:100%; overflow:hidden; background:#000; font-family:system-ui,"Microsoft JhengHei",sans-serif; touch-action:none; }
+  /* 舞台容器：強制橫向時整個轉 90° 填滿(參考 YouTube 全螢幕) */
+  #stage { position:fixed; inset:0; }
+  body.rotate #stage { inset:auto; top:50%; left:50%; width:100vh; height:100vw;
+                       transform:translate(-50%,-50%) rotate(90deg); }
+
   #video { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
 
   /* 連線畫面 */
@@ -92,6 +97,7 @@
 </style>
 </head>
 <body>
+ <div id="stage">
   <video id="video" autoplay muted playsinline></video>
   <div id="padbg"></div>
   <div id="cursor"></div>
@@ -147,6 +153,7 @@
     <button class="apply" id="screenApply">套用</button>
     <button class="modal-close" id="screenClose">關閉</button>
   </div>
+ </div><!-- /#stage -->
 
 <script>
 const $ = s => document.querySelector(s);
@@ -194,11 +201,23 @@ function curPortrait(){
 }
 function applyLayout(){
   const port = curPortrait();
+  const devPort = matchMedia("(orientation:portrait)").matches;
+  const desktop = document.body.classList.contains("desktop");
+  const rotate = !port && devPort && !desktop;   // 想橫向但手機是直的 → 轉 90° 填滿
   document.body.classList.toggle("lay-port", port);
   document.body.classList.toggle("lay-land", !port);
+  document.body.classList.toggle("rotate", rotate);
   const b=document.getElementById("layBtn");
   if(b) b.textContent = layoutMode==="auto" ? "↕ 自動" : (port ? "▯ 直向" : "▭ 橫向");
   renderButtons();
+}
+const isRotated = () => document.body.classList.contains("rotate");
+// 旋轉後把觸控位移轉回內容座標系(stage 順時針 90°)
+function rotVec(dx,dy){ return isRotated() ? [dy, -dx] : [dx, dy]; }
+// 內容(video)在 #cursor/#pad 座標系中的顯示矩形(旋轉時 stage 為 100vh×100vw)
+function stageRect(){
+  return isRotated() ? { left:0, top:0, width:window.innerHeight, height:window.innerWidth }
+                     : { left:0, top:0, width:window.innerWidth, height:window.innerHeight };
 }
 
 function renderButtons(){
@@ -228,8 +247,9 @@ function bindButton(el,b,del){
   el.addEventListener("touchmove", e=>{
     if(!editMode||!dragging) return; e.preventDefault(); e.stopPropagation();
     const t=e.touches[0];
-    const nx = spx + (t.clientX-sx)/window.innerWidth*100;
-    const ny = spy + (t.clientY-sy)/window.innerHeight*100;
+    const rv=rotVec(t.clientX-sx, t.clientY-sy), sr=stageRect();   // 旋轉修正
+    const nx = spx + rv[0]/sr.width*100;
+    const ny = spy + rv[1]/sr.height*100;
     if(Math.abs(t.clientX-sx)+Math.abs(t.clientY-sy)>4) moved=true;
     arr[0]=clamp(nx,3,97); arr[1]=clamp(ny,5,96);
     el.style.left=arr[0]+"%"; el.style.top=arr[1]+"%";
@@ -263,7 +283,7 @@ function connect(){
 function updateCursor(nx,ny){
   const c=$("#cursor");
   if(!watching){ c.style.display="none"; return; }
-  const v=$("#video"), vr=v.getBoundingClientRect();
+  const v=$("#video"), vr = isRotated() ? stageRect() : v.getBoundingClientRect();
   const vw=v.videoWidth, vh=v.videoHeight;
   if(!vw||!vh){ c.style.display="none"; return; }
   const scale=Math.min(vr.width/vw, vr.height/vh);
@@ -385,7 +405,7 @@ look.addEventListener("touchmove", e => {
   if(Math.abs(dx)+Math.abs(dy) > 2) tp.moved = true;
   if(e.touches.length === 1){
     if(tp.dragLockPending && !tp.dragging && tp.moved){ send({t:"md", b:"left"}); tp.dragging=true; tp.dragLockPending=false; }
-    accX += dx; accY += dy;
+    const rv=rotVec(dx,dy); accX += rv[0]; accY += rv[1];   // 旋轉修正
   }
 }, {passive:false});
 const lookEnd = e => {
