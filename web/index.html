@@ -72,8 +72,9 @@
   @media (orientation:portrait){ #watch{ bottom:auto; height:44vh; inset:0 0 auto 0; } }
 
   /* 模擬鍵盤選擇器 */
-  #picker,#screen { position:fixed; inset:0; z-index:120; background:rgba(0,0,0,.85); display:none;
-            flex-direction:column; align-items:center; justify-content:center; padding:12px; color:#fff; }
+  #picker,#screen { position:fixed; inset:0; z-index:120; background:rgba(0,0,0,.9); display:none;
+            flex-direction:column; align-items:center; justify-content:flex-start;
+            padding:16px 12px 28px; color:#fff; overflow-y:auto; touch-action:pan-y; }
   #picker.on,#screen.on { display:flex; }
   #picker h3,#screen h3 { font-size:16px; margin-bottom:12px; }
   #kbd { display:flex; flex-direction:column; gap:6px; align-items:center; max-height:78vh; overflow:auto; touch-action:pan-y; }
@@ -380,7 +381,9 @@ function renderScreenPanel(){
   $("#monRow").style.display = isWin ? "none" : "";
   if(isWin){ const w=$("#winSegs"); w.innerHTML="";
     if(!windowsList.length){ const e=document.createElement("div"); e.style.color="#888"; e.style.fontSize="13px"; e.textContent="（無視窗，請點『畫面』重新整理）"; w.appendChild(e); }
-    windowsList.forEach(o=>{ const s=seg(o.title===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=o.title; s.onclick=()=>{ cfg.window=o.title; cfg.hwnd=o.hwnd; renderScreenPanel(); }; w.appendChild(s); }); }
+    windowsList.forEach(o=>{ const s=seg(o.title===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=o.title;
+      s.onclick=()=>{ cfg.source="window"; cfg.window=o.title; cfg.hwnd=o.hwnd; $("#screen").classList.remove("on"); applyVideo(); };  // 點選即套用+對準
+      w.appendChild(s); }); }
   else { const mon=$("#monSegs"); mon.innerHTML="";
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
   $("#fRange").value=cfg.fps; $("#fVal").textContent=cfg.fps;
@@ -394,13 +397,13 @@ $("#screenBtn").onclick = async () => {
   renderScreenPanel(); $("#screen").classList.add("on");
 };
 $("#screenClose").onclick = () => $("#screen").classList.remove("on");
-$("#screenApply").onclick = async () => {
+async function applyVideo(){
   try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
-  $("#screen").classList.remove("on");
   if(cfg.source==="window") focusTarget();                      // 對準所選視窗
   if(watching) setTimeout(()=>{ if(watching) setWatching(true); }, 1500);  // 等 ffmpeg 以新參數重啟
-};
+}
+$("#screenApply").onclick = () => { $("#screen").classList.remove("on"); applyVideo(); };
 </script>
 </body>
 </html>
