@@ -23,15 +23,7 @@
   #status.bad { color:#f55; }
   #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
             border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
-  #target { position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:55; font-size:12px;
-            color:#ffd479; background:rgba(0,0,0,.5); padding:3px 12px; border-radius:10px;
-            max-width:40vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:none; }
 
-  /* 頂部工具列 */
-  #tools { position:fixed; top:6px; right:10px; z-index:60; display:flex; gap:8px; }
-  #tools .tool { pointer-events:auto; font-size:13px; padding:6px 12px; border-radius:10px; color:#fff;
-                 background:rgba(40,40,50,.7); border:1px solid rgba(255,255,255,.25); }
-  #tools .tool.on { background:#ffb020; color:#000; }
 
   /* 直立時控制區背景（由 JS 的 body.lay-port / lay-land 控制，非物理方向） */
   #padbg { position:fixed; display:none; z-index:6; }
@@ -59,8 +51,7 @@
   #pad .btn.editing .del { display:flex; }
 
   /* 桌面(電腦)模式：隱藏虛擬按鍵/觸控板/編輯，直接捕捉實體鍵鼠 */
-  body.desktop #pad, body.desktop #look, body.desktop #padbg,
-  body.desktop #editBtn, body.desktop #addBtn, body.desktop #layBtn { display:none !important; }
+  body.desktop #pad, body.desktop #look, body.desktop #padbg { display:none !important; }
   #deskhint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:45;
               display:none; font-size:14px; color:#fff; background:rgba(0,0,0,.6);
               padding:8px 18px; border-radius:12px; pointer-events:none; }
@@ -73,27 +64,47 @@
                   border:none; background:rgba(70,160,120,.92); color:#fff; }
   body.lay-port #watch{ inset:0 0 auto 0; height:36vh; }
 
-  /* 模擬鍵盤 / 畫面設定 */
-  #picker,#screen { position:fixed; inset:0; z-index:120; background:rgba(0,0,0,.92); display:none;
+  /* 模擬鍵盤 */
+  #picker { position:fixed; inset:0; z-index:140; background:rgba(0,0,0,.92); display:none;
             flex-direction:column; align-items:center; justify-content:flex-start;
             padding:14px 10px 30px; color:#fff; overflow-y:auto; touch-action:pan-y; }
-  #picker.on,#screen.on { display:flex; }
-  #picker h3,#screen h3 { font-size:16px; margin-bottom:12px; }
+  #picker.on { display:flex; }
+  #picker h3 { font-size:16px; margin-bottom:12px; }
   #kbd { display:flex; flex-direction:column; gap:8px; align-items:center; width:100%; }
   #kbd .row { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; max-width:98vw; }
   #kbd .k { min-width:34px; height:40px; padding:0 7px; display:flex; align-items:center; justify-content:center; font-size:13px; border-radius:8px; background:#333; border:1px solid #555; }
   #kbd .k:active { background:#3a7; }
   .modal-close { margin-top:14px; font-size:15px; padding:8px 24px; border-radius:8px; border:none; background:#555; color:#fff; }
 
-  /* 畫面設定面板 */
-  #screen .field { display:flex; align-items:center; gap:12px; margin:8px 0; font-size:15px; width:300px; max-width:86vw; }
-  #screen .field label { width:70px; }
-  #screen .field input[type=range]{ flex:1; }
-  #screen .field .val { width:52px; text-align:right; }
-  #screen .segs { display:flex; gap:6px; flex-wrap:wrap; }
-  #screen .seg { padding:6px 10px; border-radius:8px; background:#333; border:1px solid #555; font-size:13px; }
-  #screen .seg.on { background:#3a7; }
-  #screen .apply { margin-top:14px; font-size:16px; padding:10px 30px; border-radius:8px; border:none; background:#3a7; color:#fff; }
+  /* ===== 漢堡按鈕 + 控制中心抽屜(Steam Deck 式) ===== */
+  #menuBtn { position:fixed; top:8px; right:10px; z-index:60; width:46px; height:40px; display:flex;
+             align-items:center; justify-content:center; font-size:20px; color:#fff;
+             background:rgba(40,40,50,.72); border:1px solid rgba(255,255,255,.25); border-radius:10px; }
+  #menuMask { position:fixed; inset:0; z-index:125; background:rgba(0,0,0,.4); display:none; }
+  #menuMask.on { display:block; }
+  #menu { position:fixed; top:0; right:0; bottom:0; width:min(88%,360px); z-index:126;
+          background:#15161c; color:#eee; transform:translateX(105%); transition:transform .22s ease;
+          display:flex; flex-direction:column; box-shadow:-6px 0 24px rgba(0,0,0,.55); }
+  #menu.on { transform:translateX(0); }
+  .mhead { display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
+           border-bottom:1px solid #2a2b33; font-size:16px; flex:0 0 auto; }
+  .mx { width:34px; height:34px; display:flex; align-items:center; justify-content:center; border-radius:8px; background:#2a2b33; }
+  .mbody { flex:1; overflow-y:auto; padding:12px 16px 34px; touch-action:pan-y; }
+  .mstat { font-size:13px; color:#ffd479; background:#1d1e26; padding:8px 12px; border-radius:8px; margin-bottom:8px; word-break:break-all; }
+  #mHw { color:#7fe0b0; }
+  .msec { font-size:12px; color:#8a8f99; margin:16px 0 8px; letter-spacing:2px; }
+  .mrow { display:flex; align-items:center; gap:10px; margin:9px 0; font-size:14px; }
+  .mrow > label { width:52px; flex:0 0 auto; color:#b8bcc6; }
+  .mrow input[type=range]{ flex:1; }
+  .mrow .val { width:48px; text-align:right; }
+  .mgrid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:9px 0; }
+  .mbtn { padding:12px; text-align:center; border-radius:10px; background:#262832; border:1px solid #3a3d48; font-size:14px; color:#fff; }
+  .mbtn.on { background:#ffb020; color:#000; border-color:#ffb020; }
+  .segs { display:flex; gap:6px; flex-wrap:wrap; }
+  .seg { padding:7px 11px; border-radius:8px; background:#2a2b33; border:1px solid #3a3d48; font-size:13px; }
+  .seg.on { background:#3a7; color:#fff; border-color:#3a7; }
+  .mapply { width:100%; margin-top:18px; padding:13px; border:none; border-radius:10px; background:#3a7; color:#fff; font-size:15px; }
+  body.desktop #editRow, body.desktop #layRow { display:none; }
 </style>
 </head>
 <body>
@@ -102,7 +113,6 @@
   <div id="padbg"></div>
   <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
-  <div id="target">🎯 全螢幕</div>
 
   <div id="setup">
     <div style="font-size:22px;font-weight:700;">maple 遠端遊玩</div>
@@ -111,14 +121,7 @@
     <div style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
   </div>
 
-  <div id="tools" style="display:none">
-    <div class="tool" id="focusBtn">🎯 對準</div>
-    <div class="tool" id="watchBtn">👁 注視中</div>
-    <div class="tool" id="layBtn">↕ 自動</div>
-    <div class="tool" id="screenBtn">🎬 畫面</div>
-    <div class="tool" id="editBtn">⚙ 編輯</div>
-    <div class="tool" id="addBtn" style="display:none">➕ 新增鍵</div>
-  </div>
+  <div id="menuBtn" style="display:none">☰</div>
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
@@ -133,25 +136,42 @@
     <button class="modal-close" id="pickerClose">取消</button>
   </div>
 
-  <!-- 畫面設定 -->
-  <div id="screen">
-    <h3>畫面設定（WebRTC）</h3>
-    <div class="field"><label>預設</label><div class="segs" id="presetSegs">
-      <div class="seg" data-preset="quality">畫質</div>
-      <div class="seg" data-preset="smooth">流暢</div>
-      <div class="seg" data-preset="fast">快速</div>
-      <div class="seg" data-preset="turbo">急速</div>
-    </div></div>
-    <div class="field"><label>來源</label><div class="segs" id="srcSegs"></div></div>
-    <div class="field" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:28vh;overflow:auto"></div></div>
-    <div class="field" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
-    <div class="field"><label>解析度</label><div class="segs" id="scaleSegs"></div></div>
-    <div class="field"><label>黑白</label><div class="segs" id="graySegs"></div></div>
-    <div class="field"><label>FPS</label><input type="range" id="fRange" min="30" max="120" step="10"><span class="val" id="fVal"></span></div>
-    <div class="field"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
-    <div class="field"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
-    <button class="apply" id="screenApply">套用</button>
-    <button class="modal-close" id="screenClose">關閉</button>
+  <!-- 漢堡控制中心(Steam Deck 式) -->
+  <div id="menuMask"></div>
+  <div id="menu">
+    <div class="mhead"><b>控制中心</b><div class="mx" id="menuClose">✕</div></div>
+    <div class="mbody">
+      <div class="mstat" id="mTarget">🎯 全螢幕</div>
+      <div class="mstat" id="mHw">硬體：載入中…</div>
+
+      <div class="msec">操作</div>
+      <div class="mgrid2">
+        <div class="mbtn" id="watchBtn">👁 注視中</div>
+        <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
+      </div>
+      <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
+        <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
+      </div></div>
+      <div class="mgrid2" id="editRow">
+        <div class="mbtn" id="editBtn">⚙ 編輯按鍵</div>
+        <div class="mbtn" id="addBtn" style="display:none">➕ 新增鍵</div>
+      </div>
+
+      <div class="msec">畫面</div>
+      <div class="mrow"><label>預設</label><div class="segs" id="presetSegs">
+        <div class="seg" data-preset="quality">畫質</div><div class="seg" data-preset="smooth">流暢</div>
+        <div class="seg" data-preset="fast">快速</div><div class="seg" data-preset="turbo">急速</div>
+      </div></div>
+      <div class="mrow"><label>來源</label><div class="segs" id="srcSegs"></div></div>
+      <div class="mrow" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:26vh;overflow:auto"></div></div>
+      <div class="mrow" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
+      <div class="mrow"><label>解析度</label><div class="segs" id="scaleSegs"></div></div>
+      <div class="mrow"><label>黑白</label><div class="segs" id="graySegs"></div></div>
+      <div class="mrow"><label>FPS</label><input type="range" id="fRange" min="30" max="120" step="10"><span class="val" id="fVal"></span></div>
+      <div class="mrow"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
+      <div class="mrow"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
+      <button class="mapply" id="screenApply">套用畫面設定</button>
+    </div>
   </div>
  </div><!-- /#stage -->
 
@@ -207,8 +227,7 @@ function applyLayout(){
   document.body.classList.toggle("lay-port", port);
   document.body.classList.toggle("lay-land", !port);
   document.body.classList.toggle("rotate", rotate);
-  const b=document.getElementById("layBtn");
-  if(b) b.textContent = layoutMode==="auto" ? "↕ 自動" : (port ? "▯ 直向" : "▭ 橫向");
+  document.querySelectorAll("#layGroup .seg").forEach(s => s.classList.toggle("on", s.dataset.lay===layoutMode));
   renderButtons();
 }
 const isRotated = () => document.body.classList.contains("rotate");
@@ -263,11 +282,9 @@ function bindButton(el,b,del){
     buttons = buttons.filter(x=>x!==b); saveButtons(); renderButtons(); }, {passive:false});
 }
 matchMedia("(orientation:portrait)").addEventListener("change", () => { if(layoutMode==="auto") applyLayout(); });
-document.getElementById("layBtn").onclick = () => {
-  layoutMode = layoutMode==="auto" ? "port" : (layoutMode==="port" ? "land" : "auto");
-  localStorage.setItem("maple_layout", layoutMode);
-  applyLayout();
-};
+document.querySelectorAll("#layGroup .seg").forEach(s => s.onclick = () => {
+  layoutMode = s.dataset.lay; localStorage.setItem("maple_layout", layoutMode); applyLayout();
+});
 
 // ===== 連線 =====
 const setStatus = (t,ok)=>{ const s=$("#status"); s.textContent=t; s.className= ok?"":"bad"; };
@@ -297,7 +314,7 @@ const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 $("#go").onclick = () => {
   token = $("#token").value.trim(); if(!token) return;
   localStorage.setItem("maple_token", token);
-  $("#setup").style.display="none"; $("#tools").style.display="flex";
+  $("#setup").style.display="none"; $("#menuBtn").style.display="flex";
   renderButtons(); syncConfig(); setWatching(true); connect();
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
@@ -351,8 +368,9 @@ $("#focusBtn").onclick = async () => { const el=$("#focusBtn"); el.classList.add
 $("#editBtn").onclick = () => {
   editMode = !editMode;
   $("#editBtn").classList.toggle("on", editMode);
-  $("#editBtn").textContent = editMode ? "✓ 完成" : "⚙ 編輯";
+  $("#editBtn").textContent = editMode ? "✓ 完成編輯" : "⚙ 編輯按鍵";
   $("#addBtn").style.display = editMode ? "block" : "none";
+  if(editMode) closeMenu();          // 關抽屜，讓使用者在畫面上拖曳按鈕
   renderButtons();
 };
 $("#addBtn").onclick = () => {
@@ -425,7 +443,7 @@ requestAnimationFrame(flush);
 let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, scale:0, gray:0, monitor_count:1 };
 let windowsList = [];
 function focusTarget(){ return fetch(`/window/focus?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
-function updateTarget(){ const t=$("#target"); t.style.display="block"; t.textContent = "🎯 " + (cfg.source==="window" && cfg.window ? cfg.window : "全螢幕"); }
+function updateTarget(){ $("#mTarget").textContent = "🎯 目標：" + (cfg.source==="window" && cfg.window ? cfg.window : "全螢幕"); }
 async function syncConfig(){ try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){} updateTarget(); }
 function seg(on){ const s=document.createElement("div"); s.className="seg"+(on?" on":""); return s; }
 function renderScreenPanel(){
@@ -437,7 +455,7 @@ function renderScreenPanel(){
   if(isWin){ const w=$("#winSegs"); w.innerHTML="";
     if(!windowsList.length){ const e=document.createElement("div"); e.style.color="#888"; e.style.fontSize="13px"; e.textContent="（無視窗，請點『畫面』重新整理）"; w.appendChild(e); }
     windowsList.forEach(o=>{ const s=seg(o.title===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=o.title;
-      s.onclick=()=>{ cfg.source="window"; cfg.window=o.title; cfg.hwnd=o.hwnd; $("#screen").classList.remove("on"); applyVideo(); };
+      s.onclick=()=>{ cfg.source="window"; cfg.window=o.title; cfg.hwnd=o.hwnd; closeMenu(); applyVideo(); };
       w.appendChild(s); }); }
   else { const mon=$("#monSegs"); mon.innerHTML="";
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
@@ -456,12 +474,24 @@ function renderScreenPanel(){
 $("#fRange").oninput = e => { cfg.fps=+e.target.value; $("#fVal").textContent=cfg.fps; };
 $("#bRange").oninput = e => { cfg.bitrate=+e.target.value; $("#bVal").textContent=cfg.bitrate+"M"; };
 $("#sRange").oninput = e => { sensitivity=+e.target.value; $("#sVal").textContent=sensitivity+"x"; localStorage.setItem("maple_sens", sensitivity); };
-$("#screenBtn").onclick = async () => {
+// ===== 漢堡控制中心：開/關 =====
+function openMenu(){ $("#menu").classList.add("on"); $("#menuMask").classList.add("on"); }
+function closeMenu(){ $("#menu").classList.remove("on"); $("#menuMask").classList.remove("on"); }
+async function fetchStatus(){
+  try{ const s=await (await fetch(`/status?token=${encodeURIComponent(token)}`)).json();
+    const kb=s.keyboard.arduino?"Arduino✓":"鍵盤✗";
+    const ms=s.mouse.connected ? (s.mouse.software?"軟體滑鼠":"KMBox✓") : "滑鼠✗";
+    $("#mHw").textContent = `硬體：${kb}　${ms}`;
+  }catch(e){ $("#mHw").textContent="硬體：查詢失敗"; }
+}
+$("#menuBtn").onclick = async () => {
+  openMenu();
   try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
   try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
-  renderScreenPanel(); $("#screen").classList.add("on");
+  updateTarget(); renderScreenPanel(); fetchStatus();
 };
-$("#screenClose").onclick = () => $("#screen").classList.remove("on");
+$("#menuClose").onclick = closeMenu;
+$("#menuMask").onclick = closeMenu;
 // 一鍵預設：畫質 / 流暢 / 快速
 const PRESETS = {
   quality: { scale:1080, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
@@ -470,7 +500,7 @@ const PRESETS = {
   turbo:   { scale:480,  fps:30, bitrate:4,  gray:1 },   // 急速：480p / 30fps / 黑白，最穩最省
 };
 document.querySelectorAll("#presetSegs .seg").forEach(el => {
-  el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); $("#screen").classList.remove("on"); applyVideo(); };
+  el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); closeMenu(); applyVideo(); };
 });
 async function applyVideo(){
   updateTarget();
@@ -478,7 +508,7 @@ async function applyVideo(){
   if(cfg.source==="window") focusTarget();
   if(watching) setTimeout(()=>{ if(watching) setWatching(true); }, 1500);
 }
-$("#screenApply").onclick = () => { $("#screen").classList.remove("on"); applyVideo(); };
+$("#screenApply").onclick = () => { closeMenu(); applyVideo(); };
 
 renderButtons();
 
@@ -489,7 +519,7 @@ if(!isTouch){
   const video = $("#video");
   let capturing = false;
   const held = new Set();
-  const connected = () => $("#tools").style.display !== "none";
+  const connected = () => $("#menuBtn").style.display !== "none";
 
   function codeToToken(code){
     if(/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
