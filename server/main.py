@@ -124,6 +124,7 @@ async def set_video_config(request: Request, token: str = Query("")):
     return JSONResponse(video_pipeline.apply(
         source=body.get("source"), window=body.get("window"), hwnd=body.get("hwnd"),
         monitor=body.get("monitor"), fps=body.get("fps"), bitrate=body.get("bitrate"),
+        scale=body.get("scale"), gray=body.get("gray"),
     ))
 
 

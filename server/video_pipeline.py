@@ -36,6 +36,8 @@ state = {
     "monitor": VIDEO_MONITOR,
     "fps": VIDEO_FPS,
     "bitrate": VIDEO_BITRATE_M,
+    "scale": 0,         # 縮放後寬度(0=原始)；降解析度以省頻寬/延遲
+    "gray": 0,          # 1=黑白(去色)，chroma 壓到最省，進一步降頻寬
 }
 
 _proc = None
@@ -219,6 +221,11 @@ def _build_args():
     else:
         # 全螢幕（或取不到視窗座標時退回全螢幕）
         vf = f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra"
+    sw = int(state.get("scale", 0))
+    if sw > 0:
+        vf += f",scale={sw}:-2:flags=fast_bilinear"   # 降解析度：省頻寬、降延遲
+    if int(state.get("gray", 0)):
+        vf += ",hue=s=0"                               # 黑白：chroma 壓到最省
     return base + ["-filter_complex", vf] + _encode_args(fps, br)
 
 
@@ -261,7 +268,8 @@ def restart():
     ensure_running()
 
 
-def apply(source=None, window=None, hwnd=None, monitor=None, fps=None, bitrate=None):
+def apply(source=None, window=None, hwnd=None, monitor=None, fps=None, bitrate=None,
+          scale=None, gray=None):
     """更新設定；若 ffmpeg 正在跑就以新參數重啟。切到視窗來源時自動聚焦該視窗。"""
     if source is not None:  state["source"] = "window" if source == "window" else "desktop"
     if window is not None:  state["window"] = str(window)
@@ -271,6 +279,8 @@ def apply(source=None, window=None, hwnd=None, monitor=None, fps=None, bitrate=N
     if monitor is not None: state["monitor"] = max(1, int(monitor))
     if fps is not None:     state["fps"] = max(15, min(120, int(fps)))
     if bitrate is not None: state["bitrate"] = max(2, min(100, int(bitrate)))
+    if scale is not None:   state["scale"] = max(0, int(scale))
+    if gray is not None:    state["gray"] = 1 if gray else 0
     if is_running():
         restart()
     if state["source"] == "window":

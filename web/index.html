@@ -121,6 +121,8 @@
     <div class="field"><label>來源</label><div class="segs" id="srcSegs"></div></div>
     <div class="field" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:28vh;overflow:auto"></div></div>
     <div class="field" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
+    <div class="field"><label>解析度</label><div class="segs" id="scaleSegs"></div></div>
+    <div class="field"><label>黑白</label><div class="segs" id="graySegs"></div></div>
     <div class="field"><label>FPS</label><input type="range" id="fRange" min="30" max="120" step="10"><span class="val" id="fVal"></span></div>
     <div class="field"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
     <div class="field"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
@@ -362,7 +364,7 @@ function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:
 requestAnimationFrame(flush);
 
 // ===== 畫面設定 =====
-let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, monitor_count:1 };
+let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, scale:0, gray:0, monitor_count:1 };
 let windowsList = [];
 function focusTarget(){ return fetch(`/window/focus?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 function updateTarget(){ const t=$("#target"); t.style.display="block"; t.textContent = "🎯 " + (cfg.source==="window" && cfg.window ? cfg.window : "全螢幕"); }
@@ -381,6 +383,14 @@ function renderScreenPanel(){
       w.appendChild(s); }); }
   else { const mon=$("#monSegs"); mon.innerHTML="";
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
+  // 解析度
+  const sc=$("#scaleSegs"); sc.innerHTML="";
+  [[0,"原始"],[1920,"1080p"],[1280,"720p"],[960,"540p"],[854,"480p"]].forEach(([w,label])=>{
+    const s=seg(w===cfg.scale); s.textContent=label; s.onclick=()=>{ cfg.scale=w; renderScreenPanel(); }; sc.appendChild(s); });
+  // 黑白
+  const gy=$("#graySegs"); gy.innerHTML="";
+  [[0,"彩色"],[1,"黑白"]].forEach(([v,label])=>{
+    const s=seg(v===cfg.gray); s.textContent=label; s.onclick=()=>{ cfg.gray=v; renderScreenPanel(); }; gy.appendChild(s); });
   $("#fRange").value=cfg.fps; $("#fVal").textContent=cfg.fps;
   $("#bRange").value=cfg.bitrate; $("#bVal").textContent=cfg.bitrate+"M";
   $("#sRange").value=sensitivity; $("#sVal").textContent=sensitivity+"x";
