@@ -118,6 +118,11 @@
   <!-- 畫面設定 -->
   <div id="screen">
     <h3>畫面設定（WebRTC）</h3>
+    <div class="field"><label>預設</label><div class="segs" id="presetSegs">
+      <div class="seg" data-preset="quality">畫質</div>
+      <div class="seg" data-preset="smooth">流暢</div>
+      <div class="seg" data-preset="fast">快速</div>
+    </div></div>
     <div class="field"><label>來源</label><div class="segs" id="srcSegs"></div></div>
     <div class="field" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:28vh;overflow:auto"></div></div>
     <div class="field" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
@@ -404,6 +409,15 @@ $("#screenBtn").onclick = async () => {
   renderScreenPanel(); $("#screen").classList.add("on");
 };
 $("#screenClose").onclick = () => $("#screen").classList.remove("on");
+// 一鍵預設：畫質 / 流暢 / 快速
+const PRESETS = {
+  quality: { scale:1920, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
+  smooth:  { scale:1280, fps:60, bitrate:15, gray:0 },   // 流暢：720p 平衡
+  fast:    { scale:960,  fps:60, bitrate:8,  gray:0 },   // 快速：540p 低延遲省頻寬
+};
+document.querySelectorAll("#presetSegs .seg").forEach(el => {
+  el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); $("#screen").classList.remove("on"); applyVideo(); };
+});
 async function applyVideo(){
   updateTarget();
   try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
