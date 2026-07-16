@@ -1,0 +1,8 @@
+# FastAPI 遠端遊玩伺服器 (跑在家裡的遊戲主機上)
+fastapi
+uvicorn[standard]
+pyserial          # Arduino 鍵盤 (序列埠)
+mss               # 螢幕擷取
+opencv-python     # JPEG 編碼 / 縮放
+numpy
+# km.dll 為 Windows 原生 DLL，透過 ctypes 載入，無需額外套件

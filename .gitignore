@@ -1,0 +1,21 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.Python
+
+# 環境設定 / 機密
+.env
+*.local
+
+# 編輯器 / 系統
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 暫存
+scratch_*
+*.log
