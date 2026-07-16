@@ -26,6 +26,26 @@ import video_pipeline
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
 
+
+def _disable_console_quickedit():
+    """停用主控台 QuickEdit：避免不小心點到視窗就暫停整個程式（要按 Enter 才繼續）。"""
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)          # STD_INPUT_HANDLE
+        mode = ctypes.c_uint()
+        if k.GetConsoleMode(h, ctypes.byref(mode)):
+            ENABLE_EXTENDED_FLAGS = 0x0080
+            ENABLE_QUICK_EDIT_MODE = 0x0040
+            ENABLE_MOUSE_INPUT = 0x0010
+            new = (mode.value | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT_MODE & ~ENABLE_MOUSE_INPUT
+            k.SetConsoleMode(h, new)
+    except Exception:
+        pass
+
+
+_disable_console_quickedit()
+
 keyboard = ArduinoKeyboard()
 mouse = KMouse()
 screen = ScreenCapture()

@@ -14,6 +14,15 @@ import subprocess
 
 from config import MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M
 
+# 讓本程序 DPI-aware，GetWindowRect 才會回傳正確的實體像素座標（超寬/縮放螢幕才不會偏）
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PER_MONITOR_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 # maple 根目錄與 ffmpeg 絕對路徑
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FFMPEG = os.path.join(_ROOT, "bin", "ffmpeg", "bin", "ffmpeg.exe")
@@ -37,6 +46,45 @@ _user32 = ctypes.windll.user32
 _kernel32 = ctypes.windll.kernel32
 _user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
 _user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+_user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+_user32.MonitorFromWindow.restype = ctypes.c_void_p
+_user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", _RECT),
+                ("rcWork", _RECT), ("dwFlags", wintypes.DWORD)]
+
+
+def window_crop(hwnd):
+    """回傳目標視窗相對其所在螢幕的 (x, y, w, h)，實體像素、偶數對齊。失敗回 None。"""
+    if not hwnd or not _user32.IsWindow(wintypes.HWND(hwnd)):
+        return None
+    r = _RECT()
+    ok = False
+    try:  # 優先用 DWM 實際邊界（不含陰影）
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                wintypes.HWND(hwnd), 9, ctypes.byref(r), ctypes.sizeof(r)) == 0:
+            ok = True
+    except Exception:
+        ok = False
+    if not ok:
+        _user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+    mi = _MONITORINFO(); mi.cbSize = ctypes.sizeof(_MONITORINFO)
+    _user32.GetMonitorInfoW(_user32.MonitorFromWindow(wintypes.HWND(hwnd), 2), ctypes.byref(mi))
+    x = max(0, r.left - mi.rcMonitor.left)
+    y = max(0, r.top - mi.rcMonitor.top)
+    w = (r.right - r.left) & ~1     # 偶數
+    h = (r.bottom - r.top) & ~1
+    if w <= 0 or h <= 0:
+        return None
+    return x, y, w, h
 
 
 def list_windows():
@@ -99,15 +147,16 @@ def _encode_args(fps, bitrate):
 def _build_args():
     fps, br = int(state["fps"]), int(state["bitrate"])
     base = [_FFMPEG, "-hide_banner", "-loglevel", "error"]
-    if state["source"] == "window" and state["window"]:
-        # 指定視窗：gdigrab 依標題擷取（標題原樣傳入，含空白/中文皆安全）
-        src = ["-f", "gdigrab", "-framerate", str(fps), "-i", f"title={state['window']}"]
+    idx = max(0, int(state["monitor"]) - 1)
+    crop = window_crop(state["hwnd"]) if state["source"] == "window" else None
+    if crop:
+        # 指定視窗：ddagrab(DXGI 整個螢幕) 再依視窗實際座標裁切（DirectX 遊戲正確、DPI 正確）
+        x, y, w, h = crop
+        vf = f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra,crop={w}:{h}:{x}:{y}"
     else:
-        # 全螢幕：ddagrab(DXGI) → 下載到系統記憶體 → nvenc
-        idx = max(0, int(state["monitor"]) - 1)
-        src = ["-filter_complex",
-               f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra"]
-    return base + src + _encode_args(fps, br)
+        # 全螢幕（或取不到視窗座標時退回全螢幕）
+        vf = f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra"
+    return base + ["-filter_complex", vf] + _encode_args(fps, br)
 
 
 # ---------- 生命週期 ----------
