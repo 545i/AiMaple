@@ -53,17 +53,19 @@
 
   /* ===== 直立：上畫面、下按鍵（紅白機佈局） ===== */
   @media (orientation:portrait){
-    #video { top:0; left:0; width:100%; height:44vh; object-fit:cover; }  /* 滿版、不留黑邊 */
+    #video { top:0; left:0; width:100%; height:36vh; object-fit:contain; }   /* 完整顯示、不裁切 */
     #port { display:block; }
-    #port .look { position:absolute; top:0; left:0; width:100%; height:44vh; }
-    #port .pad { position:absolute; top:44vh; left:0; right:0; bottom:0; pointer-events:auto;
-                 background:linear-gradient(#1a1a22,#0e0e14); border-top:2px solid #333;
-                 display:flex; align-items:center; justify-content:space-between; padding:0 22px; }
-    #port .dpad { position:relative; width:174px; height:174px; flex:0 0 auto; }
-    #port .dpad .btn { position:absolute; width:56px; height:56px; }
-    #port .dpad [data-slot=up]{ left:59px; top:0; } #port .dpad [data-slot=left]{ left:0; top:59px; }
-    #port .dpad [data-slot=down]{ left:59px; top:118px; } #port .dpad [data-slot=right]{ left:118px; top:59px; }
-    #port .actions { flex:0 0 auto; display:grid; grid-template-columns:repeat(4,62px); grid-auto-rows:62px; gap:12px; }
+    #port .look { position:absolute; top:0; left:0; width:100%; height:36vh; }
+    #port .pad { position:absolute; top:36vh; left:0; right:0; bottom:0; pointer-events:auto;
+                 background:linear-gradient(#1a1a22,#0e0e14); border-top:2px solid #333; }
+    /* 方向鍵：左上 */
+    #port .dpad { position:absolute; left:22px; top:26px; width:168px; height:168px; }
+    #port .dpad .btn { position:absolute; width:54px; height:54px; }
+    #port .dpad [data-slot=up]{ left:57px; top:0; } #port .dpad [data-slot=left]{ left:0; top:57px; }
+    #port .dpad [data-slot=down]{ left:57px; top:114px; } #port .dpad [data-slot=right]{ left:114px; top:57px; }
+    /* 動作鍵：右下（3 欄，確保不超出畫面、左右留空間） */
+    #port .actions { position:absolute; right:18px; bottom:26px;
+                     display:grid; grid-template-columns:repeat(3,62px); grid-auto-rows:62px; gap:14px; }
     #port .actions .btn { width:62px; height:62px; border-radius:50%; }
   }
 
