@@ -22,7 +22,8 @@ _RTSP = f"rtsp://localhost:8554/{MEDIAMTX_PATH}"
 # 目前設定（source: "desktop" 全螢幕 / "window" 指定視窗）
 state = {
     "source": "desktop",
-    "window": "",
+    "window": "",       # 目標視窗標題（gdigrab 用）
+    "hwnd": 0,          # 目標視窗控制代碼（聚焦用）
     "monitor": VIDEO_MONITOR,
     "fps": VIDEO_FPS,
     "bitrate": VIDEO_BITRATE_M,
@@ -33,11 +34,14 @@ _proc = None
 
 # ---------- 視窗列舉（給手機端挑選） ----------
 _user32 = ctypes.windll.user32
+_kernel32 = ctypes.windll.kernel32
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.c_void_p]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 
 
 def list_windows():
-    """回傳目前可見、有標題的頂層視窗標題清單。"""
-    titles = []
+    """回傳目前可見、有標題的頂層視窗 [{title, hwnd}]。"""
+    out = []
     proto = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
     def _cb(hwnd, _l):
@@ -49,13 +53,37 @@ def list_windows():
         buf = ctypes.create_unicode_buffer(n + 1)
         _user32.GetWindowTextW(hwnd, buf, n + 1)
         t = buf.value.strip()
-        # 濾掉自己與明顯的系統視窗
-        if t and t not in titles and t not in ("maple 遠端遊玩", "Program Manager"):
-            titles.append(t)
+        if t and t not in ("maple 遠端遊玩", "Program Manager") \
+           and not any(o["title"] == t for o in out):
+            out.append({"title": t, "hwnd": int(hwnd)})
         return True
 
     _user32.EnumWindows(proto(_cb), 0)
-    return titles
+    return out
+
+
+def focus_target():
+    """把目標視窗帶到前景，確保鍵鼠輸入送進該視窗（注視 = 對準目標）。
+
+    用 AttachThreadInput 突破 Windows 的前景視窗鎖，較可靠。"""
+    hwnd = int(state.get("hwnd") or 0)
+    if not hwnd or not _user32.IsWindow(hwnd):
+        return False
+    SW_RESTORE = 9
+    _user32.ShowWindow(hwnd, SW_RESTORE)
+    fg = _user32.GetForegroundWindow()
+    cur = _kernel32.GetCurrentThreadId()
+    fg_tid = _user32.GetWindowThreadProcessId(fg, None)
+    tgt_tid = _user32.GetWindowThreadProcessId(hwnd, None)
+    try:
+        if fg_tid:  _user32.AttachThreadInput(cur, fg_tid, True)
+        if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, True)
+        _user32.BringWindowToTop(hwnd)
+        _user32.SetForegroundWindow(hwnd)
+    finally:
+        if fg_tid:  _user32.AttachThreadInput(cur, fg_tid, False)
+        if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, False)
+    return True
 
 
 # ---------- ffmpeg 指令組裝 ----------
@@ -121,15 +149,20 @@ def restart():
     ensure_running()
 
 
-def apply(source=None, window=None, monitor=None, fps=None, bitrate=None):
-    """更新設定；若 ffmpeg 正在跑就以新參數重啟。"""
+def apply(source=None, window=None, hwnd=None, monitor=None, fps=None, bitrate=None):
+    """更新設定；若 ffmpeg 正在跑就以新參數重啟。切到視窗來源時自動聚焦該視窗。"""
     if source is not None:  state["source"] = "window" if source == "window" else "desktop"
     if window is not None:  state["window"] = str(window)
+    if hwnd is not None:
+        try: state["hwnd"] = int(hwnd)
+        except (TypeError, ValueError): pass
     if monitor is not None: state["monitor"] = max(1, int(monitor))
     if fps is not None:     state["fps"] = max(15, min(120, int(fps)))
     if bitrate is not None: state["bitrate"] = max(2, min(100, int(bitrate)))
     if is_running():
         restart()
+    if state["source"] == "window":
+        focus_target()      # 選定視窗 = 對準它，確保輸入送進去
     return dict(state)
 
 

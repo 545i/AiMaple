@@ -105,6 +105,7 @@
   </div>
 
   <div id="tools" style="display:none">
+    <div class="tool" id="focusBtn">🎯 對準</div>
     <div class="tool" id="watchBtn">👁 注視中</div>
     <div class="tool" id="screenBtn">🎬 畫面</div>
     <div class="tool" id="editBtn">⚙ 編輯</div>
@@ -217,30 +218,39 @@ $("#go").onclick = () => {
 
 // ===== WebRTC 影像（WHEP，MediaMTX :8889） =====
 let pc = null;
+function iceComplete(p){
+  return new Promise(res => {
+    if(p.iceGatheringState==="complete") return res();
+    const chk=()=>{ if(p.iceGatheringState==="complete"){ p.removeEventListener("icegatheringstatechange",chk); res(); } };
+    p.addEventListener("icegatheringstatechange", chk);
+    setTimeout(res, 1000);   // 保險
+  });
+}
+async function whepOnce(){
+  const p = new RTCPeerConnection();
+  p.addTransceiver("video", { direction:"recvonly" });
+  p.ontrack = e => { $("#video").srcObject = e.streams[0]; };
+  p.onconnectionstatechange = () => {
+    if(p===pc && ["failed","disconnected"].includes(p.connectionState) && watching)
+      setTimeout(()=>{ if(watching) startVideo(); }, 1500);
+  };
+  await p.setLocalDescription(await p.createOffer());
+  await iceComplete(p);
+  const url = `${location.protocol}//${location.hostname}:8889/screen/whep`;
+  const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/sdp" }, body: p.localDescription.sdp });
+  if(!r.ok){ p.close(); throw new Error("whep "+r.status); }
+  await p.setRemoteDescription({ type:"answer", sdp: await r.text() });
+  return p;
+}
 async function startVideo(){
   stopVideo();
   try{ await fetch(`/video/start?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(e){}
-  await new Promise(r => setTimeout(r, 700));   // 等 ffmpeg 推流上線
-  pc = new RTCPeerConnection();
-  pc.addTransceiver("video", { direction:"recvonly" });
-  pc.ontrack = e => { $("#video").srcObject = e.streams[0]; };
-  pc.onconnectionstatechange = () => {
-    if(pc && ["failed","disconnected"].includes(pc.connectionState) && watching)
-      setTimeout(()=>{ if(watching) startVideo(); }, 1500);
-  };
-  await pc.setLocalDescription(await pc.createOffer());
-  await new Promise(res => {                    // 等 ICE 收集完成(non-trickle)
-    if(pc.iceGatheringState==="complete") return res();
-    const chk=()=>{ if(pc.iceGatheringState==="complete"){ pc.removeEventListener("icegatheringstatechange",chk); res(); } };
-    pc.addEventListener("icegatheringstatechange", chk);
-    setTimeout(res, 800);                        // 保險：最多等 0.8s
-  });
-  const url = `${location.protocol}//${location.hostname}:8889/${"screen"}/whep`;
-  try{
-    const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/sdp" }, body: pc.localDescription.sdp });
-    if(!r.ok){ setStatus("影像連線失敗 "+r.status, false); return; }
-    await pc.setRemoteDescription({ type:"answer", sdp: await r.text() });
-  }catch(e){ setStatus("影像連線錯誤", false); }
+  // 重試：ffmpeg 需 1-2 秒才推流上線，逐次重試直到成功
+  for(let i=0; i<8 && watching; i++){
+    try{ pc = await whepOnce(); setStatus("已連線", true); return; }
+    catch(e){ setStatus(`影像連線中…(${i+1}/8)`, false); await new Promise(r=>setTimeout(r, 800)); }
+  }
+  if(watching) setStatus("影像連線失敗（檢查防火牆 8889 / Tailscale）", false);
 }
 function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; }
 
@@ -250,11 +260,15 @@ function setWatching(on){
   $("#watch").classList.toggle("show", !on);
   $("#watchBtn").classList.toggle("on", on);
   $("#watchBtn").textContent = on ? "👁 注視中" : "👁 已暫停";
-  if(on){ startVideo(); }
+  if(on){ startVideo(); if(cfg.source==="window") focusTarget(); }   // 注視 = 對準目標視窗
   else { stopVideo(); fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
+$("#focusBtn").onclick = async () => {   // 隨時把輸入焦點拉回目標視窗
+  const el=$("#focusBtn"); el.classList.add("on"); await focusTarget();
+  setTimeout(()=>el.classList.remove("on"), 400);
+};
 
 // ===== 編輯模式 =====
 $("#editBtn").onclick = () => {
@@ -351,8 +365,9 @@ function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:
 requestAnimationFrame(flush);
 
 // ===== 畫面設定（WebRTC：來源/視窗 / 螢幕 / FPS / 位元率） =====
-let cfg = { source:"desktop", window:"", monitor:1, fps:60, bitrate:25, monitor_count:1 };
+let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, monitor_count:1 };
 let windowsList = [];
+function focusTarget(){ return fetch(`/window/focus?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 function seg(on){ const s=document.createElement("div"); s.className="seg"+(on?" on":""); return s; }
 function renderScreenPanel(){
   // 來源
@@ -365,7 +380,7 @@ function renderScreenPanel(){
   $("#monRow").style.display = isWin ? "none" : "";
   if(isWin){ const w=$("#winSegs"); w.innerHTML="";
     if(!windowsList.length){ const e=document.createElement("div"); e.style.color="#888"; e.style.fontSize="13px"; e.textContent="（無視窗，請點『畫面』重新整理）"; w.appendChild(e); }
-    windowsList.forEach(t=>{ const s=seg(t===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=t; s.onclick=()=>{ cfg.window=t; renderScreenPanel(); }; w.appendChild(s); }); }
+    windowsList.forEach(o=>{ const s=seg(o.title===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=o.title; s.onclick=()=>{ cfg.window=o.title; cfg.hwnd=o.hwnd; renderScreenPanel(); }; w.appendChild(s); }); }
   else { const mon=$("#monSegs"); mon.innerHTML="";
     for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
   $("#fRange").value=cfg.fps; $("#fVal").textContent=cfg.fps;
@@ -383,6 +398,7 @@ $("#screenApply").onclick = async () => {
   try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
   $("#screen").classList.remove("on");
+  if(cfg.source==="window") focusTarget();                      // 對準所選視窗
   if(watching) setTimeout(()=>{ if(watching) setWatching(true); }, 1500);  // 等 ffmpeg 以新參數重啟
 };
 </script>

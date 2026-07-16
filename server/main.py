@@ -59,7 +59,10 @@ def _check(token):
 # ===== 首頁 =====
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(WEB, "index.html"))
+    return FileResponse(
+        os.path.join(WEB, "index.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 # ===== 影像備援：MJPEG 串流（WebRTC 不可用時才用；延遲較高） =====
@@ -99,7 +102,7 @@ async def set_video_config(request: Request, token: str = Query("")):
     _check(token)
     body = await request.json()
     return JSONResponse(video_pipeline.apply(
-        source=body.get("source"), window=body.get("window"),
+        source=body.get("source"), window=body.get("window"), hwnd=body.get("hwnd"),
         monitor=body.get("monitor"), fps=body.get("fps"), bitrate=body.get("bitrate"),
     ))
 
@@ -109,6 +112,13 @@ async def set_video_config(request: Request, token: str = Query("")):
 def list_windows(token: str = Query("")):
     _check(token)
     return JSONResponse({"windows": video_pipeline.list_windows()})
+
+
+# ===== 注視：把目標視窗帶到前景，確保鍵鼠輸入送進去 =====
+@app.post("/window/focus")
+def window_focus(token: str = Query("")):
+    _check(token)
+    return JSONResponse({"ok": video_pipeline.focus_target()})
 
 
 # ===== 影像啟動 / 停止（注視畫面時由前端呼叫） =====
