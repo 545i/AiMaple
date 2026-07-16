@@ -16,6 +16,9 @@
 
   #status { position:fixed; top:6px; left:10px; z-index:60; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
   #status.bad { color:#f55; }
+  #target { position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:55; font-size:12px;
+            color:#ffd479; background:rgba(0,0,0,.5); padding:3px 12px; border-radius:10px;
+            max-width:46vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:none; }
 
   /* 頂部工具列 */
   #tools { position:fixed; top:6px; right:10px; z-index:60; display:flex; gap:8px; }
@@ -97,6 +100,7 @@
 <body>
   <video id="video" autoplay muted playsinline></video>
   <div id="status" class="bad">未連線</div>
+  <div id="target">🎯 全螢幕</div>
 
   <div id="setup">
     <div style="font-size:22px;font-weight:700;">maple 遠端遊玩</div>
@@ -213,7 +217,7 @@ $("#go").onclick = () => {
   token = $("#token").value.trim(); if(!token) return;
   localStorage.setItem("maple_token", token);
   $("#setup").style.display="none"; $("#tools").style.display="flex";
-  refreshLabels(); setWatching(true); connect();
+  refreshLabels(); syncConfig(); setWatching(true); connect();
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
 
@@ -369,6 +373,9 @@ requestAnimationFrame(flush);
 let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, monitor_count:1 };
 let windowsList = [];
 function focusTarget(){ return fetch(`/window/focus?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
+function updateTarget(){ const t=$("#target"); t.style.display="block";
+  t.textContent = "🎯 " + (cfg.source==="window" && cfg.window ? cfg.window : "全螢幕"); }
+async function syncConfig(){ try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){} updateTarget(); }
 function seg(on){ const s=document.createElement("div"); s.className="seg"+(on?" on":""); return s; }
 function renderScreenPanel(){
   // 來源
@@ -398,6 +405,7 @@ $("#screenBtn").onclick = async () => {
 };
 $("#screenClose").onclick = () => $("#screen").classList.remove("on");
 async function applyVideo(){
+  updateTarget();
   try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
   if(cfg.source==="window") focusTarget();                      // 對準所選視窗
