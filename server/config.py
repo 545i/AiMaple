@@ -29,8 +29,17 @@ KM_VID = int(_env("MAPLE_KM_VID", "0"))   # 0 = 任意
 KM_PID = int(_env("MAPLE_KM_PID", "0"))
 MOUSE_SENSITIVITY = float(_env("MAPLE_MOUSE_SENS", "1.0"))  # 觸控拖曳→位移倍率
 
-# ===== 螢幕擷取 / 影像 =====
-CAPTURE_MONITOR = int(_env("MAPLE_MONITOR", "1"))  # mss 的螢幕編號，1=主螢幕
-CAPTURE_WIDTH = int(_env("MAPLE_WIDTH", "1280"))   # 縮放後寬度，越小越省頻寬
-JPEG_QUALITY = int(_env("MAPLE_JPEG_Q", "60"))     # 1-100，越低越省頻寬
+# ===== 影像(主力)：WebRTC via MediaMTX + ffmpeg NVENC =====
+# 這是低延遲主力管線。畫面設定即時調整會透過 MediaMTX 控制 API 重啟 ffmpeg。
+MEDIAMTX_API = _env("MAPLE_MTX_API", "http://127.0.0.1:9997")
+MEDIAMTX_PATH = _env("MAPLE_MTX_PATH", "screen")
+FFMPEG_BIN = _env("MAPLE_FFMPEG", "bin/ffmpeg/bin/ffmpeg.exe")  # 相對 maple 根目錄
+VIDEO_MONITOR = int(_env("MAPLE_VMON", "1"))    # 1=主螢幕（對應 ddagrab output_idx=0）
+VIDEO_FPS = int(_env("MAPLE_VFPS", "60"))
+VIDEO_BITRATE_M = int(_env("MAPLE_VBITRATE", "25"))  # Mbps
+
+# ===== 影像(備援)：MJPEG（mss 擷取，延遲較高，僅相容用） =====
+CAPTURE_MONITOR = int(_env("MAPLE_MONITOR", "1"))
+CAPTURE_WIDTH = int(_env("MAPLE_WIDTH", "1280"))
+JPEG_QUALITY = int(_env("MAPLE_JPEG_Q", "60"))
 TARGET_FPS = int(_env("MAPLE_FPS", "30"))

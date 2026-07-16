@@ -48,6 +48,11 @@ class ScreenCapture:
         self._thread.start()
         print(f"[Capture] 啟動 {self.settings()}")
 
+    def ensure_started(self):
+        """惰性啟動：只有真的有人用 MJPEG 備援時才開始擷取，平時不浪費 CPU。"""
+        if not self._running:
+            self.start()
+
     def _run(self):
         # mss 的 grab 必須在同一執行緒建立/使用
         with mss.mss() as sct:

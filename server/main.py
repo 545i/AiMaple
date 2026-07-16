@@ -21,6 +21,7 @@ from config import AUTH_TOKEN, HOST, PORT, TARGET_FPS, MOUSE_SENSITIVITY
 from arduino import ArduinoKeyboard
 from kmbox import KMouse
 from capture import ScreenCapture
+import video_pipeline
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -32,12 +33,18 @@ screen = ScreenCapture()
 
 @asynccontextmanager
 async def lifespan(app):
+    global mouse
     keyboard.start()
-    mouse.start()
-    screen.start()
+    if not mouse.start():
+        # 沒有 KMBox → 改用軟體滑鼠備援，讓觸控板仍可操控
+        from soft_mouse import SoftMouse
+        mouse = SoftMouse()
+        mouse.start()
+    # 影像主力為 WebRTC(MediaMTX+ffmpeg)，由 /video/start 啟動 ffmpeg。
     yield
     keyboard.close()
     mouse.close()
+    video_pipeline.stop()
     screen.stop()
 
 
@@ -55,10 +62,11 @@ def index():
     return FileResponse(os.path.join(WEB, "index.html"))
 
 
-# ===== 影像：MJPEG 串流 =====
+# ===== 影像備援：MJPEG 串流（WebRTC 不可用時才用；延遲較高） =====
 @app.get("/video")
 def video(token: str = Query("")):
     _check(token)
+    screen.ensure_started()
 
     async def gen():
         interval = 1.0 / max(1, TARGET_FPS)
@@ -74,12 +82,15 @@ def video(token: str = Query("")):
     )
 
 
-# ===== 畫面設定：讀取 / 即時調整 =====
+# ===== 畫面設定：讀取 / 即時調整（WebRTC 管線：螢幕 / FPS / 位元率） =====
 @app.get("/config/video")
 def get_video_config(token: str = Query("")):
     _check(token)
-    cfg = screen.settings()
-    cfg["monitor_count"] = screen.monitor_count()
+    cfg = video_pipeline.settings()
+    try:
+        cfg["monitor_count"] = screen.monitor_count()
+    except Exception:
+        cfg["monitor_count"] = 1
     return JSONResponse(cfg)
 
 
@@ -87,10 +98,43 @@ def get_video_config(token: str = Query("")):
 async def set_video_config(request: Request, token: str = Query("")):
     _check(token)
     body = await request.json()
-    return JSONResponse(screen.update(
-        monitor=body.get("monitor"), width=body.get("width"),
-        quality=body.get("quality"), fps=body.get("fps"),
+    return JSONResponse(video_pipeline.apply(
+        source=body.get("source"), window=body.get("window"),
+        monitor=body.get("monitor"), fps=body.get("fps"), bitrate=body.get("bitrate"),
     ))
+
+
+# ===== 視窗清單（供手機端挑選要擷取的視窗） =====
+@app.get("/windows")
+def list_windows(token: str = Query("")):
+    _check(token)
+    return JSONResponse({"windows": video_pipeline.list_windows()})
+
+
+# ===== 影像啟動 / 停止（注視畫面時由前端呼叫） =====
+@app.post("/video/start")
+def video_start(token: str = Query("")):
+    _check(token)
+    return JSONResponse({"ok": video_pipeline.ensure_running()})
+
+
+@app.post("/video/stop")
+def video_stop(token: str = Query("")):
+    _check(token)
+    video_pipeline.stop()
+    return JSONResponse({"ok": True})
+
+
+# ===== 狀態（硬體連線診斷） =====
+@app.get("/status")
+def status(token: str = Query("")):
+    _check(token)
+    return JSONResponse({
+        "keyboard": {"arduino": getattr(keyboard, "connected", False)},
+        "mouse": {"connected": getattr(mouse, "connected", False),
+                  "software": getattr(mouse, "software", False)},
+        "video": video_pipeline.settings(),
+    })
 
 
 # ===== 輸入：WebSocket =====

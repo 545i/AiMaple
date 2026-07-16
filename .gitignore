@@ -19,3 +19,10 @@ Thumbs.db
 # 暫存
 scratch_*
 *.log
+
+# 大型第三方二進位（用 scripts/fetch-bin.ps1 下載，不進版控）
+/bin/
+
+# MediaMTX 自動產生的憑證
+auto.crt
+auto.key
