@@ -51,6 +51,14 @@
                    background:#d33; color:#fff; font-size:13px; display:none; align-items:center; justify-content:center; }
   #pad .btn.editing .del { display:flex; }
 
+  /* 桌面(電腦)模式：隱藏虛擬按鍵/觸控板/編輯，直接捕捉實體鍵鼠 */
+  body.desktop #pad, body.desktop #look, body.desktop #padbg,
+  body.desktop #editBtn, body.desktop #addBtn { display:none !important; }
+  #deskhint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:45;
+              display:none; font-size:14px; color:#fff; background:rgba(0,0,0,.6);
+              padding:8px 18px; border-radius:12px; pointer-events:none; }
+  body.desktop #deskhint.show { display:block; }
+
   /* 注視覆蓋層 */
   #watch { position:fixed; z-index:40; display:none; align-items:center; justify-content:center; inset:0; }
   #watch.show { display:flex; }
@@ -105,6 +113,7 @@
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
+  <div id="deskhint">點擊畫面開始操控鍵鼠　·　Esc 釋放</div>
 
   <div id="watch"><button id="watchResume">👁 注視畫面</button></div>
 
@@ -122,6 +131,7 @@
       <div class="seg" data-preset="quality">畫質</div>
       <div class="seg" data-preset="smooth">流暢</div>
       <div class="seg" data-preset="fast">快速</div>
+      <div class="seg" data-preset="turbo">急速</div>
     </div></div>
     <div class="field"><label>來源</label><div class="segs" id="srcSegs"></div></div>
     <div class="field" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:28vh;overflow:auto"></div></div>
@@ -414,6 +424,7 @@ const PRESETS = {
   quality: { scale:1920, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
   smooth:  { scale:1280, fps:60, bitrate:15, gray:0 },   // 流暢：720p 平衡
   fast:    { scale:960,  fps:60, bitrate:8,  gray:0 },   // 快速：540p 低延遲省頻寬
+  turbo:   { scale:640,  fps:60, bitrate:4,  gray:1 },   // 急速：更低畫質 + 黑白，最省
 };
 document.querySelectorAll("#presetSegs .seg").forEach(el => {
   el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); $("#screen").classList.remove("on"); applyVideo(); };
@@ -427,6 +438,52 @@ async function applyVideo(){
 $("#screenApply").onclick = () => { $("#screen").classList.remove("on"); applyVideo(); };
 
 renderButtons();
+
+// ===== 桌面(電腦)模式：直接捕捉實體鍵盤 + 滑鼠(Pointer Lock)，類似遠端桌面 =====
+const isTouch = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
+if(!isTouch){
+  document.body.classList.add("desktop");
+  const video = $("#video");
+  let capturing = false;
+  const held = new Set();
+  const connected = () => $("#tools").style.display !== "none";
+
+  function codeToToken(code){
+    if(/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+    if(/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if(/^Numpad[0-9]$/.test(code)) return "num"+code.slice(6);
+    if(/^F([1-9]|1[0-2])$/.test(code)) return code.toLowerCase();
+    const m={Space:"space",Enter:"enter",NumpadEnter:"enter",Tab:"tab",Escape:"esc",Backspace:"backspace",
+      ArrowLeft:"left",ArrowRight:"right",ArrowUp:"up",ArrowDown:"down",
+      Home:"home",End:"end",PageUp:"pageup",PageDown:"pagedown",Insert:"insert",Delete:"delete",
+      ShiftLeft:"shift",ShiftRight:"shift",ControlLeft:"ctrl",ControlRight:"ctrl",AltLeft:"alt",AltRight:"alt"};
+    return m[code]||null;
+  }
+  const lock = () => { if(video.requestPointerLock) video.requestPointerLock(); };
+  const showHint = () => { if(connected()) $("#deskhint").classList.toggle("show", !capturing); };
+
+  document.addEventListener("pointerlockchange", () => {
+    capturing = (document.pointerLockElement === video);
+    if(!capturing){ held.forEach(k=>send({t:"ku",k})); held.clear(); }  // 釋放焦點時放開所有鍵
+    showHint();
+  });
+  document.addEventListener("mousedown", e => {
+    if(!connected()) return;
+    if(!capturing){ lock(); return; }                 // 未捕捉 → 點一下鎖定
+    const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"md",b});
+  });
+  document.addEventListener("mouseup", e => { if(!capturing) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
+  document.addEventListener("mousemove", e => { if(!capturing) return;
+    const dx=e.movementX, dy=e.movementY; if(dx||dy) send({t:"mm",dx,dy}); });   // 實體滑鼠原速(相對)
+  document.addEventListener("contextmenu", e => { if(connected()) e.preventDefault(); });
+  document.addEventListener("keydown", e => {
+    if(!capturing) return; const t=codeToToken(e.code); if(!t) return;
+    e.preventDefault(); if(!held.has(t)){ held.add(t); send({t:"kd",k:t}); } });
+  document.addEventListener("keyup", e => {
+    if(!capturing) return; const t=codeToToken(e.code); if(!t) return;
+    e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
+  setTimeout(showHint, 800);
+}
 </script>
 </body>
 </html>
