@@ -37,6 +37,14 @@ FFMPEG_BIN = _env("MAPLE_FFMPEG", "bin/ffmpeg/bin/ffmpeg.exe")  # 相對 maple �
 VIDEO_MONITOR = int(_env("MAPLE_VMON", "1"))    # 1=主螢幕（對應 ddagrab output_idx=0）
 VIDEO_FPS = int(_env("MAPLE_VFPS", "60"))
 VIDEO_BITRATE_M = int(_env("MAPLE_VBITRATE", "25"))  # Mbps
+# 延遲/抗丟包調校(P0)：
+#  - INTRA_REFRESH：用「週期性條帶內更新」取代每 2 秒一次的 IDR 關鍵影格，
+#    行動網路丟包或新觀眾加入都在一個刷新週期(≈1 秒)內恢復，I-frame 衝擊被攤平。
+#    若手機端出現無法起始/黑畫面，設 MAPLE_INTRA_REFRESH=0 即退回傳統 IDR。
+#  - VBV_FRAMES：VBV 緩衝 = 幾個影格(原本≈1 秒)。越小編碼端排隊延遲越低，
+#    代價是畫質波動變大。2 個影格是低延遲的安全值。
+VIDEO_INTRA_REFRESH = _env("MAPLE_INTRA_REFRESH", "1") == "1"
+VIDEO_VBV_FRAMES = max(1, int(_env("MAPLE_VBV_FRAMES", "2")))
 
 # ===== 影像(備援)：MJPEG（mss 擷取，延遲較高，僅相容用） =====
 CAPTURE_MONITOR = int(_env("MAPLE_MONITOR", "1"))

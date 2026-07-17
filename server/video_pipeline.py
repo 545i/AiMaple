@@ -12,7 +12,8 @@ from ctypes import wintypes
 import os
 import subprocess
 
-from config import MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M
+from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M,
+                    VIDEO_INTRA_REFRESH, VIDEO_VBV_FRAMES)
 
 # 讓本程序 DPI-aware，GetWindowRect 才會回傳正確的實體像素座標（超寬/縮放螢幕才不會偏）
 try:
@@ -228,12 +229,24 @@ def focus_target():
 
 # ---------- ffmpeg 指令組裝 ----------
 def _encode_args(fps, bitrate):
-    return [
+    fps = int(fps)
+    # 低延遲 VBV：緩衝壓到約 VIDEO_VBV_FRAMES 個影格(原本 = bitrate 即 ≈1 秒)，
+    # 減少編碼端排隊延遲。單位 kbit：bitrate(Mbps)*1000 / fps * 幀數。
+    bufk = max(64, int(bitrate * 1000 / max(fps, 1) * VIDEO_VBV_FRAMES))
+    enc = [
         "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll", "-rc", "cbr",
-        "-b:v", f"{bitrate}M", "-maxrate", f"{bitrate}M", "-bufsize", f"{bitrate}M",
-        "-bf", "0", "-g", str(int(fps) * 2), "-delay", "0", "-fps_mode", "cfr",
-        "-f", "rtsp", "-rtsp_transport", "tcp", _RTSP,
+        "-b:v", f"{bitrate}M", "-maxrate", f"{bitrate}M", "-bufsize", f"{bufk}k",
+        "-bf", "0", "-delay", "0", "-fps_mode", "cfr",
     ]
+    if VIDEO_INTRA_REFRESH:
+        # 週期性條帶內更新取代 IDR：每 fps 幀(≈1 秒)完成一輪刷新，丟包/新觀眾
+        # 加入都在一輪內恢復，不必等下一個關鍵影格；I-frame 頻寬尖峰也被攤平。
+        enc += ["-intra-refresh", "1", "-g", str(fps)]
+    else:
+        # 傳統 IDR：關鍵影格間隔由 2 秒縮短為 1 秒，worst-case 花屏/等待減半。
+        enc += ["-g", str(fps), "-strict_gop", "1"]
+    enc += ["-f", "rtsp", "-rtsp_transport", "tcp", _RTSP]
+    return enc
 
 
 def _build_args():

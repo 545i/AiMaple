@@ -53,9 +53,26 @@ mouse = KMouse()
 screen = ScreenCapture()
 
 
+def _check_token_strength():
+    """啟動時檢查 token(P0-4)。預設弱 token = 任何連得到本機的人都能操控電腦。
+    預設只警告(不擋，避免破壞既有 start 流程)；設 MAPLE_STRICT_TOKEN=1 則直接拒啟。"""
+    if AUTH_TOKEN != "change-me-please":
+        return
+    line = "=" * 60
+    # 注意：訊息只用 ASCII 記號 + Big5 可編碼的中文，避免 Windows cp950 主控台
+    # 遇到 emoji/符號(如 U+26A0)時 print 拋 UnicodeEncodeError 反而讓守衛崩潰。
+    print(f"\n{line}\n[!] 警告：正在使用預設 token 'change-me-please'！\n"
+          "    任何能連到本機(0.0.0.0)的人都能操控你的電腦。\n"
+          "    請設定環境變數 MAPLE_TOKEN=<自訂隨機字串> 後重啟。\n"
+          f"{line}\n")
+    if os.environ.get("MAPLE_STRICT_TOKEN") == "1":
+        raise RuntimeError("拒絕以預設 token 啟動(MAPLE_STRICT_TOKEN=1)")
+
+
 @asynccontextmanager
 async def lifespan(app):
     global mouse
+    _check_token_strength()
     keyboard.start()
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
