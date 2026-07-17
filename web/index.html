@@ -13,6 +13,8 @@
                        transform:translate(-50%,-50%) rotate(90deg); }
 
   #video { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
+  /* 畫質切換遮罩：凍結最後一格畫面蓋住 ffmpeg 重啟+WHEP 重連的空窗，避免黑屏 */
+  #freeze { position:fixed; inset:0; width:100%; height:100%; z-index:1; object-fit:contain; display:none; pointer-events:none; }
 
   /* 連線畫面 */
   #setup { position:fixed; inset:0; z-index:100; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
@@ -32,9 +34,9 @@
 
   /* 滑鼠觸控板區（依佈局定位） */
   .look { position:fixed; z-index:8; pointer-events:auto; }
-  body.lay-land #video{ inset:0; width:100%; height:100%; }
+  body.lay-land #video, body.lay-land #freeze{ inset:0; width:100%; height:100%; }
   body.lay-land .look{ left:24%; right:24%; top:0; bottom:0; }
-  body.lay-port #video{ inset:auto; top:0; left:0; width:100%; height:36vh; }
+  body.lay-port #video, body.lay-port #freeze{ inset:auto; top:0; left:0; width:100%; height:36vh; }
   body.lay-port .look{ left:auto; right:auto; bottom:auto; top:0; left:0; width:100%; height:36vh; }
 
   /* 自由擺放按鈕 */
@@ -111,6 +113,7 @@
 <body>
  <div id="stage">
   <video id="video" autoplay muted playsinline></video>
+  <canvas id="freeze"></canvas>
   <div id="padbg"></div>
   <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
@@ -334,10 +337,25 @@ function iceComplete(p){ return new Promise(res => {
   if(p.iceGatheringState==="complete") return res();
   const chk=()=>{ if(p.iceGatheringState==="complete"){ p.removeEventListener("icegatheringstatechange",chk); res(); } };
   p.addEventListener("icegatheringstatechange", chk); setTimeout(res, 1000); }); }
+// 畫質切換遮罩:凍結最後一格 → 蓋住重連空窗 → 新串流第一格到就撤掉(避免黑屏)
+function freezeNow(){
+  const v=$("#video"), c=$("#freeze");
+  if(!v.videoWidth || !v.videoHeight) return;   // 沒畫面可凍就跳過(維持原本行為)
+  c.width=v.videoWidth; c.height=v.videoHeight;
+  try{ c.getContext("2d").drawImage(v,0,0,c.width,c.height); c.style.display="block"; }
+  catch(_){}
+}
+function unfreeze(){ $("#freeze").style.display="none"; }
+function onFirstFrame(v, cb){
+  let done=false; const fin=()=>{ if(!done){ done=true; cb(); } };
+  if(v.requestVideoFrameCallback){ try{ v.requestVideoFrameCallback(()=>fin()); }catch(_){} }
+  v.addEventListener("playing", ()=>setTimeout(fin,120), { once:true });
+  setTimeout(fin, 2500);   // 保底:無論如何最多凍 2.5 秒
+}
 async function whepOnce(){
   const p = new RTCPeerConnection();
   p.addTransceiver("video", { direction:"recvonly" });
-  p.ontrack = e => { $("#video").srcObject = e.streams[0]; };
+  p.ontrack = e => { const v=$("#video"); v.srcObject = e.streams[0]; onFirstFrame(v, unfreeze); };
   p.onconnectionstatechange = () => {
     if(p===pc && ["failed","disconnected"].includes(p.connectionState) && watching)
       setTimeout(()=>{ if(watching) startVideo(); }, 1500); };
@@ -367,7 +385,7 @@ function setWatching(on){
   $("#watchBtn").classList.toggle("on", on);
   $("#watchBtn").textContent = on ? "👁 注視中" : "👁 已暫停";
   if(on){ startVideo(); if(cfg.source==="window") focusTarget(); }
-  else { stopVideo(); fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
+  else { unfreeze(); stopVideo(); fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
@@ -547,6 +565,7 @@ document.querySelectorAll("#presetSegs .seg").forEach(el => {
 });
 async function applyVideo(){
   updateTarget();
+  if(watching) freezeNow();   // 先凍住當前畫面,蓋住接下來 ffmpeg 重啟+WHEP 重連的空窗
   try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
   if(cfg.source==="window") focusTarget();
   if(watching) setTimeout(()=>{ if(watching) setWatching(true); }, 1500);
