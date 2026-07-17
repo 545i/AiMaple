@@ -352,10 +352,22 @@ function onFirstFrame(v, cb){
   v.addEventListener("playing", ()=>setTimeout(fin,120), { once:true });
   setTimeout(fin, 2500);   // 保底:無論如何最多凍 2.5 秒
 }
+// 低延遲:壓低接收端抖動緩衝。WebRTC 預設會為了流暢自動堆高緩衝(可達數十~數百 ms)。
+// VIDEO_JITTER_MS=0 = 盡量最小(最低延遲);若手機/弱網下變頓,可調高(如 100)換平順。
+// 註:jitterBufferTarget 是新標準(Chrome 114+)，playoutDelayHint 是舊版(Chromium)。
+// iOS Safari 目前兩者多半不支援 → 對 iPhone 可能無效，但對電腦 Chrome 有效，且無害。
+const VIDEO_JITTER_MS = 0;
+function lowLatency(receiver){
+  if(!receiver) return;
+  try{
+    if("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = VIDEO_JITTER_MS;         // ms
+    else if("playoutDelayHint" in receiver) receiver.playoutDelayHint = VIDEO_JITTER_MS/1000;   // 秒
+  }catch(_){}
+}
 async function whepOnce(){
   const p = new RTCPeerConnection();
   p.addTransceiver("video", { direction:"recvonly" });
-  p.ontrack = e => { const v=$("#video"); v.srcObject = e.streams[0]; onFirstFrame(v, unfreeze); };
+  p.ontrack = e => { const v=$("#video"); v.srcObject = e.streams[0]; lowLatency(e.receiver); onFirstFrame(v, unfreeze); };
   p.onconnectionstatechange = () => {
     if(p===pc && ["failed","disconnected"].includes(p.connectionState) && watching)
       setTimeout(()=>{ if(watching) startVideo(); }, 1500); };
