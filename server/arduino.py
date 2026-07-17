@@ -79,25 +79,63 @@ class ArduinoKeyboard:
         self._worker.start()
         return True
 
+    @staticmethod
+    def _parse_mmove(cmd):
+        try:
+            x, y = cmd[6:].split(",", 1)
+            return int(x), int(y)
+        except Exception:
+            return 0, 0
+
+    def _write_cmd(self, cmd):
+        if not self.connected or self._ser is None:
+            return
+        try:
+            self._ser.write((cmd + "\n").encode())
+            if ARDUINO_WAIT_ACK:
+                self._ser.readline()           # 等 OK/ERR（較可靠、較慢）
+            elif self._ser.in_waiting:
+                self._ser.read(self._ser.in_waiting)   # 射後不理：讀掉緩衝避免累積
+        except Exception as e:
+            print(f"[Arduino] 送出錯誤: {e}")
+            self.connected = False
+
     def _run(self):
-        """單一 worker：從佇列取指令、依序送出。"""
+        """單一 worker：從佇列取指令、依序送出。
+
+        會把『連續的』MMOVE 合併成一筆再送：觸控拖曳會產生大量高頻 MMOVE，
+        115200 序列埠追不上就會在無界佇列裡越積越多、延遲只增不減。合併後
+        等效於用序列埠能負荷的速率送出「累加位移」，位移總量不變(韌體會自動
+        切成 ±127 分段)。遇到非 MMOVE(按鍵/滑鼠鍵/滾輪)即停止合併，確保順序不變。"""
         while True:
             cmd = self._q.get()
             if cmd is None:
                 break
-            if not self.connected or self._ser is None:
-                continue
-            try:
-                self._ser.write((cmd + "\n").encode())
-                if ARDUINO_WAIT_ACK:
-                    self._ser.readline()       # 等 OK/ERR（較可靠、較慢）
-                else:
-                    # 射後不理：仍讀掉緩衝避免累積，但不等待
-                    if self._ser.in_waiting:
-                        self._ser.read(self._ser.in_waiting)
-            except Exception as e:
-                print(f"[Arduino] 送出錯誤: {e}")
-                self.connected = False
+            if isinstance(cmd, str) and cmd.startswith("MMOVE:"):
+                dx, dy = self._parse_mmove(cmd)
+                trailing = None      # 合併時撞到的非 MMOVE 指令(合併送完後接著送)
+                closing = False
+                while True:
+                    try:
+                        nxt = self._q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if nxt is None:
+                        closing = True
+                        break
+                    if nxt.startswith("MMOVE:"):
+                        ndx, ndy = self._parse_mmove(nxt)
+                        dx += ndx; dy += ndy
+                    else:
+                        trailing = nxt
+                        break
+                self._write_cmd(f"MMOVE:{dx},{dy}")
+                if trailing is not None:
+                    self._write_cmd(trailing)
+                if closing:
+                    break
+            else:
+                self._write_cmd(cmd)
 
     def tap(self, key):
         self._q.put(_token(key))

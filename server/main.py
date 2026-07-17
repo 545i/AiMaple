@@ -272,8 +272,13 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
                 msg = json.loads(raw)
             except Exception:
                 continue
-            # 輸入分派本身很快(佇列/DLL 呼叫)，直接在事件迴圈執行即可
-            _dispatch(msg)
+            # 輸入分派本身很快(佇列/DLL 呼叫)，直接在事件迴圈執行即可。
+            # 必須 try/except：否則單筆訊息讓 _dispatch 拋例外就會衝出迴圈、
+            # 關閉整條 WS(手機顯示「斷線,重連中」，重連又被下一筆踢掉)。
+            try:
+                _dispatch(msg)
+            except Exception as e:
+                print(f"[WS] dispatch 錯誤(已忽略): {e!r} msg={msg}")
     except WebSocketDisconnect:
         print("[WS] 客戶端離線")
     finally:
