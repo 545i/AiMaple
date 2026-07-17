@@ -194,6 +194,10 @@ def _dispatch(msg):
         mouse.move_relative_smooth(msg.get("dx", 0) * MOUSE_SENSITIVITY,
                                    msg.get("dy", 0) * MOUSE_SENSITIVITY)
         video_pipeline.clamp_cursor()
+    elif t == "ma":       # 絕對映射(電腦端)：目標與目前游標的差值，用相對移動精準定位
+        d = video_pipeline.abs_delta(msg.get("x", 0), msg.get("y", 0))
+        if d and (d[0] or d[1]):
+            mouse.move_relative(*d)
     elif t == "md":
         mouse.button_down(msg.get("b", "left"))
     elif t == "mu":

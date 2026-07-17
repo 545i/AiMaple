@@ -112,6 +112,33 @@ def cursor_norm():
     return (nx, ny)
 
 
+def abs_target(nx, ny):
+    """把擷取區內的正規化座標 (0-1) 轉成絕對螢幕座標(給絕對滑鼠映射用)。"""
+    try:
+        nx = max(0.0, min(1.0, float(nx))); ny = max(0.0, min(1.0, float(ny)))
+    except (TypeError, ValueError):
+        return None
+    if state["source"] == "window" and state["hwnd"] and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        r = _abs_rect(state["hwnd"])
+        return int(r.left + nx * (r.right - r.left)), int(r.top + ny * (r.bottom - r.top))
+    # 全螢幕：用主螢幕矩形
+    mi = _MONITORINFO(); mi.cbSize = ctypes.sizeof(_MONITORINFO)
+    _user32.GetMonitorInfoW(_user32.MonitorFromPoint(_POINT(0, 0), 1), ctypes.byref(mi))  # 1=PRIMARY
+    m = mi.rcMonitor
+    return int(m.left + nx * (m.right - m.left)), int(m.top + ny * (m.bottom - m.top))
+
+
+def abs_delta(nx, ny):
+    """回傳從『目前游標』到『目標絕對座標』的相對位移(dx,dy)。
+    硬體滑鼠(KMBox)只能相對移動，用此差值 MoveR 即可精準定位(加速需關閉)。"""
+    tgt = abs_target(nx, ny)
+    if not tgt:
+        return None
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))
+    return tgt[0] - pt.x, tgt[1] - pt.y
+
+
 def clamp_cursor():
     """把游標鎖在目標視窗內（參考 Steam 串流，游標不可超出視窗）。僅視窗來源時作用。"""
     if state["source"] != "window" or not state["hwnd"]:

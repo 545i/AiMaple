@@ -125,7 +125,7 @@
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
-  <div id="deskhint">點擊畫面開始操控鍵鼠　·　Esc 釋放</div>
+  <div id="deskhint">滑鼠移到遊戲畫面上即可操控（移開自動釋放）</div>
 
   <div id="watch"><button id="watchResume">👁 注視畫面</button></div>
 
@@ -512,14 +512,16 @@ $("#screenApply").onclick = () => { closeMenu(); applyVideo(); };
 
 renderButtons();
 
-// ===== 桌面(電腦)模式：直接捕捉實體鍵盤 + 滑鼠(Pointer Lock)，類似遠端桌面 =====
+// ===== 桌面(電腦)模式：絕對映射 + 滑鼠在影像內自動捕捉(免 Esc、免鎖定) =====
 const isTouch = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
 if(!isTouch){
   document.body.classList.add("desktop");
   const video = $("#video");
-  let capturing = false;
   const held = new Set();
+  let overVideo = false;
   const connected = () => $("#menuBtn").style.display !== "none";
+  const uiBlocking = () => $("#menu").classList.contains("on") || $("#picker").classList.contains("on") || $("#setup").style.display!=="none";
+  const active = () => connected() && !uiBlocking();
 
   function codeToToken(code){
     if(/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
@@ -532,30 +534,45 @@ if(!isTouch){
       ShiftLeft:"shift",ShiftRight:"shift",ControlLeft:"ctrl",ControlRight:"ctrl",AltLeft:"alt",AltRight:"alt"};
     return m[code]||null;
   }
-  const lock = () => { if(video.requestPointerLock) video.requestPointerLock(); };
-  const showHint = () => { if(connected()) $("#deskhint").classList.toggle("show", !capturing); };
+  // 影像內容(object-fit:contain)中的正規化座標；不在內容內回 null
+  function videoNorm(e){
+    const vw=video.videoWidth, vh=video.videoHeight; if(!vw||!vh) return null;
+    const r=video.getBoundingClientRect();
+    const scale=Math.min(r.width/vw, r.height/vh);
+    const dw=vw*scale, dh=vh*scale;
+    const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;
+    const nx=(e.clientX-ox)/dw, ny=(e.clientY-oy)/dh;
+    if(nx<0||nx>1||ny<0||ny>1) return null;
+    return [+nx.toFixed(4), +ny.toFixed(4)];
+  }
+  const releaseKeys = () => { held.forEach(k=>send({t:"ku",k})); held.clear(); };
+  function setOver(on){
+    if(on===overVideo) return;
+    overVideo=on;
+    $("#deskhint").classList.toggle("show", connected() && !on);
+    if(!on) releaseKeys();     // 移出影像 → 自動釋放鍵盤
+  }
 
-  document.addEventListener("pointerlockchange", () => {
-    capturing = (document.pointerLockElement === video);
-    if(!capturing){ held.forEach(k=>send({t:"ku",k})); held.clear(); }  // 釋放焦點時放開所有鍵
-    showHint();
+  document.addEventListener("mousemove", e => {
+    if(!active()){ setOver(false); return; }
+    const n=videoNorm(e); setOver(!!n);
+    if(n) send({t:"ma", x:n[0], y:n[1]});          // 絕對映射
   });
   document.addEventListener("mousedown", e => {
-    if(!connected()) return;
-    if(!capturing){ lock(); return; }                 // 未捕捉 → 點一下鎖定
+    if(!active()||!overVideo) return;
+    const n=videoNorm(e); if(n) send({t:"ma", x:n[0], y:n[1]});
     const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"md",b});
   });
-  document.addEventListener("mouseup", e => { if(!capturing) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
-  document.addEventListener("mousemove", e => { if(!capturing) return;
-    const dx=e.movementX, dy=e.movementY; if(dx||dy) send({t:"mm",dx,dy}); });   // 實體滑鼠原速(相對)
-  document.addEventListener("contextmenu", e => { if(connected()) e.preventDefault(); });
+  document.addEventListener("mouseup", e => { if(!overVideo) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
+  document.addEventListener("contextmenu", e => { if(active()&&overVideo) e.preventDefault(); });
+  window.addEventListener("blur", ()=> setOver(false));    // 視窗失焦 → 釋放
   document.addEventListener("keydown", e => {
-    if(!capturing) return; const t=codeToToken(e.code); if(!t) return;
+    if(!active()||!overVideo) return; const t=codeToToken(e.code); if(!t) return;
     e.preventDefault(); if(!held.has(t)){ held.add(t); send({t:"kd",k:t}); } });
   document.addEventListener("keyup", e => {
-    if(!capturing) return; const t=codeToToken(e.code); if(!t) return;
+    if(!overVideo) return; const t=codeToToken(e.code); if(!t) return;
     e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
-  setTimeout(showHint, 800);
+  setTimeout(()=>{ if(connected()) $("#deskhint").classList.add("show"); }, 800);
 }
 
 applyLayout();   // 依裝置/鎖定套用直橫佈局並繪製按鈕

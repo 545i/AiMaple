@@ -48,6 +48,9 @@ class SoftMouse:
     def move_relative(self, dx, dy):
         _send(MOUSEEVENTF_MOVE, int(dx), int(dy))
 
+    def move_to(self, x, y):
+        _user32.SetCursorPos(int(x), int(y))   # 絕對移動(軟體)
+
     def move_relative_smooth(self, dx, dy, delay=8, delta=10):
         _send(MOUSEEVENTF_MOVE, int(dx), int(dy))
 
