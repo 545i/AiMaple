@@ -21,7 +21,9 @@ from config import AUTH_TOKEN, HOST, PORT, TARGET_FPS, MOUSE_SENSITIVITY
 from arduino import ArduinoKeyboard
 from kmbox import KMouse
 from capture import ScreenCapture
+from soft_mouse import wheel as soft_wheel
 import video_pipeline
+import clipboard
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -156,6 +158,14 @@ def video_stop(token: str = Query("")):
     return JSONResponse({"ok": True})
 
 
+# ===== 剪貼簿：把操作端文字複製到被控端(主機) =====
+@app.post("/clipboard")
+async def set_clip(request: Request, token: str = Query("")):
+    _check(token)
+    body = await request.json()
+    return JSONResponse({"ok": clipboard.set_clipboard(body.get("text", ""))})
+
+
 # ===== 狀態（硬體連線診斷） =====
 @app.get("/status")
 def status(token: str = Query("")):
@@ -198,6 +208,13 @@ def _dispatch(msg):
         d = video_pipeline.abs_delta(msg.get("x", 0), msg.get("y", 0))
         if d and (d[0] or d[1]):
             mouse.move_relative(*d)
+    elif t == "mw":       # 滾輪：優先 Arduino 硬體(反作弊安全)，否則軟體
+        n = int(msg.get("d", 0))
+        if n:
+            if getattr(keyboard, "connected", False):
+                keyboard.wheel(n)
+            else:
+                soft_wheel(n * 120)
     elif t == "md":
         mouse.button_down(msg.get("b", "left"))
     elif t == "mu":

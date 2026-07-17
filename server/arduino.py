@@ -48,15 +48,29 @@ class ArduinoKeyboard:
         self._worker = None
         self.connected = False
 
+    def _detect_port(self):
+        """自動找 Arduino 的序列埠(依描述/VID)，避免燒錄後埠號變動。"""
+        try:
+            import serial.tools.list_ports as lp
+        except Exception:
+            return None
+        for p in lp.comports():
+            s = f"{p.description} {p.hwid} {p.manufacturer}".upper()
+            if "ARDUINO" in s or "LEONARDO" in s or "VID:PID=2341" in s or "2341:" in s:
+                return p.device
+        return None
+
     def start(self):
         if serial is None:
             print("[Arduino] pyserial 未安裝，鍵盤停用")
             return False
+        port = self._detect_port() or self.port    # 自動偵測，找不到才用設定值
         try:
-            self._ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self._ser = serial.Serial(port, self.baud, timeout=0.05)
+            self.port = port
             time.sleep(2)  # 等 Arduino 重置
             self.connected = True
-            print(f"[Arduino] 已連線 {self.port}")
+            print(f"[Arduino] 已連線 {port}")
         except Exception as e:
             print(f"[Arduino] 連線失敗: {e}")
             self.connected = False
@@ -87,6 +101,17 @@ class ArduinoKeyboard:
 
     def tap(self, key):
         self._q.put(_token(key))
+
+    # ===== 滑鼠(硬體 HID，需燒錄 arduino_kbm 韌體) =====
+    def wheel(self, n):
+        self._q.put(f"WHEEL:{int(n)}")            # 滾輪 n 格(正=上/前)
+
+    def mouse_move(self, dx, dy):
+        self._q.put(f"MMOVE:{int(dx)},{int(dy)}")
+
+    def mouse_button(self, button, down):
+        b = {"left": "L", "right": "R", "middle": "M"}.get(button, "L")
+        self._q.put(("MDOWN:" if down else "MUP:") + b)
 
     def key_down(self, key):
         self._q.put("DOWN:" + _token(key))

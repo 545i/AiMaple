@@ -11,6 +11,7 @@ from ctypes import wintypes
 _user32 = ctypes.windll.user32
 
 MOUSEEVENTF_MOVE       = 0x0001
+MOUSEEVENTF_WHEEL      = 0x0800
 MOUSEEVENTF_LEFTDOWN   = 0x0002
 MOUSEEVENTF_LEFTUP     = 0x0004
 MOUSEEVENTF_RIGHTDOWN  = 0x0008
@@ -32,9 +33,15 @@ class _INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("mi", _MOUSEINPUT)]
 
 
-def _send(flags, dx=0, dy=0):
-    inp = _INPUT(type=0, mi=_MOUSEINPUT(dx, dy, 0, flags, 0, None))
+def _send(flags, dx=0, dy=0, data=0):
+    inp = _INPUT(type=0, mi=_MOUSEINPUT(dx, dy, data & 0xFFFFFFFF, flags, 0, None))
     _user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
+
+
+def wheel(amount):
+    """滾輪(軟體 SendInput)。amount 正=上/前，負=下。km.dll 無滾輪，滾輪只能走軟體。
+    注意：軟體注入，反作弊(如楓之谷)可能擋；要硬體需擴充 Arduino 韌體。"""
+    _send(MOUSEEVENTF_WHEEL, 0, 0, int(amount))
 
 
 class SoftMouse:

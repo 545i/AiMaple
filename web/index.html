@@ -104,6 +104,7 @@
   .seg { padding:7px 11px; border-radius:8px; background:#2a2b33; border:1px solid #3a3d48; font-size:13px; }
   .seg.on { background:#3a7; color:#fff; border-color:#3a7; }
   .mapply { width:100%; margin-top:18px; padding:13px; border:none; border-radius:10px; background:#3a7; color:#fff; font-size:15px; }
+  #clipText { width:100%; box-sizing:border-box; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:8px; font-size:14px; resize:vertical; }
   body.desktop #editRow, body.desktop #layRow { display:none; }
 </style>
 </head>
@@ -171,6 +172,14 @@
       <div class="mrow"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
       <div class="mrow"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
       <button class="mapply" id="screenApply">套用畫面設定</button>
+
+      <div class="msec">剪貼簿（操作端 → 主機）</div>
+      <textarea id="clipText" placeholder="在此輸入或貼上文字，傳到主機剪貼簿…" rows="3"></textarea>
+      <div class="mgrid2">
+        <div class="mbtn" id="clipRead">讀取本機剪貼簿</div>
+        <div class="mbtn" id="clipSend">傳送到主機</div>
+      </div>
+      <div id="clipMsg" style="font-size:12px;color:#7fe0b0;margin-top:6px;min-height:16px"></div>
     </div>
   </div>
  </div><!-- /#stage -->
@@ -407,7 +416,7 @@ $("#pickerClose").onclick = closePicker;
 let accX=0, accY=0;
 let sensitivity = parseFloat(localStorage.getItem("maple_sens")||"3");   // 觸控板靈敏度
 const tp = { lastX:0, lastY:0, moved:false, lastTapEnd:0, dragLockPending:false, dragging:false, maxFingers:0 };
-function tpReset(){ tp.moved=false; tp.maxFingers=0; tp.dragLockPending=false; }
+function tpReset(){ tp.moved=false; tp.maxFingers=0; tp.dragLockPending=false; tp.wheelAcc=0; }
 const look = $("#look");
 look.addEventListener("touchstart", e => {
   if(editMode || !watching) return; e.preventDefault();
@@ -424,6 +433,10 @@ look.addEventListener("touchmove", e => {
   if(e.touches.length === 1){
     if(tp.dragLockPending && !tp.dragging && tp.moved){ send({t:"md", b:"left"}); tp.dragging=true; tp.dragLockPending=false; }
     const rv=rotVec(dx,dy); accX += rv[0]; accY += rv[1];   // 旋轉修正
+  } else if(e.touches.length === 2){                          // 雙指=滾輪
+    const rv=rotVec(dx,dy); tp.wheelAcc = (tp.wheelAcc||0) + rv[1];
+    while(tp.wheelAcc >= 40){ send({t:"mw", d:-1}); tp.wheelAcc -= 40; }
+    while(tp.wheelAcc <= -40){ send({t:"mw", d:1}); tp.wheelAcc += 40; }
   }
 }, {passive:false});
 const lookEnd = e => {
@@ -492,6 +505,17 @@ $("#menuBtn").onclick = async () => {
 };
 $("#menuClose").onclick = closeMenu;
 $("#menuMask").onclick = closeMenu;
+// 剪貼簿：操作端 → 主機
+$("#clipSend").onclick = async () => {
+  try{ const r=await fetch(`/clipboard?token=${encodeURIComponent(token)}`, { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ text: $("#clipText").value }) });
+    $("#clipMsg").textContent = (await r.json()).ok ? "已傳到主機剪貼簿（主機按 Ctrl+V 貼上）" : "傳送失敗";
+  }catch(e){ $("#clipMsg").textContent="傳送失敗"; }
+};
+$("#clipRead").onclick = async () => {
+  try{ $("#clipText").value = await navigator.clipboard.readText(); $("#clipMsg").textContent="已讀取本機剪貼簿"; }
+  catch(e){ $("#clipMsg").textContent="無法讀取(需瀏覽器權限)，請手動貼上"; }
+};
 // 一鍵預設：畫質 / 流暢 / 快速
 const PRESETS = {
   quality: { scale:1080, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
@@ -565,6 +589,10 @@ if(!isTouch){
   });
   document.addEventListener("mouseup", e => { if(!overVideo) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
   document.addEventListener("contextmenu", e => { if(active()&&overVideo) e.preventDefault(); });
+  document.addEventListener("wheel", e => {                 // 滾輪
+    if(!active()||!overVideo) return; e.preventDefault();
+    send({t:"mw", d: e.deltaY>0 ? -1 : 1});
+  }, {passive:false});
   window.addEventListener("blur", ()=> setOver(false));    // 視窗失焦 → 釋放
   document.addEventListener("keydown", e => {
     if(!active()||!overVideo) return; const t=codeToToken(e.code); if(!t) return;
