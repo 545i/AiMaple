@@ -174,9 +174,9 @@
       <button class="mapply" id="screenApply">套用畫面設定</button>
 
       <div class="msec">剪貼簿（操作端 → 主機）</div>
-      <textarea id="clipText" placeholder="在此輸入或貼上文字，傳到主機剪貼簿…" rows="3"></textarea>
+      <textarea id="clipText" placeholder="在框內貼上即自動傳送：電腦按 Ctrl+V、手機長按→貼上（或直接打字後按傳送）" rows="3"></textarea>
       <div class="mgrid2">
-        <div class="mbtn" id="clipRead">讀取本機剪貼簿</div>
+        <div class="mbtn" id="clipRead">讀取剪貼簿</div>
         <div class="mbtn" id="clipSend">傳送到主機</div>
       </div>
       <div id="clipMsg" style="font-size:12px;color:#7fe0b0;margin-top:6px;min-height:16px"></div>
@@ -506,15 +506,34 @@ $("#menuBtn").onclick = async () => {
 $("#menuClose").onclick = closeMenu;
 $("#menuMask").onclick = closeMenu;
 // 剪貼簿：操作端 → 主機
-$("#clipSend").onclick = async () => {
-  try{ const r=await fetch(`/clipboard?token=${encodeURIComponent(token)}`, { method:"POST",
-      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ text: $("#clipText").value }) });
-    $("#clipMsg").textContent = (await r.json()).ok ? "已傳到主機剪貼簿（主機按 Ctrl+V 貼上）" : "傳送失敗";
-  }catch(e){ $("#clipMsg").textContent="傳送失敗"; }
-};
+// 注意：navigator.clipboard 只在「安全情境」(HTTPS / localhost) 才存在；
+// 本專案走 Tailscale http://，屬非安全情境，readText() 會是 undefined 直接拋例外。
+// 故主力改用 paste 事件(Ctrl+V / 手機長按→貼上)擷取，非安全情境也能用、免權限。
+async function sendClip(text){
+  text = (text == null ? "" : String(text));
+  if(!text){ $("#clipMsg").textContent="沒有內容可傳（先在框內輸入或貼上）"; return false; }
+  try{
+    const r=await fetch(`/clipboard?token=${encodeURIComponent(token)}`, { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ text }) });
+    const ok=(await r.json()).ok;
+    $("#clipMsg").textContent = ok ? "已傳到主機剪貼簿（主機按 Ctrl+V 貼上）" : "傳送失敗（主機剪貼簿被佔用？）";
+    return ok;
+  }catch(e){ $("#clipMsg").textContent="傳送失敗（連線？）"; return false; }
+}
+$("#clipSend").onclick = () => sendClip($("#clipText").value);
+// 貼上即擷取並自動送出：手機長按→貼上、電腦 Ctrl+V 都走這條，免安全情境/權限
+$("#clipText").addEventListener("paste", (e) => {
+  const t = (e.clipboardData || window.clipboardData) ? (e.clipboardData || window.clipboardData).getData("text") : null;
+  if(t != null && t !== ""){ e.preventDefault(); $("#clipText").value = t; sendClip(t); }
+});
 $("#clipRead").onclick = async () => {
-  try{ $("#clipText").value = await navigator.clipboard.readText(); $("#clipMsg").textContent="已讀取本機剪貼簿"; }
-  catch(e){ $("#clipMsg").textContent="無法讀取(需瀏覽器權限)，請手動貼上"; }
+  // HTTPS/localhost 才有 navigator.clipboard；有就直接讀並送出
+  if(navigator.clipboard && navigator.clipboard.readText){
+    try{ const t=await navigator.clipboard.readText(); $("#clipText").value=t; await sendClip(t); return; }
+    catch(e){ /* 權限被拒 → 落到下方引導貼上 */ }
+  }
+  $("#clipText").focus();
+  $("#clipMsg").textContent="此連線非 HTTPS 無法直接讀取；請在上方框內貼上（電腦 Ctrl+V / 手機長按→貼上），會自動傳送";
 };
 // 一鍵預設：畫質 / 流暢 / 快速
 const PRESETS = {
