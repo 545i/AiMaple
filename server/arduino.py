@@ -127,3 +127,59 @@ class ArduinoKeyboard:
         except Exception:
             pass
         self.connected = False
+
+
+class ArduinoMouse:
+    """沒有 KMBox(km.dll) 時的滑鼠降級：透過同一顆 Arduino 的 HID 滑鼠送指令。
+
+    仍是硬體 HID 訊號(反作弊偵測不到)，優於 SoftMouse(SendInput 軟體注入)。
+    介面與 KMouse/SoftMouse 相容(move_relative / button_* / click …)，讓 main.py
+    無縫替換。限制：HID 滑鼠只能相對移動，不支援絕對 move_to；本專案的絕對映射(t=ma)
+    在輸入端已轉成相對差值(video_pipeline.abs_delta)，故不受影響。
+
+    與鍵盤共用同一顆 Arduino 的序列埠佇列(單一 worker 序列送出)，不需另開連線。
+    """
+    software = False   # 硬體 HID，非軟體注入
+
+    def __init__(self, keyboard):
+        self._kb = keyboard
+        # 累積不足 1 像素的小數位移，避免慢速移動被 int() 截掉而完全不動
+        self._rx = 0.0
+        self._ry = 0.0
+
+    @property
+    def connected(self):
+        return getattr(self._kb, "connected", False)
+
+    def start(self):
+        print("[ArduinoMouse] 無 KMBox → 降級用 Arduino HID 滑鼠(硬體訊號，反作弊安全)")
+        return self.connected
+
+    def _emit(self, dx, dy):
+        self._rx += float(dx); self._ry += float(dy)
+        ix, iy = int(self._rx), int(self._ry)      # 往零截斷，保留小數餘量
+        self._rx -= ix; self._ry -= iy
+        if ix or iy:
+            self._kb.mouse_move(ix, iy)
+
+    def move_relative(self, dx, dy):
+        self._emit(dx, dy)
+
+    def move_relative_smooth(self, dx, dy, delay=8, delta=10):
+        self._emit(dx, dy)      # HID 無曲線平滑，直接相對移動
+
+    def move_to(self, x, y):
+        pass                    # HID 相對滑鼠無法絕對定位；本專案未經由此路徑
+
+    def button_down(self, button="left"):
+        self._kb.mouse_button(button, True)
+
+    def button_up(self, button="left"):
+        self._kb.mouse_button(button, False)
+
+    def click(self, button="left", min_delay=0, max_delay=0):
+        self._kb.mouse_button(button, True)
+        self._kb.mouse_button(button, False)
+
+    def close(self):
+        pass                    # 序列埠由 keyboard.close() 統一關閉

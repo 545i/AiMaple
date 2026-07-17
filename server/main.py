@@ -58,9 +58,14 @@ async def lifespan(app):
     global mouse
     keyboard.start()
     if not mouse.start():
-        # 沒有 KMBox → 改用軟體滑鼠備援，讓觸控板仍可操控
-        from soft_mouse import SoftMouse
-        mouse = SoftMouse()
+        # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
+        # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
+        if getattr(keyboard, "connected", False):
+            from arduino import ArduinoMouse
+            mouse = ArduinoMouse(keyboard)
+        else:
+            from soft_mouse import SoftMouse
+            mouse = SoftMouse()
         mouse.start()
     # 影像主力為 WebRTC(MediaMTX+ffmpeg)，由 /video/start 啟動 ffmpeg。
     yield
