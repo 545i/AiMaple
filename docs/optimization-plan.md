@@ -21,7 +21,7 @@
 
 | # | 項目 | 狀態 | 問題 | 方案 | 檔案 |
 |---|------|------|------|------|------|
-| 0-1 | **NVENC intra-refresh** | ✅ 已做 | `-g = 2*fps` 關鍵影格間隔 2 秒,行動網路丟一個 I-frame = ~2 秒花屏 | `-intra-refresh 1 -g fps`(≈1 秒刷新週期),預設開,`MAPLE_INTRA_REFRESH=0` 可退回傳統 IDR。已對 ffmpeg n7.1.5 實測編碼通過 | `server/config.py`、`server/video_pipeline.py` |
+| 0-1 | **NVENC intra-refresh** | ⚠ 改為關閉 | `-g = 2*fps` 關鍵影格間隔 2 秒,行動網路丟一個 I-frame = ~2 秒花屏 | **實測:intra-refresh 與 MediaMTX WHEP 不相容 → 手機全黑**(WHEP 對新觀眾要等關鍵影格,但 intra-refresh 之後不再有 IDR)。已預設**關閉**,改走「傳統 IDR 但 GOP 2s→1s + strict_gop」,worst-case 減半;env 開關保留供未來 aiortc 直連(可 PLI→forced-IDR)時再用 | `server/config.py`、`server/video_pipeline.py` |
 | 0-2 | **降低 VBV 緩衝** | ✅ 已做 | `-bufsize = bitrate`(≈1 秒 VBV)增加編碼端排隊延遲 | `-bufsize = bitrate/fps * VIDEO_VBV_FRAMES`(預設 2 幀,`MAPLE_VBV_FRAMES` 可調) | 同上 |
 | 0-3 | **token 改走 header** | ⏸ 併入 1-1 | token 在 query string,會進 access log、可能經 Referer 外洩 | 見下方「延後理由」——WS 認證在 1-1 會被 DataChannel 取代,現在只改 HTTP 是半套 | `server/main.py`、`web/index.html` |
 | 0-4 | **啟動時檢查 token** | ✅ 已做 | 預設弱 token 會被直接上線 | 預設 token 啟動時**大聲警告**(不擋,避免破壞既有流程);`MAPLE_STRICT_TOKEN=1` 則拒啟 | `server/main.py` `_check_token_strength()` |
