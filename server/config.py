@@ -49,6 +49,12 @@ VIDEO_BITRATE_M = int(_env("MAPLE_VBITRATE", "25"))  # Mbps
 VIDEO_INTRA_REFRESH = _env("MAPLE_INTRA_REFRESH", "0") == "1"
 VIDEO_VBV_FRAMES = max(1, int(_env("MAPLE_VBV_FRAMES", "2")))
 
+# ===== 音訊(獨立管線：系統 loopback → Opus，推到 MediaMTX 的 audio 路徑) =====
+# 用 soundcard 做 WASAPI loopback(免虛擬音效線、不影響本機播放)。
+# MAPLE_AUDIO=0 可關閉;soundcard 不可用時亦自動停用(完全不影響影像)。
+AUDIO_ENABLED = _env("MAPLE_AUDIO", "1") == "1"
+AUDIO_BITRATE_K = int(_env("MAPLE_AUDIO_KBPS", "96"))
+
 # ===== 影像(備援)：MJPEG（mss 擷取，延遲較高，僅相容用） =====
 CAPTURE_MONITOR = int(_env("MAPLE_MONITOR", "1"))
 CAPTURE_WIDTH = int(_env("MAPLE_WIDTH", "1280"))

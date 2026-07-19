@@ -84,8 +84,11 @@ async def lifespan(app):
             from soft_mouse import SoftMouse
             mouse = SoftMouse()
         mouse.start()
+    video_pipeline.set_mouse(mouse)   # 供「切視窗時的標題列啟用點擊」使用
     # 影像主力為 WebRTC(MediaMTX+ffmpeg)，由 /video/start 啟動 ffmpeg。
     yield
+    import audio_pipeline
+    audio_pipeline.stop()
     keyboard.close()
     mouse.close()
     video_pipeline.stop()
@@ -170,13 +173,18 @@ def window_focus(token: str = Query("")):
 @app.post("/video/start")
 def video_start(token: str = Query("")):
     _check(token)
-    return JSONResponse({"ok": video_pipeline.ensure_running()})
+    ok = video_pipeline.ensure_running()
+    import audio_pipeline
+    audio_pipeline.start()          # 獨立音訊管線;失敗不影響影像
+    return JSONResponse({"ok": ok})
 
 
 @app.post("/video/stop")
 def video_stop(token: str = Query("")):
     _check(token)
     video_pipeline.stop()
+    import audio_pipeline
+    audio_pipeline.stop()
     return JSONResponse({"ok": True})
 
 
@@ -253,6 +261,12 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
     await ws.accept()
     print("[WS] 客戶端連線")
 
+    # 新連線先清掉可能殘留的修飾鍵：上次若在「按著鍵」時關頁,Arduino 會一直按住,
+    # 卡住的修飾鍵(尤其 Alt/Ctrl)會讓字母鍵變成快捷鍵而「完全沒反應」,方向鍵卻正常。
+    for _k in ("shift", "ctrl", "alt"):
+        keyboard.key_up(_k)
+    held_keys = set()          # 本連線目前按著的鍵,斷線時全數放開
+
     async def cursor_loop():
         # 定期回傳游標在擷取區內的正規化座標，讓網頁畫虛擬游標（遊戲藏游標也看得到）
         try:
@@ -272,6 +286,12 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
                 msg = json.loads(raw)
             except Exception:
                 continue
+            # 追蹤按著的鍵,斷線時才能全數放開(避免卡住的鍵讓字母鍵失效)
+            t = msg.get("t")
+            if t == "kd":
+                held_keys.add(msg.get("k"))
+            elif t == "ku":
+                held_keys.discard(msg.get("k"))
             # 輸入分派本身很快(佇列/DLL 呼叫)，直接在事件迴圈執行即可。
             # 必須 try/except：否則單筆訊息讓 _dispatch 拋例外就會衝出迴圈、
             # 關閉整條 WS(手機顯示「斷線,重連中」，重連又被下一筆踢掉)。
@@ -283,7 +303,9 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
         print("[WS] 客戶端離線")
     finally:
         sender.cancel()
-        # 斷線時放開所有滑鼠鍵，避免卡住
+        # 斷線時放開所有還按著的鍵盤鍵(尤其修飾鍵)與滑鼠鍵,避免卡住下次連線
+        for k in list(held_keys):
+            keyboard.key_up(k)
         for b in ("left", "right", "middle"):
             mouse.button_up(b)
 

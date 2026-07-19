@@ -30,3 +30,6 @@ paths:
   # 畫面：由 FastAPI 直接啟動 ffmpeg 推流進來（支援全螢幕/指定視窗），
   # 這裡只需接收該路徑的發布，不使用 runOnDemand。
   screen:
+  # 音訊：獨立管線（soundcard loopback → Opus），與畫面分開，互不影響。
+  # 前端用第二條 WHEP(:8889/audio/whep) 只收音訊。
+  audio:

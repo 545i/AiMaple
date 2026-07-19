@@ -114,6 +114,7 @@
  <div id="stage">
   <video id="video" autoplay muted playsinline></video>
   <canvas id="freeze"></canvas>
+  <audio id="gaudio" autoplay playsinline></audio>
   <div id="padbg"></div>
   <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
@@ -332,7 +333,7 @@ $("#go").onclick = () => {
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
 
 // ===== WebRTC 影像（WHEP） =====
-let pc = null;
+let pc = null, apc = null;   // apc = 音訊 PeerConnection(獨立第二條)
 function iceComplete(p){ return new Promise(res => {
   if(p.iceGatheringState==="complete") return res();
   const chk=()=>{ if(p.iceGatheringState==="complete"){ p.removeEventListener("icegatheringstatechange",chk); res(); } };
@@ -383,12 +384,34 @@ async function startVideo(){
   stopVideo();
   try{ await fetch(`/video/start?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(e){}
   for(let i=0; i<8 && watching; i++){
-    try{ pc = await whepOnce(); setStatus("已連線", true); return; }
+    try{ pc = await whepOnce(); setStatus("已連線", true); startAudio(); return; }
     catch(e){ setStatus(`影像連線中…(${i+1}/8)`, false); await new Promise(r=>setTimeout(r, 800)); }
   }
   if(watching) setStatus("影像連線失敗（檢查防火牆 8889 / Tailscale）", false);
 }
-function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; $("#cursor").style.display="none"; }
+function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; $("#cursor").style.display="none"; stopAudio(); }
+
+// ===== 音訊：獨立第二條 WHEP(:8889/audio/whep)，與影像分開 =====
+async function whepAudioOnce(){
+  const p = new RTCPeerConnection();
+  p.addTransceiver("audio", { direction:"recvonly" });
+  p.ontrack = e => { const a=$("#gaudio"); a.srcObject = e.streams[0]; a.muted=false; a.play().catch(()=>{}); };
+  await p.setLocalDescription(await p.createOffer());
+  await iceComplete(p);
+  const url = `${location.protocol}//${location.hostname}:8889/audio/whep`;
+  const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/sdp" }, body: p.localDescription.sdp });
+  if(!r.ok){ p.close(); throw new Error("whep-audio "+r.status); }
+  await p.setRemoteDescription({ type:"answer", sdp: await r.text() });
+  return p;
+}
+async function startAudio(){
+  stopAudio();
+  for(let i=0; i<8 && watching; i++){
+    try{ apc = await whepAudioOnce(); return; }
+    catch(e){ await new Promise(r=>setTimeout(r, 800)); }   // 音訊路徑可能比影像晚 ready
+  }
+}
+function stopAudio(){ if(apc){ apc.close(); apc=null; } const a=$("#gaudio"); if(a) a.srcObject=null; }
 
 // ===== 注視狀態 =====
 function setWatching(on){

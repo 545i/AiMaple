@@ -11,6 +11,7 @@ import ctypes
 from ctypes import wintypes
 import os
 import subprocess
+import time
 
 from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M,
                     VIDEO_INTRA_REFRESH, VIDEO_VBV_FRAMES)
@@ -53,6 +54,14 @@ _user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
 _user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
 _user32.MonitorFromWindow.restype = ctypes.c_void_p
 _user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_user32.SetActiveWindow.argtypes = [wintypes.HWND]
+_user32.SetFocus.argtypes = [wintypes.HWND]
+
+# 由 main.py 於裝置初始化後註冊,供「切視窗時的啟用點擊」使用(硬體滑鼠)
+_mouse = None
+def set_mouse(m):
+    global _mouse
+    _mouse = m
 
 
 class _RECT(ctypes.Structure):
@@ -203,10 +212,38 @@ def list_windows():
     return out
 
 
-def focus_target():
-    """把目標視窗帶到前景，確保鍵鼠輸入送進該視窗（注視 = 對準目標）。
+def _activation_click(hwnd):
+    """在目標視窗『標題列』做一次實體點擊,重現使用者手動點視窗的動作,確保 Windows
+    完整啟用該視窗、把鍵盤焦點交出去。這樣字母/技能鍵(走 WM_KEYDOWN,需要焦點)才進得去;
+    方向鍵(走 GetAsyncKeyState 全域狀態)本來就不受影響——這正是「只有方向鍵生效」的原因。
 
-    用 AttachThreadInput 突破 Windows 的前景視窗鎖，較可靠。"""
+    點在標題列(OS 邊框)而非遊戲畫面區 → 只做視窗啟用,不會誤觸遊戲內動作。
+    僅在有硬體滑鼠時執行。"""
+    if _mouse is None:
+        return
+    r = _RECT()
+    _user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+    w = r.right - r.left
+    if w <= 0:
+        return
+    x = r.left + w // 2      # 標題列中央(避開右上角最小化/最大化/關閉鈕)
+    y = r.top + 8            # 標題列高度內
+    pt = _POINT()
+    _user32.GetCursorPos(ctypes.byref(pt))     # 記住原游標位置
+    _user32.SetCursorPos(x, y)
+    time.sleep(0.03)
+    try:
+        _mouse.click("left")                    # 硬體點擊(在標題列)→ 觸發完整啟用
+    except Exception:
+        pass
+    time.sleep(0.06)                            # 等硬體點擊佇列送達,再還原游標
+    _user32.SetCursorPos(pt.x, pt.y)
+
+
+def focus_target():
+    """把目標視窗帶到前景並『完整啟用』,確保鍵鼠輸入(含字母/技能的 WM_KEYDOWN)
+    都送進該視窗。用 AttachThreadInput 突破前景鎖 + SetActiveWindow/SetFocus 指定
+    鍵盤焦點 + 標題列實體點擊做最終啟用。"""
     hwnd = int(state.get("hwnd") or 0)
     if not hwnd or not _user32.IsWindow(hwnd):
         return False
@@ -221,9 +258,12 @@ def focus_target():
         if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, True)
         _user32.BringWindowToTop(hwnd)
         _user32.SetForegroundWindow(hwnd)
+        _user32.SetActiveWindow(hwnd)          # 真正啟用視窗
+        _user32.SetFocus(hwnd)                 # 指定鍵盤焦點(WM_KEYDOWN 目的地)
     finally:
         if fg_tid:  _user32.AttachThreadInput(cur, fg_tid, False)
         if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, False)
+    _activation_click(hwnd)                     # 標題列實體點擊 = 最終保險(重現手動點視窗)
     return True
 
 

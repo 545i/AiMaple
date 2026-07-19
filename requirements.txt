@@ -5,4 +5,5 @@ pyserial          # Arduino 鍵盤 (序列埠)
 mss               # 螢幕擷取
 opencv-python     # JPEG 編碼 / 縮放
 numpy
+soundcard         # 系統音訊 WASAPI loopback 擷取(免虛擬音效線)→ 獨立 ffmpeg 編 Opus
 # km.dll 為 Windows 原生 DLL，透過 ctypes 載入，無需額外套件
