@@ -4,11 +4,13 @@
 在外面用手機遠端操控家裡的遊戲電腦。輸入為**硬體訊號**,遊戲/反作弊偵測不到是遠端操作。
 
 ```
-[手機瀏覽器]  ──WebSocket 輸入──►  [FastAPI (跑在家裡遊戲主機)]
-     ▲                                 ├─ pyserial → Arduino HID(鍵盤)
-     └──MJPEG 畫面───────────────────  ├─ km.dll  → KMBox(滑鼠)
-                                        └─ mss 螢幕擷取
+[手機瀏覽器]  ──WebSocket 輸入──►  [FastAPI :8000]  ─┬─ pyserial → Arduino HID(鍵盤)
+     ▲                                                 └─ km.dll  → KMBox(滑鼠)
+     │
+     └──WebRTC 影像(WHEP)── [MediaMTX :8889] ◄─RTSP─ [ffmpeg: DXGI 擷取 + NVENC 硬編]
 ```
+**影像走 WebRTC + NVENC 硬體編碼(低延遲主力);輸入走 WebSocket → 硬體 HID。**
+兩者皆為硬體訊號,遊戲/反作弊偵測不到是遠端操作。
 
 ## 硬體接線
 1. **Arduino Leonardo / Pro Micro**(已燒錄 `arduino_keyboard.ino`)USB 接到**遊戲主機**,記下它的 COM 埠(預設 `COM3`)。
@@ -21,7 +23,11 @@ cd C:\Users\mense\dev\maple
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+# 下載 MediaMTX 與 ffmpeg(含 NVENC),放到 bin\（不進版控）
+./scripts/fetch-bin.ps1
 ```
+
+> **顯示卡需求**:影像硬編用 NVIDIA NVENC(本機為 RTX 5070)。`fetch-bin.ps1` 抓的是 **ffmpeg 7.1**,對應 NVENC API 13.0,相容驅動 596.49。若你的 NVIDIA 驅動 ≥ 610,可改用 ffmpeg master 版取得最新 NVENC。無 NVIDIA 卡時可改用 `hevc_amf`/`h264_qsv`(需改 `mediamtx.yml` 的 ffmpeg 指令)。
 
 ## 設定(環境變數,可選)
 | 變數 | 預設 | 說明 |
@@ -29,29 +35,47 @@ pip install -r requirements.txt
 | `MAPLE_TOKEN` | `change-me-please` | **務必改掉**,手機連線用的密碼 |
 | `MAPLE_ARDUINO_PORT` | `COM3` | Arduino 序列埠 |
 | `MAPLE_ARDUINO_ACK` | `0` | `1`=等韌體回 OK(較可靠、較慢);`0`=射後不理(低延遲) |
-| `MAPLE_WIDTH` | `1280` | 串流畫面寬度,越小越省頻寬 |
-| `MAPLE_JPEG_Q` | `60` | JPEG 品質 1-100 |
-| `MAPLE_FPS` | `30` | 串流張數 |
+| `MAPLE_VFPS` | `60` | WebRTC 影像張數 |
+| `MAPLE_VBITRATE` | `25` | WebRTC 影像位元率(Mbps) |
+| `MAPLE_VMON` | `1` | 擷取的螢幕(1=主螢幕) |
 | `MAPLE_MOUSE_SENS` | `1.0` | 觸控拖曳→滑鼠位移倍率 |
+
+(`MAPLE_WIDTH`/`MAPLE_JPEG_Q`/`MAPLE_FPS` 僅供 MJPEG 備援路徑。影像 FPS/位元率/螢幕也可在手機端「🎬 畫面」即時調整。)
 
 ```powershell
 $env:MAPLE_TOKEN="你的隨機密碼"
 ```
 
 ## 啟動
+一鍵啟動(同時跑 MediaMTX 影像 + FastAPI):
 ```powershell
-cd server
-python main.py
+$env:MAPLE_TOKEN="你的隨機密碼"
+./scripts/start.ps1
 ```
-啟動後看到 `[Arduino] 已連線` / `[KM] 已連線` / `[Capture] 啟動` 才算正常。
-若顯示未連線,檢查 COM 埠、km.dll 裝置是否插好。
+看到 `▶ MediaMTX 已啟動` 與 `Uvicorn running on http://0.0.0.0:8000` 即正常。
+Arduino/KM 未連線只會顯示警告、不影響啟動(影像仍可運作)。
+
+> ffmpeg 只在**第一個觀看者連上**時才由 MediaMTX 啟動(runOnDemand),平時不佔 GPU。
+
+## 延遲(50ms 目標)
+影像為 **glass-to-glass**(遊戲畫面→手機顯示)。實測預算:DXGI 擷取 1–3ms + NVENC 3–8ms +
+網路 + 手機硬解 5–15ms + 顯示 8–16ms。
+- **同區網 / 低延遲 Tailscale 直連**:約 30–60ms,**可壓進 50ms**。
+- **跨網際網路 / 行動網路**:光網路 RTT 常 > 50ms,受**物理極限**限制(Parsec/Moonlight 亦然),只能盡量逼近。
+
+壓延遲要點:手機接 **5GHz Wi-Fi 或有線**、Tailscale 走**直連(非 relay)**、位元率別開太高。
 
 ## 手機連線(在外遊玩)
 1. 遊戲主機與手機都安裝並登入 **[Tailscale](https://tailscale.com/)**(免費、免開 port、加密、近直連)。
-2. 手機瀏覽器開:`http://<主機的 Tailscale IP>:8000/`
-3. 輸入 token → 連線。
+2. **跨網際網路時**,把主機的 Tailscale IP 加進 `media/mediamtx.yml` 的 `webrtcAdditionalHosts`,WebRTC 的 ICE 候選才會正確:
+   ```yaml
+   webrtcAdditionalHosts: ['100.x.y.z']   # 主機的 Tailscale IP
+   ```
+   (同區網不用改,`webrtcIPsFromInterfaces` 會自動帶入。)
+3. 手機瀏覽器開:`http://<主機的 Tailscale IP>:8000/` → 輸入 token → 連線。
 
-> ⚠️ **不要**用 port forwarding 把 8000 埠直接暴露到公網 —— 那等於把電腦控制權開放給所有人。一律走 Tailscale/VPN。
+> ⚠️ **不要**用 port forwarding 把 8000/8889 埠直接暴露到公網 —— 那等於把電腦控制權開放給所有人。一律走 Tailscale/VPN。
+> 目前 MediaMTX(8889)本身未設帳密,安全性依賴 Tailscale 網路隔離;需要更嚴時可在 `mediamtx.yml` 加 `authInternalUsers`。
 
 ## 操作介面
 **兩種佈局會依手機方向自動切換:**
@@ -69,7 +93,7 @@ python main.py
 **其他:**
 - **⚙ 編輯**:進入編輯模式後點任一按鍵 → 展開模擬鍵盤 → 點要綁定的鍵即完成(設定存在手機端,支援方向鍵/F1-F12/小鍵盤/修飾鍵等)。
 - **👁 注視**:切換是否注視畫面。未注視時暫停串流(省流量/電量),中央出現「注視畫面」按鈕重新開始。
-- **🎬 畫面**:即時調整螢幕、寬度、畫質、FPS。
+- **🎬 畫面**:即時調整螢幕、FPS、位元率(透過 MediaMTX API 重啟 ffmpeg)。
 - 網頁全域禁止手勢縮放/雙擊放大,避免誤觸。
 
 ## 重要注意事項
@@ -78,11 +102,39 @@ python main.py
 - **反作弊 / 遊戲條款**:硬體 HID 雖難偵測,但多數線上遊戲條款禁止任何遠端/自動化輸入,競技遊戲請自行評估封號風險。
 - **延遲**:MJPEG 畫面延遲約 100-300ms,區網/Tailscale 下堪用。要更低延遲請見下方 Roadmap。
 
+## 虛擬 HID 驅動(實驗中,目前擱置)
+
+分支 **`virtual-hid-driver`** 有一份用 Microsoft **Virtual HID Framework (VHF)** 寫的
+KMDF 核心驅動,目標是用純軟體的虛擬鍵鼠取代 Arduino + km.dll 硬體。
+
+```
+git checkout virtual-hid-driver     # 取回實作
+```
+
+**內容**:`driver/MapleVhid/`(驅動,單一 VHF 實體上掛 Keyboard + Mouse 兩個 Top Level
+Collection)、`driver/MapleVhidClient/`(User Mode CLI 與可重用封裝)、
+`driver/maple_vhid.py`(ctypes 綁定,可直接替換 `server/arduino.py` + `server/kmbox.py`)。
+細節見該分支的 `driver/README.md`。
+
+**為何擱置**:
+
+| 問題 | 說明 |
+|---|---|
+| 尚未編譯驗證 | 本機只有 SDK 沒有 WDK,程式碼從未通過編譯 |
+| Secure Boot | 本機已啟用,`bcdedit /set testsigning on` 會被政策直接拒絕 |
+| 反作弊代價 | 關閉 Secure Boot 後,要求 Secure Boot 的反作弊(Vanguard、FACEIT 等)會擋掉遊戲 |
+
+最後一點是關鍵:**對「手機遠端遊玩」這個用途,虛擬驅動的代價可能高於現行方案**。
+Arduino 是真實 USB HID 裝置,不需要動任何開機設定,反作弊相容性反而更好。
+要繼續的話,第一步是用 **EWDK**(獨立 ISO,不需安裝 Visual Studio)編譯驗證,
+而不是直接安裝驅動。
+
 ## Roadmap
 - [ ] 影像改用 **WebRTC(aiortc, H.264 硬體編碼)** → 延遲降到 50-150ms、更省頻寬
 - [ ] 滑鼠滾輪(km.dll 無滾輪函數,需改走 Arduino 韌體擴充)
 - [ ] 自訂按鍵配置(讀 `bindings.json`)
 - [ ] 手把 Gamepad API 支援
+- [ ] 虛擬 HID 驅動(VHF)編譯驗證 → 見 `virtual-hid-driver` 分支
 
 ## 檔案
 | 檔案 | 說明 |
