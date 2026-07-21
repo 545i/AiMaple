@@ -1,0 +1,73 @@
+;
+; MapleVhid.inf
+;
+; Virtual HID (Keyboard + Mouse) driver，以 root-enumerated 軟體裝置安裝。
+; 安裝方式：
+;   pnputil /add-driver MapleVhid.inf /install
+;   devcon install MapleVhid.inf root\MapleVhid
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ManufacturerName%
+CatalogFile = MapleVhid.cat
+DriverVer   = 01/01/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+MapleVhid.sys = 1,,
+
+[Manufacturer]
+%ManufacturerName% = Standard,NT$ARCH$.10.0...22000
+
+[Standard.NT$ARCH$.10.0...22000]
+%DeviceName% = MapleVhid_Device, root\MapleVhid
+
+;---------------------------------------------------------------------
+; Install section
+;---------------------------------------------------------------------
+
+[MapleVhid_Device.NT]
+CopyFiles = Drivers_Dir
+Include   = vhf.inf
+Needs     = VHF.CopyFiles
+
+[Drivers_Dir]
+MapleVhid.sys
+
+[MapleVhid_Device.NT.Services]
+AddService = MapleVhid,%SPSVCINST_ASSOCSERVICE%, MapleVhid_Service_Inst
+Include    = vhf.inf
+Needs      = VHF.Services
+
+[MapleVhid_Service_Inst]
+DisplayName   = %ServiceName%
+ServiceType   = 1                       ; SERVICE_KERNEL_DRIVER
+StartType     = 3                       ; SERVICE_DEMAND_START
+ErrorControl  = 1                       ; SERVICE_ERROR_NORMAL
+ServiceBinary = %13%\MapleVhid.sys
+
+[MapleVhid_Device.NT.Wdf]
+KmdfService = MapleVhid, MapleVhid_wdfsect
+
+[MapleVhid_wdfsect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+;---------------------------------------------------------------------
+; Strings
+;---------------------------------------------------------------------
+
+[Strings]
+SPSVCINST_ASSOCSERVICE = 0x00000002
+ManufacturerName       = "maple"
+DiskName               = "MapleVhid Installation Disk"
+DeviceName             = "Maple Virtual HID Device (Keyboard + Mouse)"
+ServiceName            = "MapleVhid Virtual HID Driver"

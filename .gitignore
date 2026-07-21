@@ -26,3 +26,11 @@ scratch_*
 # MediaMTX 自動產生的憑證
 auto.crt
 auto.key
+
+# 驅動程式建置輸出 (Visual Studio / WDK)
+/driver/x64/
+/driver/.vs/
+*.vcxproj.user
+*.sys
+*.pdb
+*.cat
