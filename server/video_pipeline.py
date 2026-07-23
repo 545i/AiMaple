@@ -419,20 +419,25 @@ def _build_args_wgc(w, h, fps, br):
 
 
 # ---------- 生命週期 ----------
+# 一把 RLock 序列化所有管線生命週期操作(stop/ensure_running/_try_start_wgc/
+# restart),避免多來源並發(設定端點、出租守衛、feeder 尺寸變更、video_start/stop)
+# 交錯而洩漏孤兒 ffmpeg 行程。RLock 允許 restart 內重入 stop/ensure_running。
+_pipe_lock = threading.RLock()
 _feeder = None                     # WGC → ffmpeg stdin 的餵幀執行緒
-_feeder_stop = threading.Event()
+_feeder_stop = None                # 「當前」feeder 的專屬停止旗標(per-feeder,不共用)
 
 
 def is_running():
     return _proc is not None and _proc.poll() is None
 
 
-def _feed_wgc(proc, w, h, fps):
+def _feed_wgc(proc, w, h, fps, stop_event):
     """以固定 fps 把 WGC 最新影格寫進 ffmpeg stdin(cfr;沒新影格就重複上一格)。
-    視窗尺寸改變 → 另開執行緒重啟管線(rawvideo 的 WxH 是固定的)。"""
+    用【自己的】stop_event 判斷退出(不共用全域),避免並發啟停時被別條管線的
+    clear/set 干擾。視窗尺寸改變 → 另開執行緒重啟管線(rawvideo 的 WxH 是固定的)。"""
     interval = 1.0 / max(1, int(fps))
     next_t = time.perf_counter()
-    while not _feeder_stop.is_set() and proc.poll() is None:
+    while not stop_event.is_set() and proc.poll() is None:
         f = wgc.latest(max_age=5.0)
         if f is not None:
             fh, fw = f.shape[0] & ~1, f.shape[1] & ~1
@@ -453,8 +458,9 @@ def _feed_wgc(proc, w, h, fps):
 
 
 def _try_start_wgc():
-    """視窗模式優先走 WGC。成功回 True;不可用/拿不到影格回 False(退 ddagrab)。"""
-    global _proc, _feeder
+    """視窗模式優先走 WGC。成功回 True;不可用/拿不到影格回 False(退 ddagrab)。
+    呼叫者(ensure_running)須持 _pipe_lock。"""
+    global _proc, _feeder, _feeder_stop
     if state["source"] != "window" or not state["hwnd"]:
         return False
     if not wgc.ensure(state["hwnd"]):
@@ -478,8 +484,9 @@ def _try_start_wgc():
     except Exception as e:
         print(f"[Video] ffmpeg(WGC) 啟動失敗: {e}")
         return False
-    _feeder_stop.clear()
-    _feeder = threading.Thread(target=_feed_wgc, args=(_proc, w, h, fps), daemon=True)
+    fs = threading.Event()                 # 這條 feeder 專屬旗標
+    _feeder_stop = fs
+    _feeder = threading.Thread(target=_feed_wgc, args=(_proc, w, h, fps, fs), daemon=True)
     _feeder.start()
     print(f"[Video] ffmpeg 啟動(WGC 視窗擷取) window={state['window']!r} "
           f"{w}x{h} fps={fps} br={br}M")
@@ -488,47 +495,58 @@ def _try_start_wgc():
 
 def ensure_running():
     global _proc
-    if is_running():
-        return True
-    if _try_start_wgc():                   # 視窗模式:WGC(OBS 級,被遮蓋照拍)
-        return True
-    try:
-        _proc = subprocess.Popen(_build_args(), cwd=_ROOT,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print(f"[Video] ffmpeg 啟動 source={state['source']} "
-              f"window={state['window']!r} fps={state['fps']} br={state['bitrate']}M")
-        return True
-    except Exception as e:
-        print(f"[Video] ffmpeg 啟動失敗: {e}")
-        return False
+    with _pipe_lock:
+        if is_running():
+            return True
+        if _try_start_wgc():               # 視窗模式:WGC(OBS 級,被遮蓋照拍)
+            return True
+        try:
+            _proc = subprocess.Popen(_build_args(), cwd=_ROOT,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"[Video] ffmpeg 啟動 source={state['source']} "
+                  f"window={state['window']!r} fps={state['fps']} br={state['bitrate']}M")
+            return True
+        except Exception as e:
+            print(f"[Video] ffmpeg 啟動失敗: {e}")
+            return False
 
 
 def stop():
-    global _proc, _feeder
-    _feeder_stop.set()
-    if _feeder is not None and _feeder is not threading.current_thread():
-        _feeder.join(timeout=1.0)
-    _feeder = None
-    if is_running():
+    global _proc, _feeder, _feeder_stop
+    # 鎖內取出引用並清空全域(讓後續啟動不受舊引用干擾),鎖外再做阻塞的
+    # join/terminate——縮短持鎖時間、也不會把舊行程漏掉不 terminate(防孤兒)。
+    with _pipe_lock:
+        fs = _feeder_stop
+        feeder = _feeder
+        proc = _proc
+        _feeder_stop = None
+        _feeder = None
+        _proc = None
+    if fs is not None:
+        fs.set()
+    if feeder is not None and feeder is not threading.current_thread():
+        feeder.join(timeout=1.5)
+    if proc is not None and proc.poll() is None:
         try:
-            if _proc.stdin:
-                _proc.stdin.close()
+            if proc.stdin:
+                proc.stdin.close()
         except Exception:
             pass
         try:
-            _proc.terminate()
-            _proc.wait(timeout=3)
+            proc.terminate()
+            proc.wait(timeout=3)
         except Exception:
             try:
-                _proc.kill()
+                proc.kill()
             except Exception:
                 pass
-    _proc = None
 
 
 def restart():
-    stop()
-    ensure_running()
+    # 整段持鎖:stop→ensure_running 之間不被其他 restart/stop 插入(RLock 可重入)。
+    with _pipe_lock:
+        stop()
+        ensure_running()
 
 
 def apply(source=None, window=None, hwnd=None, monitor=None, fps=None, bitrate=None,

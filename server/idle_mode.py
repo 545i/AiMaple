@@ -23,6 +23,7 @@ _thread = None
 _stop = threading.Event()
 _running = False
 _started_at = 0.0
+_op_lock = threading.Lock()   # 序列化 start/stop,防快速連點造成雙重啟動/旗標交錯
 
 
 def set_keyboard(kb):
@@ -112,26 +113,29 @@ def _loop():
 def start():
     """啟動掛機執行緒。已在跑或沒有鍵盤則不動作。回傳是否運作中。"""
     global _thread, _running, _started_at
-    if _running or _keyboard is None:
-        return _running
-    _stop.clear()
-    _running = True
-    _started_at = time.time()
-    _thread = threading.Thread(target=_loop, daemon=True)
-    _thread.start()
-    print("[idle] 閒置掛機模式啟動")
-    return True
+    with _op_lock:
+        if _running or _keyboard is None:
+            return _running
+        _stop.clear()
+        _running = True
+        _started_at = time.time()
+        _thread = threading.Thread(target=_loop, daemon=True)
+        _thread.start()
+        print("[idle] 閒置掛機模式啟動")
+        return True
 
 
 def stop():
     """停止掛機並等執行緒收尾(放開按鍵)。"""
     global _running, _thread
-    if not _running:
-        return False
-    _stop.set()
-    _running = False
-    t = _thread
-    _thread = None
+    with _op_lock:
+        if not _running:
+            return False
+        _stop.set()
+        _running = False
+        t = _thread
+        _thread = None
+    # join 在鎖外,避免與 _loop 可能的收尾互卡;_loop 本身不取 _op_lock
     if t and t is not threading.current_thread():
         t.join(timeout=2.0)
     print("[idle] 閒置掛機模式停止")

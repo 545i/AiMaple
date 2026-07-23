@@ -98,11 +98,17 @@ async def _rental_guard_loop():
     1) 強制鎖定「視窗模式 + MapleStory」(遊戲重開/換 hwnd 也會重新鎖上)
     2) 目標視窗失焦就強制切回前景(訪客輸入永遠只進遊戲,擷取畫面也不會被
        其他視窗蓋住)。密碼過期/撤銷後即完全不動作,不影響主人平時操作。"""
+    def _tick():
+        # force_window_target 可能觸發 restart(數秒阻塞)、enforce_focus 含 sleep,
+        # 故整段丟到執行緒池,不阻塞事件迴圈(否則所有客戶端 WS/游標/看門狗會凍結)。
+        video_pipeline.force_window_target(GUARD_TITLE)
+        video_pipeline.enforce_focus(GUARD_TITLE)
+
+    loop = asyncio.get_event_loop()
     while True:
         try:
             if remote_access.info()["active"]:
-                video_pipeline.force_window_target(GUARD_TITLE)
-                video_pipeline.enforce_focus(GUARD_TITLE)
+                await loop.run_in_executor(None, _tick)
         except Exception:
             pass
         await asyncio.sleep(1.0)
@@ -264,9 +270,12 @@ _guest_streams = 0
 
 
 @app.get("/video")
-def video(token: str = Query("")):
+def video(request: Request, token: str = Query("")):
     _check(token)
-    guest = not _is_owner(token)
+    # 比照 /ws/input：經隧道/公網來源即使帶主 token 也一律降權為訪客——套用
+    # 視窗裁切、到期檢查、併發上限等全部守門。(主 token 經隧道 still_valid 為
+    # 假 → 一格都拿不到,徹底防「主 token 外洩→公網取全桌面」。)
+    guest = (not _is_owner(token)) or _untrusted(request.headers, request.client)
     if guest and _guest_streams >= GUEST_MAX_CONN:
         raise HTTPException(status_code=429, detail="too many guest streams")
     screen.ensure_started()
@@ -318,11 +327,14 @@ def get_video_config(token: str = Query("")):
 async def set_video_config(request: Request, token: str = Query("")):
     _check_owner(token)
     body = await request.json()
-    return JSONResponse(video_pipeline.apply(
+    # apply 可能觸發 ffmpeg 重啟(阻塞數秒)→ 丟執行緒池,不阻塞事件迴圈。
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, lambda: video_pipeline.apply(
         source=body.get("source"), window=body.get("window"), hwnd=body.get("hwnd"),
         monitor=body.get("monitor"), fps=body.get("fps"), bitrate=body.get("bitrate"),
         scale=body.get("scale"), gray=body.get("gray"),
     ))
+    return JSONResponse(result)
 
 
 # ===== 視窗清單（供手機端挑選要擷取的視窗） =====
@@ -570,10 +582,15 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
     # 從公網也拿不到完整控制權（只能在家裡 LAN/Tailscale 使用主權限）。
     guest = (not _is_owner(token)) or _untrusted(ws.headers, ws.client)
     if guest and _guest_ws >= GUEST_MAX_CONN:
-        await ws.close(code=1013)      # try again later
+        await ws.close(code=1013)      # try again later（未 accept 的快速拒絕）
         return
     await ws.accept()
     if guest:
+        # accept 之後才做精確計數：檢查與 +=1 之間沒有 await，事件迴圈單執行緒下
+        # 為原子操作,兩條訪客連線同時進來也不會突破 GUEST_MAX_CONN 上限(超賣)。
+        if _guest_ws >= GUEST_MAX_CONN:
+            await ws.close(code=1013)
+            return
         _guest_ws += 1
     print(f"[WS] 客戶端連線{'(訪客)' if guest else ''}")
 

@@ -33,7 +33,8 @@
   body.guest #pad { display:block !important; }          /* 電腦端也用螢幕按鈕 */
   body.guest #pad .btn { width:76px; height:76px; font-size:22px; }
   body.guest #mTarget, body.guest #mHw, body.guest #focusBtn, body.guest #editRow,
-  body.guest #ownerScreen, body.guest #ownerClip { display:none !important; }
+  body.guest #ownerScreen, body.guest #ownerClip,
+  body.guest #toDashBtn, body.guest #idleBtn { display:none !important; }
   #rHours { width:70px; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:6px; font-size:14px; }
   #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
             border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
@@ -482,17 +483,33 @@ function pauseAll(){
 }
 function backToDash(){ showView("dash"); pauseAll(); closeMenu(); loadDash(); }
 
+// 徹底斷線：先拆掉所有事件(尤其 onclose,否則 close 會觸發 1.5 秒後用舊 token
+// 自動重連)、再 close、清空 ws。避免登出後背景偷連、或新舊 token 串線。
+function disconnectWS(){
+  if(ws){ try{ ws.onclose=ws.onopen=ws.onerror=ws.onmessage=null; ws.close(); }catch(_){} ws=null; }
+}
+// 重置訪客殘留狀態：主人若曾誤輸入訪客短密碼而進 guest 模式,登出/重登需清乾淨,
+// 否則會卡在「僅 4/←/→」的訪客介面且實體鍵鼠映射失效(active() 因 !guest 恆假)。
+function resetGuestState(){
+  if(guest){
+    guest = false;
+    document.body.classList.remove("guest");
+    buttons = JSON.parse(localStorage.getItem("maple_buttons")||"null") || defaultButtons();
+  }
+  expired = false;
+}
+
 $("#go").onclick = () => {
   token = $("#token").value.trim(); if(!token) return;
   localStorage.setItem("maple_token", token);
+  resetGuestState();                 // 清掉上次可能殘留的訪客狀態
   showView("dash"); loadDash();
 };
 $("#enterRemote").onclick = enterRemote;
 $("#toDashTop").onclick = backToDash;
 $("#toDashBtn").onclick = backToDash;
 $("#logout").onclick = () => {
-  try{ if(ws) ws.close(); }catch(_){}
-  ws = null; setWatching(false);
+  disconnectWS(); setWatching(false); resetGuestState();
   showView("login");
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
@@ -890,7 +907,9 @@ async function remoteAct(path){
   try{
     const res = await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, { method:"POST" });
     const r = await res.json().catch(()=>({}));
-    if(res.status === 409){ $("#rTunnel").textContent = "⚠ " + (r.detail || "與閒置模式衝突"); return; }
+    // 任何非 2xx(409 衝突 / 400 / 500…)都只提示,不 renderRemote——否則一次瞬時
+    // 錯誤會把畫面上仍有效的隧道網址與密碼清成「未啟動/未產生」,誤導主人。
+    if(!res.ok){ $("#rTunnel").textContent = "⚠ " + (r.detail || `操作失敗（${res.status}）`); return; }
     renderRemote(r);
   }
   catch(_){ $("#rTunnel").textContent = "🌐 操作失敗（連線？）"; }
@@ -938,13 +957,15 @@ if(!IS_TOUCH){
     return [+nx.toFixed(4), +ny.toFixed(4)];
   }
   const releaseKeys = () => { held.forEach(k=>send({t:"ku",k})); held.clear(); };
-  window.__releaseDesktop = releaseKeys;    // 供 pauseAll(回儀表板)呼叫,放開電腦端 held
   function setOver(on){
     if(on===overVideo) return;
     overVideo=on;
     $("#deskhint").classList.toggle("show", connected() && !on);
     if(!on) releaseKeys();     // 移出影像 → 自動釋放鍵盤
   }
+  // 供 pauseAll(回儀表板)呼叫：放開電腦端 held + 重置 overVideo,避免離開遠端頁後
+  // 殘留的 overVideo 讓下一個 mouseup/keyup 誤送一筆輸入。
+  window.__releaseDesktop = () => { setOver(false); releaseKeys(); };
 
   document.addEventListener("mousemove", e => {
     if(!active()){ setOver(false); return; }

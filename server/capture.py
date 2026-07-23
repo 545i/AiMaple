@@ -22,6 +22,7 @@ class ScreenCapture:
         self._latest = None            # 最新的 JPEG bytes
         self._latest_is_window = False  # 該影格是否為「視窗裁切」(訪客只能看這種)
         self._lock = threading.Lock()
+        self._start_lock = threading.Lock()   # 序列化 ensure_started,防重複啟動
         self._running = False
         self._thread = None
         # 可於執行中即時調整的畫面設定
@@ -50,9 +51,11 @@ class ScreenCapture:
         print(f"[Capture] 啟動 {self.settings()}")
 
     def ensure_started(self):
-        """惰性啟動：只有真的有人用 MJPEG 備援時才開始擷取，平時不浪費 CPU。"""
-        if not self._running:
-            self.start()
+        """惰性啟動：只有真的有人用 MJPEG 備援時才開始擷取，平時不浪費 CPU。
+        加鎖序列化：多個 /video 請求(執行緒池)並發時只會啟動一條擷取執行緒。"""
+        with self._start_lock:
+            if not self._running:
+                self.start()
 
     def _wgc_frame(self):
         """視窗模式:優先用 WGC 取「視窗表面」(OBS 視窗擷取同款——被遮蓋照拍、

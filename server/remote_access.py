@@ -64,11 +64,14 @@ def is_valid(pw):
     now = time.time()
     if not _password or now > _expires:
         return False
-    if now < _lock_until:
-        return False                      # 鎖定中：連對的也擋，逼攻擊者等待
+    # 正確密碼永遠放行(即使鎖定中)——鎖定只擋「錯誤猜測」,不擋合法持有者登入。
+    # 否則攻擊者只要每 60 秒連錯 10 次觸發全域鎖定,就能持續把合法訪客擋在門外
+    # (可用性 DoS)。攻擊者不知道正確密碼,故此放行完全不削弱防爆破。
     if _match(pw):
         _fails = 0
         return True
+    if now < _lock_until:
+        return False                      # 鎖定中：錯誤猜測一律擋，逼攻擊者等待
     # 舊密碼(上一組)重連：拒絕但不計失敗——主人換密碼後,舊訪客頁每 1.5 秒
     # 自動重連,若計失敗會反覆觸發全域鎖定,把「新密碼的合法訪客」鎖在門外。
     if _prev_password and pw and hmac.compare_digest(str(pw), _prev_password):

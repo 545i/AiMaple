@@ -59,6 +59,16 @@ def _kill_on_close_job():
                     ("PeakJobMemoryUsed", ctypes.c_size_t)]
 
     k = ctypes.windll.kernel32
+    # 明確宣告 restype/argtypes：handle 為 64 位元,預設 c_int(32 位帶號)會截斷,
+    # 可能讓後續 API 收到錯誤的 handle 值而綁定失敗。
+    k.CreateJobObjectW.restype = wintypes.HANDLE
+    k.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    k.OpenProcess.restype = wintypes.HANDLE
+    k.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                          wintypes.LPVOID, wintypes.DWORD]
+    k.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    k.CloseHandle.argtypes = [wintypes.HANDLE]
     h = k.CreateJobObjectW(None, None)
     if not h:
         return None
