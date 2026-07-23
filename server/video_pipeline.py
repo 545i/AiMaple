@@ -27,6 +27,15 @@ except Exception:
     except Exception:
         pass
 
+# 關閉「前景鎖定超時」(SPI_SETFOREGROUNDLOCKTIMEOUT=0)：Windows 預設不允許
+# 非前景進程把別的視窗搶到前景(SetForegroundWindow 會靜默失敗、只閃工作列)。
+# 焦點守衛/對準視窗/閒置掛機都需要把 MapleStory 切到前景才能送入輸入,故在此
+# 解除鎖定,讓 SetForegroundWindow 可靠生效(實測:未設→切換失敗;設後→成功)。
+try:
+    ctypes.windll.user32.SystemParametersInfoW(0x2001, 0, 0, 0)
+except Exception:
+    pass
+
 # maple 根目錄與 ffmpeg 絕對路徑
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _FFMPEG = os.path.join(_ROOT, "bin", "ffmpeg", "bin", "ffmpeg.exe")
