@@ -35,6 +35,7 @@ import tunnel
 import wgc
 import idle_mode
 import minimap
+import calib
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -130,6 +131,8 @@ async def lifespan(app):
     # 閒置施放技能前的焦點確保:用統一焦點系統的輕量分支 enforce_focus
     # (只在失焦時切回、不重啟擷取管線),避免每次施放都觸發 restart。
     idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_EXE))
+    calib.set_keyboard(keyboard)
+    calib.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -145,6 +148,7 @@ async def lifespan(app):
     yield
     guard.cancel()
     idle_mode.stop()
+    calib.stop()
     minimap.watch_stop()
     import audio_pipeline
     audio_pipeline.stop()
@@ -417,6 +421,8 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
     if remote_access.info()["active"]:
         raise HTTPException(status_code=409,
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
+    if calib.is_running():
+        raise HTTPException(status_code=409, detail="運動校準進行中，請先等它結束/停止")
     # 開場即統一焦點守衛一次(鎖定 MapleStory + 切到前景)+ 啟動擷取,
     # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
     video_pipeline.guard_focus(GUARD_EXE)
@@ -469,6 +475,36 @@ def minimap_redetect(token: str = Query("")):
     return JSONResponse(minimap.status())
 
 
+# ===== 運動校準(掛機模式·軌跡學習):量測輸入→位移,僅主人、與掛機/訪客互斥 =====
+@app.post("/calib/start")
+async def calib_start(request: Request, token: str = Query("")):
+    """body: {"kind":"move|jump","values":[...],"direction":"right|left|alt|"}"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="出租進行中,不可校準")
+    if idle_mode.is_running():
+        raise HTTPException(status_code=409, detail="閒置掛機進行中,請先關閉")
+    body = await request.json()
+    ok, msg = calib.start(body.get("kind", ""), body.get("values") or [],
+                          body.get("direction", ""))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return JSONResponse(calib.status())
+
+
+@app.get("/calib/status")
+def calib_status(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse(calib.status())
+
+
+@app.post("/calib/stop")
+def calib_stop(token: str = Query("")):
+    _check_owner(token)
+    calib.stop()
+    return JSONResponse(calib.status())
+
+
 @app.post("/idle/stop")
 def idle_stop(token: str = Query("")):
     _check_owner(token)
@@ -482,6 +518,7 @@ def idle_stop(token: str = Query("")):
 def input_release(token: str = Query("")):
     _check_owner(token)
     idle_mode.stop()                       # 先停掛機(會放開它按著的移動鍵)
+    calib.stop()                           # 校準也停(會放開方向鍵)
     try:
         keyboard.release_all()             # 對所有已知鍵送 UP:
     except Exception as e:
