@@ -12,10 +12,10 @@
     列分組;同組內分成上下兩簇(邊框厚度 2~4 列)即為畫布上下界。左右直邊在
     半透明地圖會淹沒在場景裡,不做硬驗證,改用位置(靠左上)過濾+黃點加分。
     連續多幀取中位數穩定輸出。
-  * 角色黃點：先把影像【顏色反白】(255-BGR) 再轉 HSV——黃色反白後變藍
-    (H≈116)、其他玩家的紅點反白後變青(H≈90)。紅色在正常 HSV 的色相環上
-    跨 0/179 迴繞(要兩段範圍)、且與黃色( H≈25 )距離近容易誤判;反白後
-    兩者都落在連續區段、相距 26 級,單一範圍即可乾淨分離。
+  * 角色黃點：實機採樣定案——角色點是【純飽和黃】HSV(28,255,254),而地圖
+    金色地形/雕像等黃色裝飾 S≤170、V≤204,用 S,V≥200 嚴格範圍乾淨分離。
+    紅色怪物點 H≈0/179 不在黃色範圍,無衝突。多候選時就近追蹤(取離上次
+    位置最近者),短暫偵測不到時保留殘影幾秒(dot_stale),抗閃爍。
 
 來源限制：一律鎖定 maplestory.exe 視窗(WGC 視窗表面,被遮蓋照拍)；
 WGC 不可用時退回螢幕區域裁切。拿不到遊戲視窗就回 None(絕不掃整個桌面)。
@@ -38,6 +38,11 @@ _last = {"found": False}          # 最近一次偵測結果(給 /minimap/status
 _locked = None                    # 鎖定的 (x,y,w,h);None=未鎖定
 _locked_size = None               # 鎖定當下的影格 (w,h);視窗改尺寸即失效
 _LOCK_JITTER = 12                 # 歷史內各分量最大擺動 ≤此值才視為穩定可鎖定
+# 黃點追蹤:上一次角色位置(畫布內相對座標)+時間。短暫抓不到時沿用舊值
+# (殘影,dot_stale=True)最多 _DOT_GHOST 秒,十字不閃爍。
+_dot_last = None
+_dot_ts = 0.0
+_DOT_GHOST = 3.0
 
 
 # ---------- 取得遊戲視窗影格 ----------
@@ -67,35 +72,49 @@ def _grab_window():
     return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
 
-# ---------- 角色黃點(顏色反白後找藍) ----------
-def _player_dot(bgr):
+# ---------- 角色黃點 ----------
+def _player_dot(bgr, last=None):
     """在(小地圖)影像內找角色黃點。回 (x, y) 或 None。
-    反白後黃→藍:H 108~124、S/V 夠高;取最大連通塊的質心。"""
-    inv = cv2.bitwise_not(bgr)
-    hsv = cv2.cvtColor(inv, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (108, 120, 150), (124, 255, 255))
+
+    實機採樣定案(女皇之路):角色點是【純飽和黃】BGR(0,239,254) → HSV(28,255,254);
+    地圖裡的金色平台/雕像等黃色裝飾全部 S≤170、V≤204。故用 S≥200 且 V≥200 的
+    嚴格範圍即可乾淨分離——之前的反白寬鬆範圍(等效 S>120)會把整片金色地形收進來,
+    大 blob 搶走角色點。黃色 H≈28 不跨色相環 0/179(紅色才會),不需反白處理迴繞。
+    last=(x,y):上一次角色位置;有多個候選時取最近者(就近追蹤,抗短暫誤判)。"""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (24, 200, 200), (34, 255, 255))
     n, _lab, stats, cent = cv2.connectedComponentsWithStats(mask)
-    best, area = None, 0
+    cands = []
     for i in range(1, n):
-        a = stats[i, cv2.CC_STAT_AREA]
-        if 2 <= a <= 200 and a > area:    # 黃點很小;排除大片誤判(如 UI 黃字區)
-            area = a
-            best = (int(cent[i][0]), int(cent[i][1]))
-    return best
+        a = int(stats[i, cv2.CC_STAT_AREA])
+        if a < 8 or a > 600:              # 黃點依解析度 ~10-130px;排除雜訊與大片
+            continue
+        w_, h_ = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+        if not (0.4 <= w_ / max(1, h_) <= 2.5):   # 圓點形狀(非長條亮帶)
+            continue
+        cands.append((int(cent[i][0]), int(cent[i][1]), a))
+    if not cands:
+        return None
+    if last is not None:
+        near = min(cands, key=lambda c: (c[0] - last[0]) ** 2 + (c[1] - last[1]) ** 2)
+        return (near[0], near[1])
+    best = max(cands, key=lambda c: c[2])
+    return (best[0], best[1])
 
 
 # ---------- 小地圖畫布偵測(邊框線配對法) ----------
-def _longest_run(row):
-    """單列布林陣列中最長的連續 True 段。回 (start, end, length)。"""
+def _runs(row):
+    """單列布林陣列中所有連續 True 段 [(start, end, length), ...]。
+    注意不能只取「最長段」——場景的亮天空/亮帶可能與邊框同列且更長,
+    會把邊框段擠掉(實測:女皇之路右側亮藍天空)。"""
     idx = np.flatnonzero(row)
     if idx.size == 0:
-        return (0, 0, 0)
+        return []
     splits = np.flatnonzero(np.diff(idx) > 1)
     starts = np.r_[0, splits + 1]
     ends = np.r_[splits, idx.size - 1]
-    lens = idx[ends] - idx[starts] + 1
-    k = int(lens.argmax())
-    return (int(idx[starts[k]]), int(idx[ends[k]]), int(lens[k]))
+    return [(int(idx[s]), int(idx[e]), int(idx[e] - idx[s] + 1))
+            for s, e in zip(starts, ends)]
 
 
 def _row_clusters(ys):
@@ -122,19 +141,22 @@ def _candidates(frame):
     bright = gray > 150
     groups = {}                            # (start,end) -> [row, ...]
     for y in range(roi_h):
-        s, e, L = _longest_run(bright[y])
-        if L < 140 or L > roi_w * 0.5:     # 太短不是邊框;太長是場景橫貫亮帶
-            continue
-        if s > roi_w * 0.25 or y > roi_h * 0.75:   # 畫布必靠左、偏上
-            continue
-        placed = False
-        for k in list(groups):
-            if abs(k[0] - s) <= 8 and abs(k[1] - e) <= 8:
-                groups[k].append(y)
-                placed = True
-                break
-        if not placed:
-            groups[(s, e)] = [y]
+        if y > roi_h * 0.75:               # 畫布必偏上
+            break
+        for (s, e, L) in _runs(bright[y]):
+            if L < 140 or L > roi_w * 0.5:     # 太短不是邊框;太長是場景橫貫亮帶
+                continue
+            if s > roi_w * 0.25:               # 畫布必靠左
+                continue
+            placed = False
+            for k in list(groups):
+                if abs(k[0] - s) <= 8 and abs(k[1] - e) <= 8:
+                    if groups[k][-1] != y:
+                        groups[k].append(y)
+                    placed = True
+                    break
+            if not placed:
+                groups[(s, e)] = [y]
     out = []
     for (s, e), ys in groups.items():
         cl = _row_clusters(ys)
@@ -195,10 +217,11 @@ def status():
 
 def redetect():
     """手動解除鎖定並清空歷史,下一幀起重新偵測。"""
-    global _locked, _locked_size
+    global _locked, _locked_size, _dot_last
     with _lock:
         _locked = None
         _locked_size = None
+        _dot_last = None
         _history.clear()
     print("[minimap] 手動重新偵測:解除鎖定")
 
@@ -206,7 +229,7 @@ def redetect():
 def detect_once():
     """抓一格 → 偵測 → 更新 _last。回 (frame, bbox, dot, cands);拿不到影格回 (None,)*4。
     已鎖定時直接用鎖定 bbox(不重偵測,地圖白色內容干擾不到),每幀只找黃點。"""
-    global _last, _locked, _locked_size
+    global _last, _locked, _locked_size, _dot_last, _dot_ts
     with _lock:
         frame = _grab_window()
         if frame is None:
@@ -217,6 +240,7 @@ def detect_once():
         if _locked is not None and _locked_size != (w, h):
             print(f"[minimap] 視窗尺寸變更 {_locked_size} → {(w, h)},解除鎖定")
             _locked = None
+            _dot_last = None
             _history.clear()
         cands = []
         if _locked is not None:
@@ -226,18 +250,27 @@ def detect_once():
             bbox = _stable_bbox(raw)
             if _maybe_lock(bbox):
                 _locked_size = (w, h)
-        # 黃點每幀都在(鎖定/偵測到的)bbox 內重找——角色會動,不能沿用舊值
-        dot = None
+        # 黃點每幀都在(鎖定/偵測到的)bbox 內重找——角色會動,不能沿用舊值。
+        # 就近追蹤 + 短暫殘影:多候選取離上次最近;抓不到時沿用舊值 ≤_DOT_GHOST 秒。
+        dot, stale = None, False
         if bbox:
             x, y, bw, bh = bbox
-            d = _player_dot(frame[y:y + bh, x:x + bw])
+            d = _player_dot(frame[y:y + bh, x:x + bw], last=_dot_last)
+            now = time.monotonic()
+            if d:
+                _dot_last, _dot_ts = d, now
+            elif _dot_last is not None and now - _dot_ts <= _DOT_GHOST:
+                d, stale = _dot_last, True
+            else:
+                _dot_last = None
             if d:
                 dot = (x + d[0], y + d[1])
         if bbox:
             _last = {"found": True, "locked": _locked is not None,
                      "x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3],
                      "frame_w": w, "frame_h": h,
-                     "dot": {"x": dot[0] - bbox[0], "y": dot[1] - bbox[1]} if dot else None}
+                     "dot": {"x": dot[0] - bbox[0], "y": dot[1] - bbox[1]} if dot else None,
+                     "dot_stale": stale}
         else:
             _last = {"found": False, "locked": False, "frame_w": w, "frame_h": h}
         return frame, bbox, dot, cands

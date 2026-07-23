@@ -774,7 +774,7 @@ async function mmTick(){
     if(s.found){
       $("#mmInfo").textContent = (s.locked ? "🔒 已鎖定 " : "🔎 偵測中 ")
         + `小地圖 ${s.w}×${s.h} @ (${s.x},${s.y})`
-        + (s.dot ? `　🟡 角色點 (${s.dot.x},${s.dot.y})` : "　（未見角色黃點）");
+        + (s.dot ? `　🟡 角色點 (${s.dot.x},${s.dot.y})${s.dot_stale?"（殘影）":""}` : "　（未見角色黃點）");
     } else {
       $("#mmInfo").textContent = s.error ? `❌ ${s.error}` : "🔎 尚未偵測到小地圖（小地圖有展開嗎？）";
     }
