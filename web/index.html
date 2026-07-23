@@ -242,7 +242,7 @@
  <div id="dashView">
   <div class="dash-card">
    <div class="dash-h">maple 儀表板</div>
-   <div class="dash-sub">出租中控與進入主人操作（連接管理在主人頁內）</div>
+   <div class="dash-sub">出租中控與進入遠端（連接管理在遠端頁內）</div>
    <div class="mstat" id="dHw">硬體：載入中…</div>
 
    <div class="msec">出租管理（Cloudflare Tunnel）</div>
@@ -260,11 +260,18 @@
      <input type="number" id="rHours" min="0.5" max="24" step="0.5" value="0.5"><span>小時</span>
      <div class="mbtn" id="rHoursBtn" style="flex:1">延長此時數</div>
    </div>
+
+   <div class="msec">分享給訪客</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rCopyUrl">🔗 複製網址</div>
+     <div class="mbtn" id="rCopyPass">🔑 複製密碼</div>
+   </div>
+   <button class="mapply" id="rCopyAll" style="background:#3a7">📋 一鍵複製出租資訊（貼給訪客）</button>
    <div style="font-size:12px;color:#8a8f99;margin-top:4px">
      訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
      滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
 
-   <button class="enter-btn" id="enterRemote">▶ 進入主人操作頁</button>
+   <button class="enter-btn" id="enterRemote">▶ 進入遠端</button>
    <button class="logout-btn" id="logout">登出</button>
   </div>
  </div>
@@ -790,21 +797,65 @@ function fmtDur(sec){
   return (h?`${h} 小時 `:"") + (m?`${m} 分`:"");
 }
 let rPolling = 0;
+let rState = { url:"", password:"", remaining:0, expireAt:0 };   // 供複製與倒數讀取
+function fmtHMS(sec){ sec=Math.max(0,sec|0); const h=(sec/3600)|0, m=((sec%3600)/60)|0, s=sec%60;
+  const mm=(m<10?"0":"")+m, ss=(s<10?"0":"")+s; return h>0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`; }
+// 密碼剩餘時間:伺服器回報值校準 expireAt,本地每秒遞減重繪(不吃效能又準確)。
+function renderPassLine(){
+  const el=$("#rPass"); if(!el) return;
+  if(!rState.password){ el.textContent = "🔑 密碼：未產生／已過期"; return; }
+  const left = Math.max(0, Math.round((rState.expireAt - Date.now())/1000));
+  el.textContent = left>0 ? `🔑 ${rState.password}　⏳ 此密碼剩餘 ${fmtHMS(left)}`
+                          : "🔑 密碼：已過期";
+}
 function renderRemote(r){
   if(r.detail){ $("#rPass").textContent = "🔑 沒有有效密碼可延長，請先產生"; return; }
   const tn = r.tunnel || {};
+  rState.url = tn.running ? (tn.url || "") : "";
+  rState.password = r.active ? (r.password || "") : "";
+  rState.remaining = r.active ? (r.remaining_seconds || 0) : 0;
+  rState.expireAt = r.active ? (Date.now() + rState.remaining*1000) : 0;   // 校準
   $("#rTunnel").textContent = tn.running
     ? ("🌐 " + (tn.url || "隧道啟動中，正在取得網址…"))
     : ("🌐 隧道：未啟動" + (tn.error ? `（${tn.error}）` : ""));
   $("#rTunnelBtn").textContent = tn.running ? "🛑 停止出租" : "🚀 啟動出租";
   $("#rTunnelBtn").dataset.running = tn.running ? "1" : "0";
-  $("#rPass").textContent = r.active
-    ? `🔑 密碼：${r.password}　剩餘 ${fmtDur(r.remaining_seconds)}`
-    : "🔑 密碼：未產生／已過期";
+  renderPassLine();
   // 隧道在跑但網址還沒出來(cloudflared 要幾秒) → 輪詢直到拿到
   if(tn.running && !tn.url && rPolling < 20){ rPolling++; setTimeout(refreshRemote, 1000); }
   else rPolling = 0;
 }
+// 儀表板開著時:每秒本地重繪剩餘、每 30 秒向伺服器校準一次(輕量,不吃效能)。
+setInterval(() => { if(document.body.classList.contains("view-dash")) renderPassLine(); }, 1000);
+setInterval(() => { if(document.body.classList.contains("view-dash")) refreshRemote(); }, 30000);
+
+// 複製到剪貼簿：主人頁走 http(非安全情境)navigator.clipboard 多半不可用,
+// 故備援用隱藏 textarea + execCommand("copy")(需在使用者點擊事件內執行才有效)。
+async function copyText(t){
+  if(!t) return false;
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(t); return true; } }catch(_){}
+  try{
+    const ta=document.createElement("textarea");
+    ta.value=t; ta.style.position="fixed"; ta.style.top="-9999px"; ta.setAttribute("readonly","");
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, t.length);
+    const ok=document.execCommand("copy"); document.body.removeChild(ta); return ok;
+  }catch(_){ return false; }
+}
+async function copyBtn(el, text, emptyMsg){
+  if(!el.dataset.label) el.dataset.label = el.textContent;
+  if(!text){ el.textContent = emptyMsg || "⚠ 尚無內容"; }
+  else el.textContent = (await copyText(text)) ? "✓ 已複製" : "✗ 複製失敗（請長按選取）";
+  setTimeout(()=>{ el.textContent = el.dataset.label; }, 1400);
+}
+// 統一文案(貼給訪客)。「輪迴出租」為服務名,時間用剩餘有效時間。
+function rentalText(){
+  return `輪迴出租 ${fmtDur(rState.remaining)}\n`
+       + `遠端網址：${rState.url || "（尚未啟動出租）"}\n`
+       + `遠端密碼：${rState.password || "（尚未產生）"}`;
+}
+$("#rCopyUrl").onclick  = e => copyBtn(e.currentTarget, rState.url, "⚠ 先啟動出租");
+$("#rCopyPass").onclick = e => copyBtn(e.currentTarget, rState.password, "⚠ 先產生密碼");
+$("#rCopyAll").onclick  = e => copyBtn(e.currentTarget, (rState.url && rState.password) ? rentalText() : "", "⚠ 先啟動出租並產生密碼");
 async function refreshRemote(){
   try{ const r = await (await fetch(`/remote/info?token=${encodeURIComponent(token)}`)).json();
     if(!r.guest) renderRemote(r); }catch(_){}
