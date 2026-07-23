@@ -1,7 +1,7 @@
 # 以管理員權限強制關閉舊進程並用最新程式碼重啟(UAC 關閉時靜默提權)
 $ErrorActionPreference = "SilentlyContinue"
 $root = "C:\Users\mense\dev\maple"
-Get-Process python,pythonw,mediamtx,ffmpeg | Stop-Process -Force
+Get-Process python,pythonw,mediamtx,ffmpeg,cloudflared | Stop-Process -Force
 Start-Sleep -Seconds 3
 Set-Location $root
 Start-Process -FilePath "$root\bin\mediamtx.exe" -ArgumentList "media\mediamtx.yml" -WorkingDirectory $root -WindowStyle Hidden

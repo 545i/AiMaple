@@ -644,6 +644,28 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
                 mouse.button_up(b)
 
 
+def _cleanup_tunnel(*_a):
+    """出租進程與網址的保底清理。Job Object 已保證 cloudflared 隨行程死亡，
+    這裡再主動 stop() 一次，讓正常關閉/Ctrl+C/關視窗都盡快收掉網址與進程。"""
+    try:
+        tunnel.stop()
+    except Exception:
+        pass
+
+
+# lifespan shutdown 不一定跑得到(直接關 console 視窗時)，故再掛 atexit + 訊號。
+import atexit
+import signal
+atexit.register(_cleanup_tunnel)
+for _sig in ("SIGINT", "SIGTERM", "SIGBREAK"):
+    _s = getattr(signal, _sig, None)
+    if _s is not None:
+        try:
+            signal.signal(_s, lambda *_a: (_cleanup_tunnel(), os._exit(0)))
+        except (ValueError, OSError):
+            pass
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host=HOST, port=PORT)
