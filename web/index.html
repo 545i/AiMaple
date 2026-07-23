@@ -208,6 +208,7 @@
         <div class="mbtn" id="watchBtn">👁 注視中</div>
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
+      <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
       <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
         <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
       </div></div>
@@ -295,6 +296,9 @@
      </div>
      <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
    </div>
+
+   <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:14px">🆘 解除卡死（放開所有按鍵）</button>
+   <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
 
    <button class="enter-btn" id="enterRemote">▶ 進入遠端</button>
    <button class="logout-btn" id="logout">登出</button>
@@ -645,6 +649,21 @@ function setWatching(on){
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
+
+// ===== 解除卡死:一鍵放開所有鍵盤/滑鼠鍵(Arduino 韌體卡住按鍵時用) =====
+async function releaseStuck(btn){
+  const orig = btn.textContent;
+  btn.textContent = "放開中…";
+  try{
+    const r = await fetch(`/input/release?token=${encodeURIComponent(token)}`, { method:"POST" });
+    btn.textContent = r.ok ? "✓ 已解除卡死" : "✗ 失敗";
+    const m = $("#releaseMsg"); if(m) m.textContent = r.ok ? "已放開所有按鍵、並停止閒置掛機" : "";
+    if(idleOn) setIdle(false);   // 解除同時關閉掛機顯示
+  }catch(_){ btn.textContent = "✗ 連線失敗"; }
+  setTimeout(()=>{ btn.textContent = orig; }, 1600);
+}
+$("#releaseBtn").onclick  = e => releaseStuck(e.currentTarget);
+$("#releaseBtn2").onclick = e => releaseStuck(e.currentTarget);
 
 // ===== 閒置(掛機)模式(儀表板/中控頁)：伺服器端隨機時序自動輸入,僅主人、與出租互斥 =====
 // 開啟時同步顯示「監視畫面」——每秒抓一張 MapleStory 視窗 JPEG(約 1 秒延遲,

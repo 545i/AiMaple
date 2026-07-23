@@ -269,11 +269,18 @@ def focus_hwnd(hwnd):
     全失效、連手動點擊也救不回」。SPI 解鎖後本就不需要它。"""
     if not hwnd or not _user32.IsWindow(hwnd):
         return False
-    SW_RESTORE = 9
-    _user32.ShowWindow(hwnd, SW_RESTORE)
+    _user32.ShowWindow(hwnd, 9)                  # SW_RESTORE
+    # 送一次 Alt 鍵解除「前景鎖定」,SetForegroundWindow 才會真正生效並讓遊戲取得
+    # 鍵盤焦點(參考 maplestory_automation 的 shell.SendKeys('%'))。這只是注入一個
+    # Alt down/up 輸入事件,不碰 AttachThreadInput(那會永久打亂鍵盤輸入佇列)、也
+    # 不移動滑鼠。遊戲視窗成為前景後會收到 WM_ACTIVATE,自行把鍵盤焦點設回輸入區。
+    try:
+        _user32.keybd_event(0x12, 0, 0, 0)      # VK_MENU(Alt) down
+        _user32.keybd_event(0x12, 0, 0x2, 0)    # Alt up (KEYEVENTF_KEYUP)
+    except Exception:
+        pass
     _user32.BringWindowToTop(hwnd)
     _user32.SetForegroundWindow(hwnd)
-    _activation_click(hwnd)                     # 標題列實體點擊 = 真實激活,給鍵盤焦點
     return True
 
 

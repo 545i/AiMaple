@@ -39,6 +39,16 @@ def _token(key):
     return k
 
 
+# 解除卡死用的完整按鍵清單(方向/數字/字母/修飾/常用/功能/小鍵盤)。
+_ALL_KEYS = (["left", "right", "up", "down"]
+             + [str(i) for i in range(10)]
+             + list("abcdefghijklmnopqrstuvwxyz")
+             + ["shift", "ctrl", "alt", "space", "enter", "tab", "esc",
+                "backspace", "home", "end", "pageup", "pagedown", "insert", "delete"]
+             + ["f" + str(i) for i in range(1, 13)]
+             + ["num" + str(i) for i in range(10)])
+
+
 class ArduinoKeyboard:
     def __init__(self, port=ARDUINO_PORT, baud=ARDUINO_BAUD):
         self.port = port
@@ -156,6 +166,15 @@ class ArduinoKeyboard:
 
     def key_up(self, key):
         self._q.put("UP:" + _token(key))
+
+    def release_all(self):
+        """對所有已知按鍵送 UP:(解除卡死)。用於程式被強殺後韌體仍按著某鍵、
+        一直重複輸出的情況——中控台「解除卡死」按鈕呼叫此方法一次全放開。"""
+        for k in _ALL_KEYS:
+            self._q.put("UP:" + _token(k))
+        # 順手也放開滑鼠三鍵(若燒錄了鍵鼠韌體;未支援則韌體回 ERR,無害)
+        for b in ("L", "R", "M"):
+            self._q.put("MUP:" + b)
 
     def close(self):
         try:

@@ -440,6 +440,24 @@ def idle_stop(token: str = Query("")):
     return JSONResponse(idle_mode.status())
 
 
+# ===== 解除卡死：一次放開所有鍵盤鍵與滑鼠鍵(程式被強殺後韌體仍按著某鍵時用) =====
+@app.post("/input/release")
+def input_release(token: str = Query("")):
+    _check_owner(token)
+    idle_mode.stop()                       # 先停掛機(會放開它按著的移動鍵)
+    try:
+        keyboard.release_all()             # 對所有已知鍵送 UP:
+    except Exception as e:
+        print(f"[release] 鍵盤釋放錯誤: {e}")
+    for b in ("left", "right", "middle"):
+        try:
+            mouse.button_up(b)
+        except Exception:
+            pass
+    print("[release] 已解除卡死:放開所有鍵盤/滑鼠鍵")
+    return JSONResponse({"ok": True})
+
+
 # ===== 訪客自助功能（任何有效 token 可用;皆為受限動作,無法作惡） =====
 # 畫質：只接受預設檔名稱,不接受任意參數(防灌爆 CPU/頻寬的極端值)。
 GUEST_QUALITY_PRESETS = {
