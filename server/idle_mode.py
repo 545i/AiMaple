@@ -16,14 +16,24 @@ import threading
 import time
 
 from config import (IDLE_SKILL_KEY, IDLE_MOVE_KEYS, IDLE_MOVE_MIN, IDLE_MOVE_MAX,
-                    IDLE_GAP_MIN, IDLE_GAP_MAX, IDLE_SKILL_MIN, IDLE_SKILL_MAX)
+                    IDLE_GAP_MIN, IDLE_GAP_MAX, IDLE_SKILL_MIN, IDLE_SKILL_MAX,
+                    IDLE_KEY_HOLD_MIN, IDLE_KEY_HOLD_MAX,
+                    IDLE_KEY_GAP_MIN, IDLE_KEY_GAP_MAX)
 
 _keyboard = None
+_focus_fn = None              # 施放技能前呼叫,確保 MapleStory 在前景(輸入才進得去)
 _thread = None
 _stop = threading.Event()
 _running = False
 _started_at = 0.0
 _op_lock = threading.Lock()   # 序列化 start/stop,防快速連點造成雙重啟動/旗標交錯
+
+
+def set_focus_fn(fn):
+    """注入焦點守衛函式(main.py 傳 enforce_focus)。避免 idle_mode 直接依賴
+    video_pipeline 造成循環 import。"""
+    global _focus_fn
+    _focus_fn = fn
 
 
 def set_keyboard(kb):
@@ -62,6 +72,22 @@ def _move_once():
     return stopped
 
 
+def _press(key):
+    """明確 key_down → 按住(拟人時長,確保遊戲讀到)→ key_up。取代 tap(放開太快
+    常漏讀)。按住時長對數常態,落在 IDLE_KEY_HOLD_MIN~MAX。回 True=中途停止。"""
+    mid = (IDLE_KEY_HOLD_MIN + IDLE_KEY_HOLD_MAX) / 2.0
+    _keyboard.key_down(key)
+    stopped = _stop.wait(_lognorm(mid, 0.35, IDLE_KEY_HOLD_MIN, IDLE_KEY_HOLD_MAX))
+    _keyboard.key_up(key)
+    return stopped
+
+
+def _key_gap():
+    """按鍵之間的最小間隔(放開→下次按下),讓遊戲分辨成獨立按鍵事件。回 True=停止。"""
+    return _stop.wait(_lognorm((IDLE_KEY_GAP_MIN + IDLE_KEY_GAP_MAX) / 2.0, 0.4,
+                               IDLE_KEY_GAP_MIN, IDLE_KEY_GAP_MAX))
+
+
 def _idle_gap():
     """動作間停頓:多數短、偶爾(約 1/8,擬人分心)長停。皆對數常態,回 True=停止。"""
     if random.random() < 0.12:
@@ -81,22 +107,30 @@ def _loop():
     try:
         while not _stop.is_set():
             if time.monotonic() >= next_skill:
+                # 關鍵動作(施放 buff)前先確保 MapleStory 在前景,否則按鍵送到別的
+                # 視窗、或遊戲沒焦點收不到 → buff 放不出來。焦點守衛有 2 秒節流。
+                if _focus_fn:
+                    try:
+                        _focus_fn()
+                    except Exception:
+                        pass
                 # 施放前先移動一下,避免「站定點固定施放」的可辨識模式
                 if _move_once():
                     break
-                if _stop.wait(_lognorm(0.15, 0.5, 0.05, 0.6)):
+                if _key_gap():                      # 移動放開→技能按下 的間隔
                     break
-                _keyboard.tap(IDLE_SKILL_KEY)
+                if _press(IDLE_SKILL_KEY):          # key_down→按住→key_up,確保讀到
+                    break
                 next_skill = time.monotonic() + random.uniform(IDLE_SKILL_MIN, IDLE_SKILL_MAX)
                 if _idle_gap():
                     break
                 burst = random.randint(1, 4)
                 continue
-            # 一輪叢發:連續移動 burst 次(每次時長各自隨機),再進入一次停頓。
+            # 一輪叢發:連續移動 burst 次(每次時長各自隨機),每次移動之間留按鍵間隔。
             for _ in range(burst):
                 if _stop.is_set() or _move_once():
                     break
-                if random.random() < 0.35 and _stop.wait(_lognorm(0.25, 0.6, 0.05, 1.5)):
+                if _key_gap():                      # 兩次移動之間的最小間隔
                     break
             if _idle_gap():
                 break

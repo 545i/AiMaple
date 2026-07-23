@@ -108,7 +108,9 @@ async def _rental_guard_loop():
     loop = asyncio.get_event_loop()
     while True:
         try:
-            if remote_access.info()["active"]:
+            # 出租(訪客可連)或閒置掛機進行中,都要維持 MapleStory 在前景:
+            # 訪客/掛機的輸入都是硬體 HID,只會進「當前焦點視窗」。
+            if remote_access.info()["active"] or idle_mode.is_running():
                 await loop.run_in_executor(None, _tick)
         except Exception:
             pass
@@ -125,6 +127,7 @@ async def lifespan(app):
     guard = asyncio.create_task(_rental_guard_loop())
     keyboard.start()
     idle_mode.set_keyboard(keyboard)
+    idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_TITLE))
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。

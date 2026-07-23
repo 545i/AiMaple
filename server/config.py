@@ -46,7 +46,15 @@ IDLE_GAP_MIN = float(_env("MAPLE_IDLE_GAP_MIN", "0.4"))     # 動作間停頓最
 IDLE_GAP_MAX = float(_env("MAPLE_IDLE_GAP_MAX", "3.0"))     # 動作間停頓最長
 # 技能重放間隔(秒),隨機。35~95 秒:頻繁施放維持活動,搭配對數常態時序不呈固定頻率。
 IDLE_SKILL_MIN = float(_env("MAPLE_IDLE_SKILL_MIN", "35"))   # 技能重放最短間隔(秒)
-IDLE_SKILL_MAX = float(_env("MAPLE_IDLE_SKILL_MAX", "95"))   # 技能重放最長間隔(秒)
+IDLE_SKILL_MAX = float(_env("MAPLE_IDLE_SKILL_MAX", "95"))   # 技能重放最長間隔
+# 按鍵按住時長(秒):按下→放開之間停留多久。tap(裸 token)韌體放開太快遊戲常漏讀,
+# 故技能改 key_down→按住 60~140ms→key_up,確保遊戲一定讀到(>3 個畫面幀)。
+IDLE_KEY_HOLD_MIN = float(_env("MAPLE_IDLE_HOLD_MIN", "0.06"))
+IDLE_KEY_HOLD_MAX = float(_env("MAPLE_IDLE_HOLD_MAX", "0.14"))
+# 按鍵之間最小間隔(秒):一個動作放開後,到下一個按下之間至少停這麼久,
+# 讓遊戲能分辨成獨立按鍵事件、不黏在一起。
+IDLE_KEY_GAP_MIN = float(_env("MAPLE_IDLE_KEYGAP_MIN", "0.08"))
+IDLE_KEY_GAP_MAX = float(_env("MAPLE_IDLE_KEYGAP_MAX", "0.25"))
 
 # ===== Arduino 鍵盤 (序列埠) =====
 ARDUINO_PORT = _env("MAPLE_ARDUINO_PORT", "COM3")
