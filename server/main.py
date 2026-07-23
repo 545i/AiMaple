@@ -18,7 +18,8 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
+from fastapi.responses import (StreamingResponse, FileResponse, JSONResponse,
+                               Response)
 
 from config import (AUTH_TOKEN, HOST, PORT, TARGET_FPS, MOUSE_SENSITIVITY,
                     REMOTE_MODE, REMOTE_TTL_HOURS, GUEST_COOLDOWN, GUEST_MAX_CONN,
@@ -404,8 +405,25 @@ def idle_start(token: str = Query("")):
     if remote_access.info()["active"]:
         raise HTTPException(status_code=409,
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
+    # 鎖定擷取 MapleStory 視窗 + 啟動擷取,讓中控頁監視畫面(/monitor/frame)有內容
+    video_pipeline.force_window_target(GUARD_TITLE)
+    screen.ensure_started()
     idle_mode.start()
     return JSONResponse(idle_mode.status())
+
+
+# ===== 中控頁監視畫面：最新單張 JPEG(主人專用,前端每秒抓一張 ≈1 秒延遲) =====
+@app.get("/monitor/frame")
+def monitor_frame(token: str = Query("")):
+    """回傳最新一張擷取影格(視窗模式=MapleStory 視窗裁切)。單張、低頻抓取,
+    用於儀表板監視掛機狀態——省頻寬、約 1 秒延遲但穩定流暢。僅主人可用。"""
+    _check_owner(token)
+    screen.ensure_started()
+    frame = screen.latest()
+    if frame is None:
+        raise HTTPException(status_code=503, detail="尚無影格")
+    return Response(content=frame, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.post("/idle/stop")
