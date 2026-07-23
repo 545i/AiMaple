@@ -11,10 +11,12 @@ import ctypes
 from ctypes import wintypes
 import os
 import subprocess
+import threading
 import time
 
 from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M,
                     VIDEO_INTRA_REFRESH, VIDEO_VBV_FRAMES)
+import wgc
 
 # 讓本程序 DPI-aware，GetWindowRect 才會回傳正確的實體像素座標（超寬/縮放螢幕才不會偏）
 try:
@@ -385,7 +387,7 @@ def _build_args():
     idx = max(0, int(state["monitor"]) - 1)
     crop = window_crop(state["hwnd"]) if state["source"] == "window" else None
     if crop:
-        # 指定視窗：ddagrab(DXGI 整個螢幕) 再依視窗實際座標裁切（DirectX 遊戲正確、DPI 正確）
+        # 指定視窗（備援路徑,WGC 不可用時）：ddagrab(DXGI 整個螢幕) 再依視窗座標裁切
         x, y, w, h = crop
         vf = f"ddagrab=output_idx={idx}:framerate={fps},hwdownload,format=bgra,crop={w}:{h}:{x}:{y}"
     else:
@@ -399,14 +401,96 @@ def _build_args():
     return base + ["-filter_complex", vf] + _encode_args(fps, br)
 
 
+def _build_args_wgc(w, h, fps, br):
+    """視窗模式主力：WGC 影格經 stdin(rawvideo BGRA) 餵入 → NVENC。
+    OBS 視窗擷取同款來源——被遮蓋照拍、通知不入鏡、視窗移動自動跟隨。"""
+    base = [_FFMPEG, "-hide_banner", "-loglevel", "error",
+            "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{w}x{h}",
+            "-r", str(int(fps)), "-i", "-"]
+    vf = []
+    sh = int(state.get("scale", 0))
+    if sh > 0:
+        vf.append(f"scale=-2:min(ih\\,{sh}):flags=fast_bilinear")
+    if int(state.get("gray", 0)):
+        vf.append("hue=s=0")
+    if vf:
+        base += ["-vf", ",".join(vf)]
+    return base + _encode_args(int(fps), int(br))
+
+
 # ---------- 生命週期 ----------
+_feeder = None                     # WGC → ffmpeg stdin 的餵幀執行緒
+_feeder_stop = threading.Event()
+
+
 def is_running():
     return _proc is not None and _proc.poll() is None
+
+
+def _feed_wgc(proc, w, h, fps):
+    """以固定 fps 把 WGC 最新影格寫進 ffmpeg stdin(cfr;沒新影格就重複上一格)。
+    視窗尺寸改變 → 另開執行緒重啟管線(rawvideo 的 WxH 是固定的)。"""
+    interval = 1.0 / max(1, int(fps))
+    next_t = time.perf_counter()
+    while not _feeder_stop.is_set() and proc.poll() is None:
+        f = wgc.latest(max_age=5.0)
+        if f is not None:
+            fh, fw = f.shape[0] & ~1, f.shape[1] & ~1
+            if fw != w or fh != h:
+                print(f"[Video] 視窗尺寸變更 {w}x{h} → {fw}x{fh},重啟管線")
+                threading.Thread(target=restart, daemon=True).start()
+                return
+            try:
+                proc.stdin.write(f[:h, :w].tobytes())
+            except Exception:
+                return                     # ffmpeg 已結束/管線斷
+        next_t += interval
+        d = next_t - time.perf_counter()
+        if d > 0:
+            time.sleep(d)
+        else:
+            next_t = time.perf_counter()   # 落後就重新對時,不追幀
+
+
+def _try_start_wgc():
+    """視窗模式優先走 WGC。成功回 True;不可用/拿不到影格回 False(退 ddagrab)。"""
+    global _proc, _feeder
+    if state["source"] != "window" or not state["hwnd"]:
+        return False
+    if not wgc.ensure(state["hwnd"]):
+        return False
+    f = None
+    for _ in range(20):                    # 最多等 2 秒拿第一格(取得尺寸)
+        f = wgc.latest(max_age=5.0)
+        if f is not None:
+            break
+        time.sleep(0.1)
+    if f is None:
+        return False
+    w, h = f.shape[1] & ~1, f.shape[0] & ~1
+    if w <= 0 or h <= 0:
+        return False
+    fps, br = int(state["fps"]), int(state["bitrate"])
+    try:
+        _proc = subprocess.Popen(_build_args_wgc(w, h, fps, br), cwd=_ROOT,
+                                 stdin=subprocess.PIPE,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        print(f"[Video] ffmpeg(WGC) 啟動失敗: {e}")
+        return False
+    _feeder_stop.clear()
+    _feeder = threading.Thread(target=_feed_wgc, args=(_proc, w, h, fps), daemon=True)
+    _feeder.start()
+    print(f"[Video] ffmpeg 啟動(WGC 視窗擷取) window={state['window']!r} "
+          f"{w}x{h} fps={fps} br={br}M")
+    return True
 
 
 def ensure_running():
     global _proc
     if is_running():
+        return True
+    if _try_start_wgc():                   # 視窗模式:WGC(OBS 級,被遮蓋照拍)
         return True
     try:
         _proc = subprocess.Popen(_build_args(), cwd=_ROOT,
@@ -420,8 +504,17 @@ def ensure_running():
 
 
 def stop():
-    global _proc
+    global _proc, _feeder
+    _feeder_stop.set()
+    if _feeder is not None and _feeder is not threading.current_thread():
+        _feeder.join(timeout=1.0)
+    _feeder = None
     if is_running():
+        try:
+            if _proc.stdin:
+                _proc.stdin.close()
+        except Exception:
+            pass
         try:
             _proc.terminate()
             _proc.wait(timeout=3)

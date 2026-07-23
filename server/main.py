@@ -31,6 +31,7 @@ import video_pipeline
 import clipboard
 import remote_access
 import tunnel
+import wgc
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -136,6 +137,7 @@ async def lifespan(app):
     video_pipeline.stop()
     screen.stop()
     tunnel.stop()
+    wgc.stop()
 
 
 app = FastAPI(title="maple 遠端遊玩", lifespan=lifespan)

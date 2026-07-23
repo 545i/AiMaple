@@ -54,10 +54,25 @@ class ScreenCapture:
         if not self._running:
             self.start()
 
+    def _wgc_frame(self):
+        """視窗模式:優先用 WGC 取「視窗表面」(OBS 視窗擷取同款——被遮蓋照拍、
+        通知不入鏡)。非視窗模式停掉 WGC 並回 None;WGC 不可用也回 None。"""
+        try:
+            import video_pipeline
+            import wgc
+            st = video_pipeline.state
+            if st["source"] != "window" or not st["hwnd"]:
+                wgc.stop()
+                return None
+            if not wgc.ensure(st["hwnd"]):
+                return None
+            return wgc.latest()
+        except Exception:
+            return None
+
     def _window_bbox(self):
-        """視窗模式時回目標視窗的絕對矩形(隱私:出租訪客只看得到遊戲視窗,
-        不會看到整個桌面/通知)。非視窗模式或視窗無效回 None → 退回整螢幕。
-        註:這是螢幕區域擷取,若別的視窗蓋在遊戲上仍會拍到——由出租焦點守衛
+        """WGC 不可用時的備援:視窗絕對矩形的螢幕區域裁切。
+        註:此路徑若別的視窗蓋在遊戲上仍會拍到——由出租焦點守衛
         (video_pipeline.enforce_focus)保證遊戲維持前景。"""
         try:
             import video_pipeline
@@ -72,13 +87,16 @@ class ScreenCapture:
         with mss.mss() as sct:
             while self._running:
                 t0 = time.perf_counter()
-                bbox = self._window_bbox()
-                is_window = bbox is not None
-                if bbox is None:
-                    monitors = sct.monitors
-                    idx = self.monitor if self.monitor < len(monitors) else 1
-                    bbox = monitors[idx]
-                img = np.asarray(sct.grab(bbox))   # BGRA
+                img = self._wgc_frame()            # WGC 視窗表面(BGRA ndarray)
+                is_window = img is not None
+                if img is None:
+                    bbox = self._window_bbox()     # 備援:螢幕區域裁切
+                    is_window = bbox is not None
+                    if bbox is None:
+                        monitors = sct.monitors
+                        idx = self.monitor if self.monitor < len(monitors) else 1
+                        bbox = monitors[idx]
+                    img = np.asarray(sct.grab(bbox))   # BGRA
                 frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
                 h, w = frame.shape[:2]
                 if w > self.width:
