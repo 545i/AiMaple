@@ -17,7 +17,6 @@ import time
 
 from config import (IDLE_SKILL_KEY, IDLE_MOVE_KEYS, IDLE_MOVE_MIN, IDLE_MOVE_MAX,
                     IDLE_GAP_MIN, IDLE_GAP_MAX, IDLE_SKILL_MIN, IDLE_SKILL_MAX,
-                    IDLE_KEY_HOLD_MIN, IDLE_KEY_HOLD_MAX,
                     IDLE_KEY_GAP_MIN, IDLE_KEY_GAP_MAX)
 
 _keyboard = None
@@ -72,16 +71,6 @@ def _move_once():
     return stopped
 
 
-def _press(key):
-    """明確 key_down → 按住(拟人時長,確保遊戲讀到)→ key_up。取代 tap(放開太快
-    常漏讀)。按住時長對數常態,落在 IDLE_KEY_HOLD_MIN~MAX。回 True=中途停止。"""
-    mid = (IDLE_KEY_HOLD_MIN + IDLE_KEY_HOLD_MAX) / 2.0
-    _keyboard.key_down(key)
-    stopped = _stop.wait(_lognorm(mid, 0.35, IDLE_KEY_HOLD_MIN, IDLE_KEY_HOLD_MAX))
-    _keyboard.key_up(key)
-    return stopped
-
-
 def _key_gap():
     """按鍵之間的最小間隔(放開→下次按下),讓遊戲分辨成獨立按鍵事件。回 True=停止。"""
     return _stop.wait(_lognorm((IDLE_KEY_GAP_MIN + IDLE_KEY_GAP_MAX) / 2.0, 0.4,
@@ -119,8 +108,10 @@ def _loop():
                     break
                 if _key_gap():                      # 移動放開→技能按下 的間隔
                     break
-                if _press(IDLE_SKILL_KEY):          # key_down→按住→key_up,確保讀到
-                    break
+                # 技能(放置輪迴)用韌體 tap(裸 token 4):韌體內建 delay(20) 確保遊戲
+                # 讀到,與訪客模式同一條驗證有效的路徑。數字鍵走 DOWN:/UP: 實機無效,
+                # 故不用 key_down/key_up。
+                _keyboard.tap(IDLE_SKILL_KEY)
                 next_skill = time.monotonic() + random.uniform(IDLE_SKILL_MIN, IDLE_SKILL_MAX)
                 if _idle_gap():
                     break
