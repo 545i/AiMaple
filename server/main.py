@@ -408,7 +408,8 @@ def idle_status(token: str = Query("")):
 
 
 @app.post("/idle/start")
-def idle_start(token: str = Query("")):
+def idle_start(token: str = Query(""), duration: float = Query(0)):
+    """開啟閒置掛機。duration=總啟用秒數(0=無限),到時自動關閉。"""
     _check_owner(token)
     # 與訪客模式互斥：出租(短密碼有效)期間不得掛機——訪客與掛機會搶同一套鍵盤
     if remote_access.info()["active"]:
@@ -418,7 +419,7 @@ def idle_start(token: str = Query("")):
     # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
     video_pipeline.guard_focus(GUARD_EXE)
     screen.ensure_started()
-    idle_mode.start()
+    idle_mode.start(max(0.0, min(86400.0, duration)))   # 上限 24 小時
     return JSONResponse(idle_mode.status())
 
 

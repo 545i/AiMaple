@@ -281,6 +281,11 @@
      滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
 
    <div class="msec">閒置掛機（隨機移動＋放置輪迴）</div>
+   <div class="mrow"><label>時長</label>
+     <input type="number" id="idleH" min="0" max="24" value="1" style="width:52px;background:#1d1e26;color:#eee;border:1px solid #3a3d48;border-radius:8px;padding:6px;font-size:14px"><span>時</span>
+     <input type="number" id="idleM" min="0" max="59" value="0" style="width:52px;background:#1d1e26;color:#eee;border:1px solid #3a3d48;border-radius:8px;padding:6px;font-size:14px"><span>分</span>
+     <span style="font-size:12px;color:#8a8f99;margin-left:auto">0=無限</span>
+   </div>
    <div class="mbtn" id="idleBtn">🤖 閒置掛機：關</div>
    <div id="idleMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
    <div id="monitorBox" style="display:none;margin-top:8px">
@@ -294,6 +299,7 @@
        <div class="klight" data-k="right">→</div>
        <div id="nextSkill" class="kinfo">下一次放置輪迴：--</div>
      </div>
+     <div id="idleRemain" style="font-size:13px;color:#7fe0b0;margin-top:6px;font-variant-numeric:tabular-nums"></div>
      <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
    </div>
 
@@ -686,11 +692,20 @@ async function refreshTrack(){
     });
     $("#nextSkill").textContent = s.running
       ? `下一次放置輪迴：${s.next_skill_in}s` : "下一次放置輪迴：--";
+    // 剩餘總時長(有設時長才顯示;到期倒數)
+    const rem = $("#idleRemain");
+    if(s.running && s.has_limit){
+      rem.textContent = "⏳ 掛機剩餘：" + fmtHMS(s.remaining_total);
+    } else if(s.running){
+      rem.textContent = "⏳ 掛機時長：無限（手動關閉）";
+    } else rem.textContent = "";
     const w = $("#focusWarn");
     if(s.running && s.target_foreground === false){
       w.style.display = "block";
       w.textContent = "⚠ MapleStory 不在前景，技能/字母送不進去（方向鍵仍可）。焦點守衛每秒嘗試切回。";
     } else w.style.display = "none";
+    // 到期自動關閉:伺服器 running 轉 false 而前端還開著 → 同步關閉顯示
+    if(idleOn && !s.running){ setIdle(false); $("#idleMsg").textContent = "已達設定時長，閒置掛機自動關閉"; }
   }catch(_){}
 }
 function startMonitor(){
@@ -717,9 +732,13 @@ async function refreshIdle(){
   try{ const s=await (await fetch(`/idle/status?token=${encodeURIComponent(token)}`)).json(); setIdle(!!s.running); }catch(_){}
 }
 $("#idleBtn").onclick = async () => {
-  const path = idleOn ? "/idle/stop" : "/idle/start";
+  let path = idleOn ? "/idle/stop" : "/idle/start";
+  if(!idleOn){   // 開啟時帶上總時長(時*3600+分*60,0=無限)
+    const dur = (parseInt($("#idleH").value)||0)*3600 + (parseInt($("#idleM").value)||0)*60;
+    path += `?duration=${dur}&`;
+  } else path += "?";
   try{
-    const r = await fetch(`${path}?token=${encodeURIComponent(token)}`, { method:"POST" });
+    const r = await fetch(`${path}token=${encodeURIComponent(token)}`, { method:"POST" });
     const j = await r.json().catch(()=>({}));
     if(!r.ok){ $("#idleMsg").textContent = "⚠ " + (j.detail || "與出租模式衝突，無法同時開啟"); return; }
     setIdle(!!j.running);

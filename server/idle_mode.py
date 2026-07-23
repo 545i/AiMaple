@@ -26,6 +26,7 @@ _stop = threading.Event()
 _running = False
 _started_at = 0.0
 _op_lock = threading.Lock()   # 序列化 start/stop,防快速連點造成雙重啟動/旗標交錯
+_end_at = 0.0                 # 總時長截止 monotonic 時間(0=無限,不自動關閉)
 # 按鍵追蹤(供中控頁監視「桌面寵物式亮燈」+ 下一次技能倒數):
 _events = {}                  # key -> 最近觸發的 monotonic 時間
 _next_skill_at = 0.0         # 下一次施放技能的 monotonic 時間
@@ -61,7 +62,9 @@ def status():
     return {"running": _running,
             "uptime": int(time.time() - _started_at) if _running else 0,
             "keys": keys,
-            "next_skill_in": max(0, round(_next_skill_at - now)) if (_running and _next_skill_at) else 0}
+            "next_skill_in": max(0, round(_next_skill_at - now)) if (_running and _next_skill_at) else 0,
+            "has_limit": bool(_end_at),   # 是否有設總時長
+            "remaining_total": max(0, round(_end_at - now)) if (_running and _end_at) else 0}
 
 
 def _lognorm(median, sigma, lo, hi):
@@ -103,7 +106,7 @@ def _idle_gap():
 
 
 def _loop():
-    global _next_skill_at
+    global _next_skill_at, _running
     # 首次很快施放一次(暖身移動幾秒後),確保 buff 立即生效、不空窗;
     # 之後每次都重設為 35~95 秒(IDLE_SKILL_MIN~MAX)隨機。
     next_skill = time.monotonic() + random.uniform(8, 20)
@@ -113,6 +116,9 @@ def _loop():
     burst = random.randint(1, 4)
     try:
         while not _stop.is_set():
+            if _end_at and time.monotonic() >= _end_at:
+                print("[idle] 總時長已到,自動關閉閒置模式")
+                break
             if time.monotonic() >= next_skill:
                 # 關鍵動作(施放 buff)前先確保 MapleStory 在前景,否則按鍵送到別的
                 # 視窗、或遊戲沒焦點收不到 → buff 放不出來。焦點守衛有 2 秒節流。
@@ -147,6 +153,7 @@ def _loop():
                 break
             burst = random.randint(1, 4)
     finally:
+        _running = False    # 自然到期或被停止,都標記為已停(前端輪詢會據此自動關閉)
         # 停止/例外：放開所有可能按著的移動鍵,避免卡住角色一直走
         for k in IDLE_MOVE_KEYS:
             try:
@@ -155,18 +162,21 @@ def _loop():
                 pass
 
 
-def start():
-    """啟動掛機執行緒。已在跑或沒有鍵盤則不動作。回傳是否運作中。"""
-    global _thread, _running, _started_at
+def start(duration_seconds=0):
+    """啟動掛機執行緒。duration_seconds>0 時到期自動關閉(0=無限)。
+    已在跑或沒有鍵盤則不動作。回傳是否運作中。"""
+    global _thread, _running, _started_at, _end_at
     with _op_lock:
         if _running or _keyboard is None:
             return _running
         _stop.clear()
         _running = True
         _started_at = time.time()
+        _end_at = time.monotonic() + duration_seconds if duration_seconds > 0 else 0.0
         _thread = threading.Thread(target=_loop, daemon=True)
         _thread.start()
-        print("[idle] 閒置掛機模式啟動")
+        lim = f"{int(duration_seconds//60)} 分" if duration_seconds > 0 else "無限"
+        print(f"[idle] 閒置掛機模式啟動(時長: {lim})")
         return True
 
 
