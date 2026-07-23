@@ -258,28 +258,22 @@ def focus_target():
 
 
 def focus_hwnd(hwnd):
-    """把指定視窗帶到前景並『完整啟用』,確保鍵鼠輸入(含字母/技能的 WM_KEYDOWN)
-    都送進該視窗。用 AttachThreadInput 突破前景鎖 + SetActiveWindow/SetFocus 指定
-    鍵盤焦點 + 標題列實體點擊做最終啟用。"""
+    """把指定視窗帶到前景。確保鍵盤焦點(WM_KEYDOWN)進得去靠兩件事:
+      1) SetForegroundWindow(前景鎖已由 SPI_SETFOREGROUNDLOCKTIMEOUT=0 解除,直接生效)
+         → 遊戲視窗收到 WM_ACTIVATE,會自行把鍵盤焦點設回自己的輸入視窗。
+      2) _activation_click 硬體點擊標題列 = 真實使用者激活,做最終保險。
+
+    絕不再用 AttachThreadInput：它必須在有訊息泵的執行緒配對呼叫,而焦點守衛在
+    執行緒池(run_in_executor)線程執行——在無訊息泵的線程 attach 會【永久打亂
+    鍵盤輸入佇列】,症狀正是「只剩方向鍵(GetAsyncKeyState)、其他 WM_KEYDOWN
+    全失效、連手動點擊也救不回」。SPI 解鎖後本就不需要它。"""
     if not hwnd or not _user32.IsWindow(hwnd):
         return False
     SW_RESTORE = 9
     _user32.ShowWindow(hwnd, SW_RESTORE)
-    fg = _user32.GetForegroundWindow()
-    cur = _kernel32.GetCurrentThreadId()
-    fg_tid = _user32.GetWindowThreadProcessId(fg, None)
-    tgt_tid = _user32.GetWindowThreadProcessId(hwnd, None)
-    try:
-        if fg_tid:  _user32.AttachThreadInput(cur, fg_tid, True)
-        if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, True)
-        _user32.BringWindowToTop(hwnd)
-        _user32.SetForegroundWindow(hwnd)
-        _user32.SetActiveWindow(hwnd)          # 真正啟用視窗
-        _user32.SetFocus(hwnd)                 # 指定鍵盤焦點(WM_KEYDOWN 目的地)
-    finally:
-        if fg_tid:  _user32.AttachThreadInput(cur, fg_tid, False)
-        if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, False)
-    _activation_click(hwnd)                     # 標題列實體點擊 = 最終保險(重現手動點視窗)
+    _user32.BringWindowToTop(hwnd)
+    _user32.SetForegroundWindow(hwnd)
+    _activation_click(hwnd)                     # 標題列實體點擊 = 真實激活,給鍵盤焦點
     return True
 
 
