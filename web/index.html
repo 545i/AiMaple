@@ -12,7 +12,8 @@
   body.rotate #stage { inset:auto; top:50%; left:50%; width:100vh; height:100vw;
                        transform:translate(-50%,-50%) rotate(90deg); }
 
-  #video { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
+  #video, #mjpeg { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
+  #mjpeg { display:none; }   /* 遠端模式(Cloudflare Tunnel)才顯示：MJPEG 備援串流 */
   /* 畫質切換遮罩：凍結最後一格畫面蓋住 ffmpeg 重啟+WHEP 重連的空窗，避免黑屏 */
   #freeze { position:fixed; inset:0; width:100%; height:100%; z-index:1; object-fit:contain; display:none; pointer-events:none; }
 
@@ -23,6 +24,17 @@
 
   #status { position:fixed; top:6px; left:10px; z-index:60; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
   #status.bad { color:#f55; }
+
+  /* ===== 訪客(短密碼)模式：僅螢幕按鈕 4/←/→，滑鼠觸控板與主人功能全隱藏 ===== */
+  #guestBadge { position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:60; display:none;
+                font-size:12px; color:#ffd479; background:rgba(0,0,0,.55); padding:3px 12px; border-radius:10px; white-space:nowrap; }
+  body.guest #guestBadge { display:block; }
+  body.guest #look, body.guest #padbg, body.guest #deskhint { display:none !important; }
+  body.guest #pad { display:block !important; }          /* 電腦端也用螢幕按鈕 */
+  body.guest #pad .btn { width:76px; height:76px; font-size:22px; }
+  body.guest #mTarget, body.guest #mHw, body.guest #focusBtn, body.guest #editRow,
+  body.guest #ownerRemote, body.guest #ownerScreen, body.guest #ownerClip { display:none !important; }
+  #rHours { width:70px; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:6px; font-size:14px; }
   #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
             border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
 
@@ -34,9 +46,9 @@
 
   /* 滑鼠觸控板區（依佈局定位） */
   .look { position:fixed; z-index:8; pointer-events:auto; }
-  body.lay-land #video, body.lay-land #freeze{ inset:0; width:100%; height:100%; }
+  body.lay-land #video, body.lay-land #mjpeg, body.lay-land #freeze{ inset:0; width:100%; height:100%; }
   body.lay-land .look{ left:24%; right:24%; top:0; bottom:0; }
-  body.lay-port #video, body.lay-port #freeze{ inset:auto; top:0; left:0; width:100%; height:36vh; }
+  body.lay-port #video, body.lay-port #mjpeg, body.lay-port #freeze{ inset:auto; top:0; left:0; width:100%; height:36vh; }
   body.lay-port .look{ left:auto; right:auto; bottom:auto; top:0; left:0; width:100%; height:36vh; }
 
   /* 自由擺放按鈕 */
@@ -90,6 +102,12 @@
   #menu.on { transform:translateX(0); }
   .mhead { display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
            border-bottom:1px solid #2a2b33; font-size:16px; flex:0 0 auto; }
+  /* 控制中心分頁：連接管理 / 出租管理 */
+  .mtabs { display:flex; flex:0 0 auto; border-bottom:1px solid #2a2b33; }
+  .mtab { flex:1; text-align:center; padding:11px 0; font-size:14px; color:#8a8f99;
+          border-bottom:2px solid transparent; }
+  .mtab.on { color:#fff; border-bottom-color:#3a7; font-weight:600; }
+  body.guest .mtabs { display:none; }   /* 訪客沒有出租分頁 */
   .mx { width:34px; height:34px; display:flex; align-items:center; justify-content:center; border-radius:8px; background:#2a2b33; }
   .mbody { flex:1; overflow-y:auto; padding:12px 16px 34px; touch-action:pan-y; }
   .mstat { font-size:13px; color:#ffd479; background:#1d1e26; padding:8px 12px; border-radius:8px; margin-bottom:8px; word-break:break-all; }
@@ -113,17 +131,19 @@
 <body>
  <div id="stage">
   <video id="video" autoplay muted playsinline></video>
+  <img id="mjpeg" alt="">
   <canvas id="freeze"></canvas>
   <audio id="gaudio" autoplay playsinline></audio>
   <div id="padbg"></div>
   <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
+  <div id="guestBadge">👤 訪客模式：僅 4 / ← / →</div>
 
   <div id="setup">
     <div style="font-size:22px;font-weight:700;">maple 遠端遊玩</div>
     <input id="token" placeholder="連線 token" autocomplete="off">
     <button id="go">連線</button>
-    <div style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
+    <div id="setupHint" style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
   </div>
 
   <div id="menuBtn" style="display:none">☰</div>
@@ -145,7 +165,12 @@
   <div id="menuMask"></div>
   <div id="menu">
     <div class="mhead"><b>控制中心</b><div class="mx" id="menuClose">✕</div></div>
+    <div class="mtabs">
+      <div class="mtab on" data-tab="conn">連接管理</div>
+      <div class="mtab" data-tab="rent">出租管理</div>
+    </div>
     <div class="mbody">
+      <div id="tabConn">
       <div class="mstat" id="mTarget">🎯 全螢幕</div>
       <div class="mstat" id="mHw">硬體：載入中…</div>
 
@@ -162,6 +187,7 @@
         <div class="mbtn" id="addBtn" style="display:none">➕ 新增鍵</div>
       </div>
 
+      <div id="ownerScreen">
       <div class="msec">畫面</div>
       <div class="mrow"><label>預設</label><div class="segs" id="presetSegs">
         <div class="seg" data-preset="quality">畫質</div><div class="seg" data-preset="smooth">流暢</div>
@@ -176,7 +202,9 @@
       <div class="mrow"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
       <div class="mrow"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
       <button class="mapply" id="screenApply">套用畫面設定</button>
+      </div><!-- /#ownerScreen -->
 
+      <div id="ownerClip">
       <div class="msec">剪貼簿（操作端 → 主機）</div>
       <textarea id="clipText" placeholder="在框內貼上即自動傳送：電腦按 Ctrl+V、手機長按→貼上（或直接打字後按傳送）" rows="3"></textarea>
       <div class="mgrid2">
@@ -184,6 +212,30 @@
         <div class="mbtn" id="clipSend">傳送到主機</div>
       </div>
       <div id="clipMsg" style="font-size:12px;color:#7fe0b0;margin-top:6px;min-height:16px"></div>
+      </div><!-- /#ownerClip -->
+      </div><!-- /#tabConn -->
+
+      <!-- 出租管理分頁：Quick Tunnel + 限時短密碼中控 -->
+      <div id="ownerRemote" style="display:none">
+        <div class="msec">出租管理（Cloudflare Tunnel）</div>
+        <div class="mstat" id="rTunnel" style="user-select:text;-webkit-user-select:text">🌐 隧道：未啟動</div>
+        <div class="mstat" id="rPass" style="user-select:text;-webkit-user-select:text">🔑 密碼：未產生</div>
+        <div class="mgrid2">
+          <div class="mbtn" id="rTunnelBtn">🚀 啟動出租</div>
+          <div class="mbtn" id="rNewBtn">🔑 產生新密碼</div>
+        </div>
+        <div class="mgrid2">
+          <div class="mbtn" id="rExtBtn">⏳ 延長 +30 分</div>
+          <div class="mbtn" id="rRevokeBtn">🛑 撤銷密碼</div>
+        </div>
+        <div class="mrow"><label>自訂</label>
+          <input type="number" id="rHours" min="0.5" max="24" step="0.5" value="0.5"><span>小時</span>
+          <div class="mbtn" id="rHoursBtn" style="flex:1">延長此時數</div>
+        </div>
+        <div style="font-size:12px;color:#8a8f99;margin-top:4px">
+          訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
+          滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
+      </div>
     </div>
   </div>
  </div><!-- /#stage -->
@@ -191,6 +243,14 @@
 <script>
 const $ = s => document.querySelector(s);
 let ws=null, token="", editMode=false, watching=true, editingBtn=null;
+let guest=false, expired=false;   // 訪客(短密碼)模式：由伺服器 WS "mode" 訊息判定
+const IS_TOUCH = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
+
+// ===== 遠端模式偵測：https = 走 Cloudflare Tunnel =====
+// 隧道只代理 :8000 的 HTTP/WS，WebRTC(:8889 WHEP + UDP 媒體流)穿不過去，
+// 且 https 頁面也不可連 http 的 8889(mixed content) → 影像自動退 MJPEG(無音訊)。
+// 在家 Tailscale(http) 走原本 WebRTC 低延遲，完全不受影響。
+const REMOTE = location.protocol === "https:";
 
 // ===== 全域禁止手勢縮放 =====
 ["gesturestart","gesturechange","gestureend"].forEach(ev =>
@@ -222,7 +282,7 @@ function defaultButtons(){ return [
   {id:"kr",key:"r",land:[70,56],port:[76,92]},
 ]; }
 let buttons = JSON.parse(localStorage.getItem("maple_buttons")||"null") || defaultButtons();
-const saveButtons = () => localStorage.setItem("maple_buttons", JSON.stringify(buttons));
+const saveButtons = () => { if(!guest) localStorage.setItem("maple_buttons", JSON.stringify(buttons)); };
 const isPortrait = () => document.body.classList.contains("lay-port");
 const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
 
@@ -293,6 +353,14 @@ function bindButton(el,b,del){
   el.addEventListener("touchcancel", end, {passive:false});
   del.addEventListener("touchstart", e=>{ if(!editMode) return; e.preventDefault(); e.stopPropagation();
     buttons = buttons.filter(x=>x!==b); saveButtons(); renderButtons(); }, {passive:false});
+  if(!IS_TOUCH){   // 電腦端(訪客模式)：螢幕按鈕用滑鼠點
+    el.addEventListener("mousedown", e=>{ e.preventDefault(); e.stopPropagation();
+      if(!editMode){ el.classList.add("active"); send({t:"kd",k:b.key}); } });
+    const mend = e=>{ e.stopPropagation();
+      if(!editMode && el.classList.contains("active")){ el.classList.remove("active"); send({t:"ku",k:b.key}); } };
+    el.addEventListener("mouseup", mend);
+    el.addEventListener("mouseleave", mend);
+  }
 }
 matchMedia("(orientation:portrait)").addEventListener("change", () => { if(layoutMode==="auto") applyLayout(); });
 document.querySelectorAll("#layGroup .seg").forEach(s => s.onclick = () => {
@@ -305,16 +373,44 @@ function connect(){
   const proto = location.protocol==="https:"?"wss":"ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/input?token=${encodeURIComponent(token)}`);
   ws.onopen = ()=>setStatus("已連線",true);
-  ws.onclose = ()=>{ setStatus("斷線，重連中…",false); setTimeout(connect,1500); };
+  ws.onclose = ()=>{
+    if(expired){ setStatus("密碼已過期，連線結束", false); stopVideo(); return; }   // 訪客到期：不重連
+    setStatus("斷線，重連中…",false); setTimeout(connect,1500);
+  };
   ws.onerror = ()=>setStatus("連線錯誤",false);
-  ws.onmessage = e => { try{ const m=JSON.parse(e.data); if(m.t==="cur") updateCursor(m.x,m.y); }catch(_){} };
+  ws.onmessage = e => { try{ const m=JSON.parse(e.data);
+    if(m.t==="cur") updateCursor(m.x,m.y);
+    else if(m.t==="mode"){ if(m.guest) enterGuest(m.remain); }
+    else if(m.t==="bye") expired = true;          // 伺服器宣告到期/撤銷,隨後斷線
+  }catch(_){} };
+}
+
+// ===== 訪客(短密碼)模式：固定 3 顆螢幕按鈕,其餘輸入途徑全關 =====
+// 注意:這只是介面配合;真正的封鎖在伺服器端白名單(改前端也繞不過)。
+const GUEST_BUTTONS = [
+  {id:"gl",key:"left", land:[12,72],port:[15,62]},
+  {id:"g4",key:"4",    land:[50,80],port:[50,78]},
+  {id:"gr",key:"right",land:[88,72],port:[85,62]},
+];
+function enterGuest(remain){
+  if(!guest){
+    guest = true;
+    document.body.classList.add("guest");
+    document.body.classList.remove("desktop");   // 電腦端也一律用螢幕按鈕
+    buttons = GUEST_BUTTONS; editMode = false;
+    renderButtons();
+  }
+  if(typeof remain === "number")
+    $("#guestBadge").textContent = `👤 訪客模式：僅 4 / ← / → · 剩餘 ${Math.max(1, Math.ceil(remain/60))} 分`;
 }
 // 虛擬游標：依伺服器回報的座標，畫在影像內容(object-fit:contain)對應位置
 function updateCursor(nx,ny){
   const c=$("#cursor");
   if(!watching){ c.style.display="none"; return; }
-  const v=$("#video"), vr = isRotated() ? stageRect() : v.getBoundingClientRect();
-  const vw=v.videoWidth, vh=v.videoHeight;
+  const v = REMOTE ? $("#mjpeg") : $("#video");
+  const vr = isRotated() ? stageRect() : v.getBoundingClientRect();
+  const vw = REMOTE ? v.naturalWidth : v.videoWidth,
+        vh = REMOTE ? v.naturalHeight : v.videoHeight;
   if(!vw||!vh){ c.style.display="none"; return; }
   const scale=Math.min(vr.width/vw, vr.height/vh);
   const dw=vw*scale, dh=vh*scale;
@@ -331,6 +427,10 @@ $("#go").onclick = () => {
   renderButtons(); syncConfig(); setWatching(true); connect();
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
+if(REMOTE){
+  $("#token").placeholder = "限時連線密碼";
+  $("#setupHint").textContent = "遠端模式（Cloudflare Tunnel）：輸入主機顯示的限時密碼";
+}
 
 // ===== WebRTC 影像（WHEP） =====
 let pc = null, apc = null;   // apc = 音訊 PeerConnection(獨立第二條)
@@ -382,6 +482,14 @@ async function whepOnce(){
 }
 async function startVideo(){
   stopVideo();
+  if(REMOTE){          // 遠端(隧道)：MJPEG 走同源 :8000，不啟 ffmpeg/WebRTC、無音訊
+    const im=$("#mjpeg");
+    im.onerror = ()=>{ if(watching) setTimeout(()=>{ if(watching) startVideo(); }, 1500); };
+    im.style.display="block";
+    im.src = `/video?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+    setStatus("已連線（遠端 MJPEG）", true);
+    return;
+  }
   try{ await fetch(`/video/start?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(e){}
   for(let i=0; i<8 && watching; i++){
     try{ pc = await whepOnce(); setStatus("已連線", true); startAudio(); return; }
@@ -389,7 +497,11 @@ async function startVideo(){
   }
   if(watching) setStatus("影像連線失敗（檢查防火牆 8889 / Tailscale）", false);
 }
-function stopVideo(){ if(pc){ pc.close(); pc=null; } $("#video").srcObject=null; $("#cursor").style.display="none"; stopAudio(); }
+function stopVideo(){
+  if(pc){ pc.close(); pc=null; } $("#video").srcObject=null;
+  const im=$("#mjpeg"); im.onerror=null; im.removeAttribute("src"); im.style.display="none";
+  $("#cursor").style.display="none"; stopAudio();
+}
 
 // ===== 音訊：獨立第二條 WHEP(:8889/audio/whep)，與影像分開 =====
 async function whepAudioOnce(){
@@ -419,8 +531,8 @@ function setWatching(on){
   $("#watch").classList.toggle("show", !on);
   $("#watchBtn").classList.toggle("on", on);
   $("#watchBtn").textContent = on ? "👁 注視中" : "👁 已暫停";
-  if(on){ startVideo(); if(cfg.source==="window") focusTarget(); }
-  else { unfreeze(); stopVideo(); fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
+  if(on){ startVideo(); if(!guest && cfg.source==="window") focusTarget(); }
+  else { unfreeze(); stopVideo(); if(!guest) fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
@@ -552,6 +664,8 @@ async function fetchStatus(){
 }
 $("#menuBtn").onclick = async () => {
   openMenu();
+  if(guest) return;    // 訪客選單只剩「注視/方向」，不打主人專屬 API
+  refreshRemote();
   try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
   try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
   updateTarget(); renderScreenPanel(); fetchStatus();
@@ -607,18 +721,64 @@ async function applyVideo(){
 }
 $("#screenApply").onclick = () => { closeMenu(); applyVideo(); };
 
+// ===== 遠端分享中控（主人專用）：Quick Tunnel 開關 + 短密碼 產生/延長/撤銷 =====
+function fmtDur(sec){
+  if(sec<=0) return "0 分";
+  const h=Math.floor(sec/3600), m=Math.ceil((sec%3600)/60);
+  return (h?`${h} 小時 `:"") + (m?`${m} 分`:"");
+}
+let rPolling = 0;
+function renderRemote(r){
+  if(r.detail){ $("#rPass").textContent = "🔑 沒有有效密碼可延長，請先產生"; return; }
+  const tn = r.tunnel || {};
+  $("#rTunnel").textContent = tn.running
+    ? ("🌐 " + (tn.url || "隧道啟動中，正在取得網址…"))
+    : ("🌐 隧道：未啟動" + (tn.error ? `（${tn.error}）` : ""));
+  $("#rTunnelBtn").textContent = tn.running ? "🛑 停止出租" : "🚀 啟動出租";
+  $("#rTunnelBtn").dataset.running = tn.running ? "1" : "0";
+  $("#rPass").textContent = r.active
+    ? `🔑 密碼：${r.password}　剩餘 ${fmtDur(r.remaining_seconds)}`
+    : "🔑 密碼：未產生／已過期";
+  // 隧道在跑但網址還沒出來(cloudflared 要幾秒) → 輪詢直到拿到
+  if(tn.running && !tn.url && rPolling < 20){ rPolling++; setTimeout(refreshRemote, 1000); }
+  else rPolling = 0;
+}
+async function refreshRemote(){
+  try{ const r = await (await fetch(`/remote/info?token=${encodeURIComponent(token)}`)).json();
+    if(!r.guest) renderRemote(r); }catch(_){}
+}
+async function remoteAct(path){
+  const sep = path.includes("?") ? "&" : "?";
+  try{ const r = await (await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, { method:"POST" })).json();
+    renderRemote(r); }
+  catch(_){ $("#rTunnel").textContent = "🌐 操作失敗（連線？）"; }
+}
+// 分頁切換：連接管理 / 出租管理
+document.querySelectorAll(".mtab").forEach(t => t.onclick = () => {
+  document.querySelectorAll(".mtab").forEach(x => x.classList.toggle("on", x===t));
+  const rent = t.dataset.tab === "rent";
+  $("#tabConn").style.display = rent ? "none" : "";
+  $("#ownerRemote").style.display = rent ? "" : "none";
+  if(rent) refreshRemote();
+});
+$("#rTunnelBtn").onclick = () => remoteAct($("#rTunnelBtn").dataset.running==="1" ? "/remote/tunnel/stop" : "/remote/tunnel/start");
+$("#rNewBtn").onclick   = () => remoteAct(`/remote/new?hours=${parseFloat($("#rHours").value)||0.5}`);
+$("#rExtBtn").onclick   = () => remoteAct(`/remote/extend?hours=0.5`);
+$("#rRevokeBtn").onclick= () => remoteAct(`/remote/revoke`);
+$("#rHoursBtn").onclick = () => remoteAct(`/remote/extend?hours=${parseFloat($("#rHours").value)||0.5}`);
+
 renderButtons();
 
 // ===== 桌面(電腦)模式：絕對映射 + 滑鼠在影像內自動捕捉(免 Esc、免鎖定) =====
-const isTouch = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
-if(!isTouch){
+// 訪客模式下 active() 恆為 false：實體鍵盤/滑鼠映射全面停用，只能點螢幕按鈕。
+if(!IS_TOUCH){
   document.body.classList.add("desktop");
   const video = $("#video");
   const held = new Set();
   let overVideo = false;
   const connected = () => $("#menuBtn").style.display !== "none";
   const uiBlocking = () => $("#menu").classList.contains("on") || $("#picker").classList.contains("on") || $("#setup").style.display!=="none";
-  const active = () => connected() && !uiBlocking();
+  const active = () => connected() && !uiBlocking() && !guest;
 
   function codeToToken(code){
     if(/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();

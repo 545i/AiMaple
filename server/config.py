@@ -17,6 +17,23 @@ AUTH_TOKEN = _env("MAPLE_TOKEN", "change-me-please")
 HOST = _env("MAPLE_HOST", "0.0.0.0")   # 綁 0.0.0.0；靠 Tailscale/防火牆限制來源
 PORT = int(_env("MAPLE_PORT", "8000"))
 
+# ===== 遠端訪客模式（Cloudflare Quick Tunnel + 限時短密碼） =====
+# 隧道與短密碼平常由「控制中心 → 遠端分享」用主 token 操作(啟動/停止/產生/
+# 延長/撤銷)。MAPLE_REMOTE=1 (remote.bat) 則開機即自動產生密碼＋啟動隧道。
+# 短密碼預設有效 0.5 小時，可 +0.5h 或自訂延長；持短密碼的訪客受伺服器端
+# 白名單限制：只能按 4/←/→，滑鼠與其他 API 一律拒絕。主 token 不受影響。
+REMOTE_MODE = _env("MAPLE_REMOTE", "0") == "1"
+REMOTE_TTL_HOURS = max(0.5, float(_env("MAPLE_REMOTE_TTL", "0.5")))
+# 訪客連點防護：同一鍵兩次「按下」的最小間隔秒數(伺服器端強制)。
+# 擋本機自動連點器 50Hz 灌鍵；放開(ku)不受限，避免卡鍵。
+GUEST_COOLDOWN = max(0.05, float(_env("MAPLE_GUEST_COOLDOWN", "0.2")))
+# 訪客併發上限：同時允許的訪客 WS 連線數 / MJPEG 串流數(各自計)。
+# 沒有上限的話,一組密碼就能開幾十條串流塞爆家用上傳頻寬(DoS)。
+GUEST_MAX_CONN = max(1, int(_env("MAPLE_GUEST_MAX_CONN", "2")))
+# 出租焦點守衛：短密碼有效期間,目標視窗被切走就強制切回。
+# 視窗模式用選定的視窗;否則依此標題子字串尋找。設空字串停用標題尋找。
+GUARD_TITLE = _env("MAPLE_GUARD_TITLE", "MapleStory")
+
 # ===== Arduino 鍵盤 (序列埠) =====
 ARDUINO_PORT = _env("MAPLE_ARDUINO_PORT", "COM3")
 ARDUINO_BAUD = int(_env("MAPLE_ARDUINO_BAUD", "115200"))

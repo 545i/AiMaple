@@ -56,6 +56,7 @@ _user32.MonitorFromWindow.restype = ctypes.c_void_p
 _user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 _user32.SetActiveWindow.argtypes = [wintypes.HWND]
 _user32.SetFocus.argtypes = [wintypes.HWND]
+_user32.GetForegroundWindow.restype = ctypes.c_void_p   # 64-bit HWND 不可截斷,比對才正確
 
 # 由 main.py 於裝置初始化後註冊,供「切視窗時的啟用點擊」使用(硬體滑鼠)
 _mouse = None
@@ -241,10 +242,14 @@ def _activation_click(hwnd):
 
 
 def focus_target():
-    """把目標視窗帶到前景並『完整啟用』,確保鍵鼠輸入(含字母/技能的 WM_KEYDOWN)
+    """把目標視窗(state.hwnd)帶到前景並完整啟用。"""
+    return focus_hwnd(int(state.get("hwnd") or 0))
+
+
+def focus_hwnd(hwnd):
+    """把指定視窗帶到前景並『完整啟用』,確保鍵鼠輸入(含字母/技能的 WM_KEYDOWN)
     都送進該視窗。用 AttachThreadInput 突破前景鎖 + SetActiveWindow/SetFocus 指定
     鍵盤焦點 + 標題列實體點擊做最終啟用。"""
-    hwnd = int(state.get("hwnd") or 0)
     if not hwnd or not _user32.IsWindow(hwnd):
         return False
     SW_RESTORE = 9
@@ -265,6 +270,91 @@ def focus_target():
         if tgt_tid: _user32.AttachThreadInput(cur, tgt_tid, False)
     _activation_click(hwnd)                     # 標題列實體點擊 = 最終保險(重現手動點視窗)
     return True
+
+
+# ---------- 出租焦點守衛 + MJPEG 視窗矩形 ----------
+def window_abs_bbox(hwnd=None):
+    """目標視窗的絕對螢幕矩形 {'left','top','width','height'}（mss 虛擬桌面座標,
+    給 MJPEG 視窗模式裁切用）。無效/最小化回 None。"""
+    hwnd = int(hwnd or state.get("hwnd") or 0)
+    if not hwnd or not _user32.IsWindow(wintypes.HWND(hwnd)):
+        return None
+    r = _abs_rect(hwnd)
+    w, h = r.right - r.left, r.bottom - r.top
+    if w <= 0 or h <= 0:
+        return None
+    return {"left": r.left, "top": r.top, "width": w, "height": h}
+
+
+def find_window_by_title(sub):
+    """依標題子字串(不分大小寫)找視窗,回 hwnd 或 0。"""
+    sub = (sub or "").lower()
+    if not sub:
+        return 0
+    for w in list_windows():
+        if sub in w["title"].lower():
+            return w["hwnd"]
+    return 0
+
+
+def target_window_valid(title_sub=""):
+    """視窗模式且目標視窗仍存在(且標題含 title_sub)才 True。
+    出租畫面守門用：不成立就不給訪客任何影格(遊戲關掉時嚴防退回整個桌面)。"""
+    if state["source"] != "window" or not state["hwnd"]:
+        return False
+    if not _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        return False
+    if title_sub and title_sub.lower() not in (state["window"] or "").lower():
+        return False
+    return True
+
+
+def force_window_target(title_sub):
+    """出租鎖定：強制來源=視窗模式、目標=標題含 title_sub 的視窗(MapleStory)。
+    已鎖定且仍有效就直接回 True(不重複列舉)。找不到目標回 False。"""
+    sub = (title_sub or "").lower()
+    if not sub:
+        return False
+    if target_window_valid(title_sub):
+        return True
+    for w in list_windows():
+        if sub in w["title"].lower():
+            state["source"] = "window"
+            state["window"] = w["title"]
+            state["hwnd"] = w["hwnd"]
+            print(f"[guard] 出租鎖定視窗: {w['title']!r}")
+            if is_running():
+                restart()      # WebRTC 管線改抓該視窗
+            return True
+    return False
+
+
+_last_guard = 0.0
+
+
+def enforce_focus(title_hint=""):
+    """出租焦點守衛：目標視窗不在前景就強制切回,確保訪客輸入只進遊戲、
+    也確保 MJPEG 視窗區域擷取拍到的是遊戲而不是蓋在上面的別的視窗。
+    優先用視窗模式的 state.hwnd,否則依 title_hint(預設 MapleStory)找。
+    有 2 秒節流,避免與系統/使用者搶焦點抖動。回傳是否執行了切換。"""
+    global _last_guard
+    hwnd = 0
+    if state["source"] == "window" and state["hwnd"] \
+            and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        hwnd = int(state["hwnd"])
+    elif title_hint:
+        hwnd = find_window_by_title(title_hint)
+    if not hwnd:
+        return False
+    fg = _user32.GetForegroundWindow()
+    if fg and int(fg) == hwnd:
+        return False
+    now = time.time()
+    if now - _last_guard < 2.0:
+        return False
+    _last_guard = now
+    print("[guard] 目標視窗失焦,強制切回")
+    return focus_hwnd(hwnd)
 
 
 # ---------- ffmpeg 指令組裝 ----------

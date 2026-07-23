@@ -20,6 +20,7 @@ from config import CAPTURE_MONITOR, CAPTURE_WIDTH, JPEG_QUALITY, TARGET_FPS
 class ScreenCapture:
     def __init__(self):
         self._latest = None            # 最新的 JPEG bytes
+        self._latest_is_window = False  # 該影格是否為「視窗裁切」(訪客只能看這種)
         self._lock = threading.Lock()
         self._running = False
         self._thread = None
@@ -53,14 +54,31 @@ class ScreenCapture:
         if not self._running:
             self.start()
 
+    def _window_bbox(self):
+        """視窗模式時回目標視窗的絕對矩形(隱私:出租訪客只看得到遊戲視窗,
+        不會看到整個桌面/通知)。非視窗模式或視窗無效回 None → 退回整螢幕。
+        註:這是螢幕區域擷取,若別的視窗蓋在遊戲上仍會拍到——由出租焦點守衛
+        (video_pipeline.enforce_focus)保證遊戲維持前景。"""
+        try:
+            import video_pipeline
+            if video_pipeline.state["source"] != "window":
+                return None
+            return video_pipeline.window_abs_bbox()
+        except Exception:
+            return None
+
     def _run(self):
         # mss 的 grab 必須在同一執行緒建立/使用
         with mss.mss() as sct:
             while self._running:
                 t0 = time.perf_counter()
-                monitors = sct.monitors
-                idx = self.monitor if self.monitor < len(monitors) else 1
-                img = np.asarray(sct.grab(monitors[idx]))   # BGRA
+                bbox = self._window_bbox()
+                is_window = bbox is not None
+                if bbox is None:
+                    monitors = sct.monitors
+                    idx = self.monitor if self.monitor < len(monitors) else 1
+                    bbox = monitors[idx]
+                img = np.asarray(sct.grab(bbox))   # BGRA
                 frame = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
                 h, w = frame.shape[:2]
                 if w > self.width:
@@ -72,13 +90,18 @@ class ScreenCapture:
                 if ok:
                     with self._lock:
                         self._latest = buf.tobytes()
+                        self._latest_is_window = is_window
                 frame_interval = 1.0 / max(1, self.fps)
                 dt = time.perf_counter() - t0
                 if dt < frame_interval:
                     time.sleep(frame_interval - dt)
 
-    def latest(self):
+    def latest(self, window_only=False):
+        """window_only=True(訪客)：只回「視窗裁切」影格——狀態切換瞬間殘留的
+        全桌面影格也絕不外洩,拿不到就回 None。"""
         with self._lock:
+            if window_only and not self._latest_is_window:
+                return None
             return self._latest
 
     def monitor_count(self):

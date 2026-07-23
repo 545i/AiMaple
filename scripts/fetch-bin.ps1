@@ -1,4 +1,4 @@
-# 下載 MediaMTX 與 ffmpeg(含 NVENC) 到 bin\（這些二進位不進版控）
+﻿# 下載 MediaMTX 與 ffmpeg(含 NVENC) 到 bin\（這些二進位不進版控）
 # 用法：./scripts/fetch-bin.ps1
 $ErrorActionPreference = "Stop"
 $maple = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
@@ -28,4 +28,11 @@ if (-not (Test-Path "ffmpeg\bin\ffmpeg.exe")) {
   Remove-Item "ffmpeg.zip"
 }
 
-Write-Host "✔ 完成。bin\mediamtx.exe 與 bin\ffmpeg\bin\ffmpeg.exe 就緒。" -ForegroundColor Green
+# --- cloudflared（遠端模式：Cloudflare Quick Tunnel）---
+if (-not (Test-Path "cloudflared.exe")) {
+  $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+  Write-Host "下載 cloudflared ..."
+  Invoke-WebRequest -Uri $url -OutFile "cloudflared.exe"
+}
+
+Write-Host "✔ 完成。bin\mediamtx.exe、bin\ffmpeg\bin\ffmpeg.exe 與 bin\cloudflared.exe 就緒。" -ForegroundColor Green
