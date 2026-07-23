@@ -34,6 +34,7 @@ import remote_access
 import tunnel
 import wgc
 import idle_mode
+import minimap
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -435,6 +436,27 @@ def monitor_frame(token: str = Query("")):
         raise HTTPException(status_code=503, detail="尚無影格")
     return Response(content=frame, media_type="image/jpeg",
                     headers={"Cache-Control": "no-store"})
+
+
+# ===== 掛機(自動)模式基礎：小地圖偵測(自適應大小)+遠端預覽,僅主人 =====
+@app.get("/minimap/frame")
+def minimap_frame(token: str = Query(""), view: str = Query("annot")):
+    """偵測 MapleStory 左上角小地圖並回標註後 JPEG(前端每秒抓一張)。
+    view=annot 整視窗標註縮圖 / crop 小地圖裁切放大。只取 maplestory.exe 視窗。"""
+    _check_owner(token)
+    jpg = minimap.debug_jpeg(view="crop" if view == "crop" else "annot")
+    if jpg is None:
+        raise HTTPException(status_code=503,
+                            detail="拿不到 MapleStory 視窗影格(遊戲開著嗎?)")
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/minimap/status")
+def minimap_status(token: str = Query("")):
+    """最近一次小地圖偵測結果(由 /minimap/frame 驅動,不另抓影格)。"""
+    _check_owner(token)
+    return JSONResponse(minimap.status())
 
 
 @app.post("/idle/stop")

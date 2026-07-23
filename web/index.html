@@ -303,6 +303,18 @@
      <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
    </div>
 
+   <div class="msec">掛機模式（開發中）· 小地圖偵測</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     第一步：自動找出遊戲左上角小地圖的位置與大小（自適應各地圖）＋角色黃點。
+     綠框＝偵測到的小地圖、洋紅圈＝角色。僅擷取 maplestory.exe 視窗。</div>
+   <div class="mbtn" id="mmBtn">🗺 小地圖偵測預覽：關</div>
+   <div id="mmBox" style="display:none;margin-top:8px">
+     <img id="mmImg" alt="小地圖偵測"
+          style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+     <div id="mmInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div class="mbtn" id="mmViewBtn" style="margin-top:6px">🔍 檢視：整個視窗（點擊切換小地圖放大）</div>
+   </div>
+
    <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:14px">🆘 解除卡死（放開所有按鍵）</button>
    <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
 
@@ -499,6 +511,7 @@ function showView(name){
   document.body.classList.remove("view-login","view-dash","view-remote");
   document.body.classList.add("view-"+name);
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
+  if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
 }
 function loadDash(){ fetchStatus(); refreshRemote(); refreshIdle(); }   // 硬體+出租+閒置狀態
 async function enterRemote(){
@@ -746,6 +759,48 @@ $("#idleBtn").onclick = async () => {
   }catch(_){ $("#idleMsg").textContent = "操作失敗（連線？）"; }
 };
 $("#focusBtn").onclick = async () => { const el=$("#focusBtn"); el.classList.add("on"); await focusTarget(); setTimeout(()=>el.classList.remove("on"), 400); };
+
+// ===== 掛機模式(開發中)：小地圖偵測遠端預覽 =====
+// 每秒抓一張 /minimap/frame(伺服器端偵測+標註),再讀 /minimap/status 顯示數據。
+// 與閒置掛機互相獨立,可單獨開來驗證偵測效果。
+let mmOn = false, mmTimer = null, mmView = "annot";
+async function mmTick(){
+  const im = $("#mmImg");
+  im.onerror = ()=>{ $("#mmInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
+  im.src = `/minimap/frame?view=${mmView}&token=${encodeURIComponent(token)}&_=${Date.now()}`;
+  try{
+    const s = await (await fetch(`/minimap/status?token=${encodeURIComponent(token)}`)).json();
+    if(s.found){
+      $("#mmInfo").textContent = `✅ 小地圖 ${s.w}×${s.h} @ (${s.x},${s.y})　視窗 ${s.frame_w}×${s.frame_h}`
+        + (s.dot ? `　🟡 角色點 (${s.dot.x},${s.dot.y})` : "　（未見角色黃點）");
+    } else {
+      $("#mmInfo").textContent = s.error ? `❌ ${s.error}` : "🔎 尚未偵測到小地圖（小地圖有展開嗎？）";
+    }
+  }catch(_){ $("#mmInfo").textContent = "連線失敗"; }
+}
+function stopMmPreview(){
+  if(mmTimer){ clearInterval(mmTimer); mmTimer = null; }
+  mmOn = false;
+  $("#mmBox").style.display = "none";
+  $("#mmImg").removeAttribute("src");
+  $("#mmBtn").classList.remove("on");
+  $("#mmBtn").textContent = "🗺 小地圖偵測預覽：關";
+}
+$("#mmBtn").onclick = ()=>{
+  if(mmOn){ stopMmPreview(); return; }
+  mmOn = true;
+  $("#mmBox").style.display = "block";
+  $("#mmBtn").classList.add("on");
+  $("#mmBtn").textContent = "🗺 小地圖偵測預覽：開（每秒更新）";
+  mmTick();
+  mmTimer = setInterval(mmTick, 1000);
+};
+$("#mmViewBtn").onclick = ()=>{
+  mmView = (mmView === "annot") ? "crop" : "annot";
+  $("#mmViewBtn").textContent = mmView === "annot"
+    ? "🔍 檢視：整個視窗（點擊切換小地圖放大）" : "🔍 檢視：小地圖放大（點擊切換整個視窗）";
+  if(mmOn) mmTick();
+};
 
 // ===== 編輯模式 =====
 $("#editBtn").onclick = () => {
