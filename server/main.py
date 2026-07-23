@@ -32,6 +32,7 @@ import clipboard
 import remote_access
 import tunnel
 import wgc
+import idle_mode
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -116,6 +117,7 @@ async def lifespan(app):
         tunnel.start(PORT)
     guard = asyncio.create_task(_rental_guard_loop())
     keyboard.start()
+    idle_mode.set_keyboard(keyboard)
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -130,6 +132,7 @@ async def lifespan(app):
     # 影像主力為 WebRTC(MediaMTX+ffmpeg)，由 /video/start 啟動 ffmpeg。
     yield
     guard.cancel()
+    idle_mode.stop()
     import audio_pipeline
     audio_pipeline.stop()
     keyboard.close()
@@ -375,6 +378,31 @@ def status(token: str = Query("")):
     })
 
 
+# ===== 閒置(掛機)模式：僅中控(主人),與訪客模式互斥 =====
+@app.get("/idle/status")
+def idle_status(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse(idle_mode.status())
+
+
+@app.post("/idle/start")
+def idle_start(token: str = Query("")):
+    _check_owner(token)
+    # 與訪客模式互斥：出租(短密碼有效)期間不得掛機——訪客與掛機會搶同一套鍵盤
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409,
+                            detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
+    idle_mode.start()
+    return JSONResponse(idle_mode.status())
+
+
+@app.post("/idle/stop")
+def idle_stop(token: str = Query("")):
+    _check_owner(token)
+    idle_mode.stop()
+    return JSONResponse(idle_mode.status())
+
+
 # ===== 訪客自助功能（任何有效 token 可用;皆為受限動作,無法作惡） =====
 # 畫質：只接受預設檔名稱,不接受任意參數(防灌爆 CPU/頻寬的極端值)。
 GUEST_QUALITY_PRESETS = {
@@ -430,10 +458,17 @@ def remote_info(request: Request, token: str = Query("")):
     return JSONResponse({"guest": True, **remote_access.info()})
 
 
+def _reject_if_idle():
+    if idle_mode.is_running():
+        raise HTTPException(status_code=409,
+                            detail="閒置掛機模式進行中，請先關閉閒置模式再出租")
+
+
 @app.post("/remote/new")
 def remote_new(token: str = Query(""), hours: float = Query(None)):
     """產生新短密碼（舊的立即失效）。預設 0.5 小時，可帶 hours 自訂。"""
     _check_owner(token)
+    _reject_if_idle()
     pw, _exp = remote_access.generate(_clamp_hours(hours, REMOTE_TTL_HOURS) * 3600)
     print(f"[remote] 已產生連線密碼: {pw}")
     return JSONResponse(_owner_remote_state())
@@ -461,6 +496,7 @@ def remote_revoke(token: str = Query("")):
 def remote_tunnel_start(token: str = Query("")):
     """啟動 Cloudflare Quick Tunnel；若尚無有效密碼順便產生一組。"""
     _check_owner(token)
+    _reject_if_idle()
     if not remote_access.info()["active"]:
         pw, _exp = remote_access.generate(REMOTE_TTL_HOURS * 3600)
         print(f"[remote] 已產生連線密碼: {pw}")

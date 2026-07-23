@@ -35,6 +35,19 @@ GUEST_MAX_CONN = max(1, int(_env("MAPLE_GUEST_MAX_CONN", "2")))
 # 視窗模式用選定的視窗;否則依此標題子字串尋找。設空字串停用標題尋找。
 GUARD_TITLE = _env("MAPLE_GUARD_TITLE", "MapleStory")
 
+# ===== 閒置(掛機)模式 =====
+# 隨機時序的移動+施放技能,維持角色活動又不呈固定頻率(避免被判機器人)。
+# 僅中控(主人)可用,與訪客(出租)模式互斥。時序全部隨機,以下為區間端點:
+IDLE_SKILL_KEY = _env("MAPLE_IDLE_SKILL", "4")             # 放置輪迴(主技能)
+IDLE_MOVE_KEYS = ["left", "right"]                          # 左右移動,不站原地
+IDLE_MOVE_MIN = float(_env("MAPLE_IDLE_MOVE_MIN", "0.3"))   # 單次移動最短(秒)
+IDLE_MOVE_MAX = float(_env("MAPLE_IDLE_MOVE_MAX", "1.6"))   # 單次移動最長
+IDLE_GAP_MIN = float(_env("MAPLE_IDLE_GAP_MIN", "0.4"))     # 動作間停頓最短
+IDLE_GAP_MAX = float(_env("MAPLE_IDLE_GAP_MAX", "3.0"))     # 動作間停頓最長
+# 技能重放間隔(秒),隨機。35~95 秒:頻繁施放維持活動,搭配對數常態時序不呈固定頻率。
+IDLE_SKILL_MIN = float(_env("MAPLE_IDLE_SKILL_MIN", "35"))   # 技能重放最短間隔(秒)
+IDLE_SKILL_MAX = float(_env("MAPLE_IDLE_SKILL_MAX", "95"))   # 技能重放最長間隔(秒)
+
 # ===== Arduino 鍵盤 (序列埠) =====
 ARDUINO_PORT = _env("MAPLE_ARDUINO_PORT", "COM3")
 ARDUINO_BAUD = int(_env("MAPLE_ARDUINO_BAUD", "115200"))

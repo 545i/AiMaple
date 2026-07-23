@@ -200,6 +200,8 @@
         <div class="mbtn" id="watchBtn">👁 注視中</div>
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
+      <div class="mbtn" id="idleBtn" style="margin:9px 0">🤖 閒置掛機：關</div>
+      <div id="idleMsg" style="font-size:12px;color:#8a8f99;margin:-2px 0 4px"></div>
       <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
         <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
       </div></div>
@@ -603,6 +605,29 @@ function setWatching(on){
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
+
+// ===== 閒置(掛機)模式：伺服器端隨機時序自動輸入,僅主人可用、與出租互斥 =====
+let idleOn = false;
+function setIdle(on){
+  idleOn = on;
+  const b=$("#idleBtn");
+  b.classList.toggle("on", on);
+  b.textContent = on ? "🤖 閒置掛機：開（隨機移動＋放置輪迴）" : "🤖 閒置掛機：關";
+  if(!on) $("#idleMsg").textContent = "";
+}
+async function refreshIdle(){
+  try{ const s=await (await fetch(`/idle/status?token=${encodeURIComponent(token)}`)).json(); setIdle(!!s.running); }catch(_){}
+}
+$("#idleBtn").onclick = async () => {
+  const path = idleOn ? "/idle/stop" : "/idle/start";
+  try{
+    const r = await fetch(`${path}?token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    if(r.status === 409){ $("#idleMsg").textContent = "⚠ " + (j.detail || "與出租模式衝突，無法同時開啟"); return; }
+    setIdle(!!j.running);
+    $("#idleMsg").textContent = j.running ? "已啟動：隨機左右移動、隨機間隔施放，畫面可照常查看" : "";
+  }catch(_){ $("#idleMsg").textContent = "操作失敗（連線？）"; }
+};
 $("#focusBtn").onclick = async () => { const el=$("#focusBtn"); el.classList.add("on"); await focusTarget(); setTimeout(()=>el.classList.remove("on"), 400); };
 
 // ===== 編輯模式 =====
@@ -737,7 +762,7 @@ $("#menuBtn").onclick = async () => {
   if(guest) return;    // 訪客選單只剩「注視/方向」，不打主人專屬 API
   try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
   try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
-  updateTarget(); renderScreenPanel(); fetchStatus();
+  updateTarget(); renderScreenPanel(); fetchStatus(); refreshIdle();
 };
 $("#menuClose").onclick = closeMenu;
 $("#menuMask").onclick = closeMenu;
@@ -862,8 +887,12 @@ async function refreshRemote(){
 }
 async function remoteAct(path){
   const sep = path.includes("?") ? "&" : "?";
-  try{ const r = await (await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, { method:"POST" })).json();
-    renderRemote(r); }
+  try{
+    const res = await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, { method:"POST" });
+    const r = await res.json().catch(()=>({}));
+    if(res.status === 409){ $("#rTunnel").textContent = "⚠ " + (r.detail || "與閒置模式衝突"); return; }
+    renderRemote(r);
+  }
   catch(_){ $("#rTunnel").textContent = "🌐 操作失敗（連線？）"; }
 }
 $("#rTunnelBtn").onclick = () => remoteAct($("#rTunnelBtn").dataset.running==="1" ? "/remote/tunnel/stop" : "/remote/tunnel/start");
