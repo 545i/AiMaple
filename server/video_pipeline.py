@@ -384,6 +384,25 @@ def enforce_focus(title_hint=""):
     return focus_hwnd(hwnd)
 
 
+# ========================================================================
+# 統一焦點管理:三端(主遠端 / 訪客 / 閒置)全部匯聚到這裡,底層都走 focus_hwnd
+# (Alt 鍵解鎖 + SetForegroundWindow,不碰 AttachThreadInput)。行為一致、單點維護。
+#
+#   focus_hwnd(hwnd)      —— 唯一底層切換(私有語意):Alt 解鎖 → 前景。
+#   focus_target()       —— 【主遠端】主人對準「當前選定的任意視窗」(state.hwnd)。
+#   guard_focus(title)   —— 【訪客/閒置/守衛】鎖定視窗模式+目標(title)並失焦切回。
+#   enforce_focus(title) —— guard_focus 的「失焦才切」內核(2 秒節流),
+#                           閒置施放技能前也單獨呼叫(只切焦點、不重啟管線)。
+# ========================================================================
+def guard_focus(title_sub):
+    """統一焦點守衛(訪客/閒置/守衛循環共用):確保來源=視窗模式且鎖定 title_sub
+    的視窗(MapleStory),並在失焦時用 Alt-hack 切回前景。回傳是否有有效目標。"""
+    ok = force_window_target(title_sub)
+    if ok:
+        enforce_focus(title_sub)
+    return ok
+
+
 # ---------- ffmpeg 指令組裝 ----------
 def _encode_args(fps, bitrate):
     fps = int(fps)

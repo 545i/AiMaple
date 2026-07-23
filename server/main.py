@@ -100,10 +100,9 @@ async def _rental_guard_loop():
     2) 目標視窗失焦就強制切回前景(訪客輸入永遠只進遊戲,擷取畫面也不會被
        其他視窗蓋住)。密碼過期/撤銷後即完全不動作,不影響主人平時操作。"""
     def _tick():
-        # force_window_target 可能觸發 restart(數秒阻塞)、enforce_focus 含 sleep,
-        # 故整段丟到執行緒池,不阻塞事件迴圈(否則所有客戶端 WS/游標/看門狗會凍結)。
-        video_pipeline.force_window_target(GUARD_TITLE)
-        video_pipeline.enforce_focus(GUARD_TITLE)
+        # 統一焦點守衛(video_pipeline.guard_focus):鎖定 MapleStory + 失焦切回。
+        # 可能觸發 restart(數秒阻塞)、含 sleep,故丟執行緒池,不阻塞事件迴圈。
+        video_pipeline.guard_focus(GUARD_TITLE)
 
     loop = asyncio.get_event_loop()
     while True:
@@ -127,6 +126,8 @@ async def lifespan(app):
     guard = asyncio.create_task(_rental_guard_loop())
     keyboard.start()
     idle_mode.set_keyboard(keyboard)
+    # 閒置施放技能前的焦點確保:用統一焦點系統的輕量分支 enforce_focus
+    # (只在失焦時切回、不重啟擷取管線),避免每次施放都觸發 restart。
     idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_TITLE))
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
@@ -348,7 +349,8 @@ def list_windows(token: str = Query("")):
     return JSONResponse({"windows": video_pipeline.list_windows()})
 
 
-# ===== 注視：把目標視窗帶到前景，確保鍵鼠輸入送進去 =====
+# ===== 對準視窗【主遠端】：把主人選定的視窗帶到前景(統一焦點系統) =====
+# 與訪客/閒置不同:主人可對準「任意選定的視窗」(state.hwnd),不限 MapleStory。
 @app.post("/window/focus")
 def window_focus(token: str = Query("")):
     _check_owner(token)
@@ -412,8 +414,9 @@ def idle_start(token: str = Query("")):
     if remote_access.info()["active"]:
         raise HTTPException(status_code=409,
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
-    # 鎖定擷取 MapleStory 視窗 + 啟動擷取,讓中控頁監視畫面(/monitor/frame)有內容
-    video_pipeline.force_window_target(GUARD_TITLE)
+    # 開場即統一焦點守衛一次(鎖定 MapleStory + 切到前景)+ 啟動擷取,
+    # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
+    video_pipeline.guard_focus(GUARD_TITLE)
     screen.ensure_started()
     idle_mode.start()
     return JSONResponse(idle_mode.status())
@@ -482,9 +485,7 @@ def guest_focus(token: str = Query("")):
     """訪客「對準視窗」：只會鎖定並聚焦 MapleStory 目標視窗——
     訪客無法指定任意視窗(與主人的 /window/focus 不同)。"""
     _check(token)
-    ok = video_pipeline.force_window_target(GUARD_TITLE)
-    if ok:
-        video_pipeline.enforce_focus(GUARD_TITLE)
+    ok = video_pipeline.guard_focus(GUARD_TITLE)   # 統一焦點守衛(訪客)
     return JSONResponse({"ok": ok})
 
 
