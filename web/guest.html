@@ -20,6 +20,13 @@
   #status { position:absolute; top:6px; left:8px; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
   #status.bad { color:#f55; }
   #badge { position:absolute; top:6px; right:8px; font-size:12px; color:#ffd479; background:rgba(0,0,0,.55); padding:3px 12px; border-radius:10px; white-space:nowrap; }
+  /* 剩餘時間:大字醒目,tabular-nums 讓數字等寬不跳動。本地每秒遞減顯示,
+     靠 WS 回報(連線/重連/每10秒)校準——準確且近乎零成本。 */
+  #countdown { position:absolute; top:31px; right:8px; font-size:15px; font-weight:700;
+               color:#7fe0b0; background:rgba(0,0,0,.6); padding:3px 12px; border-radius:10px;
+               font-variant-numeric:tabular-nums; letter-spacing:1px; white-space:nowrap; }
+  #countdown.warn   { color:#ffb020; }
+  #countdown.danger { color:#f55; }
   #bar { flex:0 0 46px; display:flex; gap:8px; align-items:center; padding:0 10px;
          background:#0c0c12; border-top:1px solid #23232e; }
   .tbtn { padding:8px 14px; border-radius:8px; background:#23242e; border:1px solid #3a3d48;
@@ -42,6 +49,7 @@
     <img id="mjpeg" alt="">
     <div id="status" class="bad">未連線</div>
     <div id="badge">👤 訪客：僅 4 / ← / →</div>
+    <div id="countdown">⏳ --:--</div>
   </div>
   <div id="bar">
     <span style="font-size:12px;color:#8a8f99">畫質</span>
@@ -71,6 +79,23 @@ let ws=null, pw="", expired=false, failStreak=0, watching=true;
 const setStatus=(t,ok)=>{ const s=$("#status"); s.textContent=t; s.className=ok?"":"bad"; };
 const send=o=>{ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 
+// ===== 剩餘時間 =====
+// 只信任伺服器回報的秒數(WS 連線時、之後每 10 秒各校準一次),本地拿它換算
+// 到期時戳,再每秒重繪顯示——不吃效能又準確,兩次校準間的漂移最多幾百毫秒。
+let expireAt = 0;    // epoch ms;0=未知
+function fmtClock(sec){ sec=Math.max(0,sec|0); const m=(sec/60)|0, s=sec%60;
+  return (m<10?"0":"")+m+":"+(s<10?"0":"")+s; }
+function calibrate(remain){ if(typeof remain==="number"){ expireAt=Date.now()+remain*1000; renderCountdown(); } }
+function renderCountdown(){
+  const el=$("#countdown"); if(!el) return;
+  if(expired){ el.textContent="⏳ 00:00"; el.className="danger"; return; }
+  if(!expireAt){ el.textContent="⏳ --:--"; el.className=""; return; }
+  const left=Math.round((expireAt-Date.now())/1000);
+  el.textContent="⏳ "+fmtClock(left);
+  el.className = left<=60 ? "danger" : (left<=300 ? "warn" : "");
+}
+setInterval(renderCountdown, 1000);   // 純文字重繪,近乎零成本
+
 // 威懾：右鍵選單與常見開發者工具快捷鍵(F12/Ctrl+Shift+I,J,C/Ctrl+U)。
 // 註：這只是威懾,擋不住決心繞過的人;真正的防線是伺服器端白名單+冷卻。
 document.addEventListener("contextmenu", e=>e.preventDefault());
@@ -87,7 +112,7 @@ function connect(){
   ws = new WebSocket(`${proto}://${location.host}/ws/input?token=${encodeURIComponent(pw)}`);
   ws.onopen = ()=>{ failStreak=0; setStatus("已連線", true); };
   ws.onclose = ()=>{
-    if(expired){ setStatus("密碼已過期，連線結束", false); $("#mjpeg").removeAttribute("src"); return; }
+    if(expired){ setStatus("密碼已過期，連線結束", false); $("#mjpeg").removeAttribute("src"); renderCountdown(); return; }
     if(++failStreak >= 20){   // 連續失敗放棄:密碼可能已失效,別無限重試打伺服器
       setStatus("無法連線，請向主人確認密碼是否仍有效後重新整理", false);
       $("#mjpeg").removeAttribute("src"); return;
@@ -96,9 +121,8 @@ function connect(){
   };
   ws.onerror = ()=>setStatus("連線錯誤", false);
   ws.onmessage = e => { try{ const m=JSON.parse(e.data);
-    if(m.t==="mode" && typeof m.remain==="number")
-      $("#badge").textContent = `👤 訪客：僅 4 / ← / → · 剩餘 ${Math.max(1, Math.ceil(m.remain/60))} 分`;
-    else if(m.t==="bye") expired = true;      // 伺服器宣告到期/撤銷
+    if(m.t==="mode"){ calibrate(m.remain); }   // 用伺服器回報校準倒數
+    else if(m.t==="bye"){ expired = true; renderCountdown(); }   // 到期/撤銷
   }catch(_){} };
 }
 function startVideo(){
