@@ -32,6 +32,12 @@ from config import GUARD_EXE
 _lock = threading.Lock()          # 序列化偵測(HTTP 執行緒池並發輪詢時)
 _history = collections.deque(maxlen=5)   # 最近幾次 bbox,取中位數抗單幀抖動
 _last = {"found": False}          # 最近一次偵測結果(給 /minimap/status)
+# 鎖定機制:地圖內容有白色橫帶時邊框配對會誤抓。連續多幀偵測到「幾乎相同」的
+# bbox 才鎖定;鎖定後不再重偵測(白色內容再也干擾不到),直到手動 redetect()
+# 或遊戲視窗尺寸改變才解鎖。
+_locked = None                    # 鎖定的 (x,y,w,h);None=未鎖定
+_locked_size = None               # 鎖定當下的影格 (w,h);視窗改尺寸即失效
+_LOCK_JITTER = 12                 # 歷史內各分量最大擺動 ≤此值才視為穩定可鎖定
 
 
 # ---------- 取得遊戲視窗影格 ----------
@@ -109,7 +115,9 @@ def _candidates(frame):
     逐列取最長亮段(>150),x 範圍相同(±8)者分組;同組有上下兩簇亮線
     (畫布上下邊框)且間距/位置合理者成為候選。"""
     h, w = frame.shape[:2]
-    roi_w, roi_h = int(w * 0.55), int(h * 0.65)
+    # 偵測範圍縮小到左上 40% x 50%:小地圖實測最大約佔寬 18%/高 21%(2560x1440),
+    # 範圍越小,場景/其他 UI 的白色亮帶造成誤配對的機會越低。
+    roi_w, roi_h = int(w * 0.40), int(h * 0.50)
     gray = cv2.cvtColor(frame[:roi_h, :roi_w], cv2.COLOR_BGR2GRAY)
     bright = gray > 150
     groups = {}                            # (start,end) -> [row, ...]
@@ -166,30 +174,72 @@ def _stable_bbox(bbox):
     return tuple(int(v) for v in np.median(arr, axis=0))
 
 
+def _maybe_lock(median):
+    """歷史滿且各分量擺動 ≤_LOCK_JITTER → 鎖定中位數 bbox。回傳鎖定與否。"""
+    global _locked
+    if median is None or len(_history) < _history.maxlen:
+        return False
+    arr = np.array(_history)
+    if int((arr.max(axis=0) - arr.min(axis=0)).max()) <= _LOCK_JITTER:
+        _locked = median
+        print(f"[minimap] 小地圖鎖定 {median}(連續 {len(_history)} 幀穩定)")
+        return True
+    return False
+
+
 # ---------- 對外 API ----------
 def status():
     """最近一次偵測結果(不觸發新偵測;由 frame 端點驅動)。"""
     return dict(_last)
 
 
+def redetect():
+    """手動解除鎖定並清空歷史,下一幀起重新偵測。"""
+    global _locked, _locked_size
+    with _lock:
+        _locked = None
+        _locked_size = None
+        _history.clear()
+    print("[minimap] 手動重新偵測:解除鎖定")
+
+
 def detect_once():
-    """抓一格 → 偵測 → 更新 _last。回 (frame, bbox, dot, cands);拿不到影格回 (None,)*4。"""
-    global _last
+    """抓一格 → 偵測 → 更新 _last。回 (frame, bbox, dot, cands);拿不到影格回 (None,)*4。
+    已鎖定時直接用鎖定 bbox(不重偵測,地圖白色內容干擾不到),每幀只找黃點。"""
+    global _last, _locked, _locked_size
     with _lock:
         frame = _grab_window()
         if frame is None:
-            _last = {"found": False, "error": "拿不到 MapleStory 視窗影格(遊戲開著嗎?)"}
+            _last = {"found": False, "locked": _locked is not None,
+                     "error": "拿不到 MapleStory 視窗影格(遊戲開著嗎?)"}
             return None, None, None, None
-        bbox, dot, cands = _detect(frame)
-        bbox = _stable_bbox(bbox)
         h, w = frame.shape[:2]
+        if _locked is not None and _locked_size != (w, h):
+            print(f"[minimap] 視窗尺寸變更 {_locked_size} → {(w, h)},解除鎖定")
+            _locked = None
+            _history.clear()
+        cands = []
+        if _locked is not None:
+            bbox = _locked
+        else:
+            raw, _d, cands = _detect(frame)
+            bbox = _stable_bbox(raw)
+            if _maybe_lock(bbox):
+                _locked_size = (w, h)
+        # 黃點每幀都在(鎖定/偵測到的)bbox 內重找——角色會動,不能沿用舊值
+        dot = None
         if bbox:
-            _last = {"found": True, "x": bbox[0], "y": bbox[1],
-                     "w": bbox[2], "h": bbox[3],
+            x, y, bw, bh = bbox
+            d = _player_dot(frame[y:y + bh, x:x + bw])
+            if d:
+                dot = (x + d[0], y + d[1])
+        if bbox:
+            _last = {"found": True, "locked": _locked is not None,
+                     "x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3],
                      "frame_w": w, "frame_h": h,
                      "dot": {"x": dot[0] - bbox[0], "y": dot[1] - bbox[1]} if dot else None}
         else:
-            _last = {"found": False, "frame_w": w, "frame_h": h}
+            _last = {"found": False, "locked": False, "frame_w": w, "frame_h": h}
         return frame, bbox, dot, cands
 
 

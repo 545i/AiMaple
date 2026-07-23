@@ -312,6 +312,7 @@
      <img id="mmImg" alt="小地圖偵測"
           style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
      <div id="mmInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div class="mbtn" id="mmRedetectBtn" style="margin-top:6px">🔄 重新偵測（換地圖後按）</div>
    </div>
 
    <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:14px">🆘 解除卡死（放開所有按鍵）</button>
@@ -771,7 +772,8 @@ async function mmTick(){
   try{
     const s = await (await fetch(`/minimap/status?token=${encodeURIComponent(token)}`)).json();
     if(s.found){
-      $("#mmInfo").textContent = `✅ 小地圖 ${s.w}×${s.h} @ (${s.x},${s.y})　視窗 ${s.frame_w}×${s.frame_h}`
+      $("#mmInfo").textContent = (s.locked ? "🔒 已鎖定 " : "🔎 偵測中 ")
+        + `小地圖 ${s.w}×${s.h} @ (${s.x},${s.y})`
         + (s.dot ? `　🟡 角色點 (${s.dot.x},${s.dot.y})` : "　（未見角色黃點）");
     } else {
       $("#mmInfo").textContent = s.error ? `❌ ${s.error}` : "🔎 尚未偵測到小地圖（小地圖有展開嗎？）";
@@ -794,6 +796,13 @@ $("#mmBtn").onclick = ()=>{
   $("#mmBtn").textContent = "🗺 小地圖偵測預覽：開（每秒更新）";
   mmTick();
   mmTimer = setInterval(mmTick, 1000);
+};
+$("#mmRedetectBtn").onclick = async ()=>{   // 解除鎖定,下一幀起重新偵測
+  try{
+    await fetch(`/minimap/redetect?token=${encodeURIComponent(token)}`, { method:"POST" });
+    $("#mmInfo").textContent = "🔄 已解除鎖定，重新偵測中…";
+    if(mmOn) mmTick();
+  }catch(_){ $("#mmInfo").textContent = "操作失敗（連線？）"; }
 };
 
 // ===== 編輯模式 =====

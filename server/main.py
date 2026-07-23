@@ -459,6 +459,14 @@ def minimap_status(token: str = Query("")):
     return JSONResponse(minimap.status())
 
 
+@app.post("/minimap/redetect")
+def minimap_redetect(token: str = Query("")):
+    """手動解除小地圖鎖定,下一幀重新偵測(換地圖/誤鎖時用)。"""
+    _check_owner(token)
+    minimap.redetect()
+    return JSONResponse(minimap.status())
+
+
 @app.post("/idle/stop")
 def idle_stop(token: str = Query("")):
     _check_owner(token)
