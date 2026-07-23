@@ -145,6 +145,7 @@ async def lifespan(app):
     yield
     guard.cancel()
     idle_mode.stop()
+    minimap.watch_stop()
     import audio_pipeline
     audio_pipeline.stop()
     keyboard.close()
@@ -421,6 +422,7 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
     video_pipeline.guard_focus(GUARD_EXE)
     screen.ensure_started()
     idle_mode.start(max(0.0, min(86400.0, duration)))   # 上限 24 小時
+    minimap.watch_start()   # 掛機期間背景監看小地圖(紫標 → Telegram 通知)
     return JSONResponse(idle_mode.status())
 
 
@@ -471,6 +473,7 @@ def minimap_redetect(token: str = Query("")):
 def idle_stop(token: str = Query("")):
     _check_owner(token)
     idle_mode.stop()
+    minimap.watch_stop()
     return JSONResponse(idle_mode.status())
 
 

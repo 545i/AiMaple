@@ -55,6 +55,28 @@ IDLE_SKILL_MAX = float(_env("MAPLE_IDLE_SKILL_MAX", "95"))   # 技能重放最�
 IDLE_KEY_GAP_MIN = float(_env("MAPLE_IDLE_KEYGAP_MIN", "0.08"))
 IDLE_KEY_GAP_MAX = float(_env("MAPLE_IDLE_KEYGAP_MAX", "0.25"))
 
+# ===== Telegram 通知(掛機警報:小地圖出現紫色標記等) =====
+# 機密不進 git:token/chat_id 放 server/telegram.json(已 .gitignore),
+# 格式 {"telegram_token": "...", "telegram_chat_id": "...", "telegram_enabled": true}。
+# 環境變數 MAPLE_TG_* 優先於檔案。
+def _tg_file():
+    try:
+        import json
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram.json")
+        with open(p, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+_TG = _tg_file()
+TELEGRAM_ENABLED = _env("MAPLE_TG_ENABLED",
+                        "1" if _TG.get("telegram_enabled", True) else "0") == "1"
+TELEGRAM_TOKEN = _env("MAPLE_TG_TOKEN", _TG.get("telegram_token", ""))
+TELEGRAM_CHAT_ID = _env("MAPLE_TG_CHAT", str(_TG.get("telegram_chat_id", "")))
+# 紫標通知冷卻(秒):出現→通知後,至少隔這麼久才會為「再次出現」重發
+PURPLE_NOTIFY_COOLDOWN = float(_env("MAPLE_PURPLE_COOLDOWN", "120"))
+
 # ===== Arduino 鍵盤 (序列埠) =====
 ARDUINO_PORT = _env("MAPLE_ARDUINO_PORT", "COM3")
 ARDUINO_BAUD = int(_env("MAPLE_ARDUINO_BAUD", "115200"))

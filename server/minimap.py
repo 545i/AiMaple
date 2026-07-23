@@ -27,10 +27,12 @@ import time
 import numpy as np
 import cv2
 
-from config import GUARD_EXE
+from config import GUARD_EXE, PURPLE_NOTIFY_COOLDOWN
+import notify
 
 _lock = threading.Lock()          # 序列化偵測(HTTP 執行緒池並發輪詢時)
 _history = collections.deque(maxlen=5)   # 最近幾次 bbox,取中位數抗單幀抖動
+_hist_dot = collections.deque(maxlen=5)  # 對應每幀「有無看到角色黃點」(鎖定門檻)
 _last = {"found": False}          # 最近一次偵測結果(給 /minimap/status)
 # 鎖定機制:地圖內容有白色橫帶時邊框配對會誤抓。連續多幀偵測到「幾乎相同」的
 # bbox 才鎖定;鎖定後不再重偵測(白色內容再也干擾不到),直到手動 redetect()
@@ -43,6 +45,13 @@ _LOCK_JITTER = 12                 # 歷史內各分量最大擺動 ≤此值才�
 _dot_last = None
 _dot_ts = 0.0
 _DOT_GHOST = 3.0
+# 紫色菱形標記(特殊NPC/玩家進圖等):出現(前一幀沒有→這一幀有)就發 Telegram,
+# 冷卻 PURPLE_NOTIFY_COOLDOWN 秒內不重發。
+_purple_prev = False
+_purple_notify_ts = 0.0
+# 背景監看:掛機時前端可能沒開預覽,由此執行緒定期跑 detect_once 觸發紫標通知
+_watch_stop_ev = threading.Event()
+_watch_thread = None
 
 
 # ---------- 取得遊戲視窗影格 ----------
@@ -76,20 +85,23 @@ def _grab_window():
 def _player_dot(bgr, last=None):
     """在(小地圖)影像內找角色黃點。回 (x, y) 或 None。
 
-    實機採樣定案(女皇之路):角色點是【純飽和黃】BGR(0,239,254) → HSV(28,255,254);
-    地圖裡的金色平台/雕像等黃色裝飾全部 S≤170、V≤204。故用 S≥200 且 V≥200 的
-    嚴格範圍即可乾淨分離——之前的反白寬鬆範圍(等效 S>120)會把整片金色地形收進來,
-    大 blob 搶走角色點。黃色 H≈28 不跨色相環 0/179(紅色才會),不需反白處理迴繞。
+    遊戲的角色點是【固定素材】——顏色/形狀永不變化,只可能被其他 UI 遮住
+    (使用者確認)。兩張不同地圖實機採樣核心色完全相同:BGR(0,239,254) →
+    HSV(28,255,254)。故用精確色的窄容差匹配(H 25~31、S/V ≥235):地圖金色
+    地形/雕像 S≤170 V≤204 差距極大,絕不誤收。WGC 拿的是無損 BGRA,核心
+    像素不受壓縮失真影響;僅邊緣抗鋸齒像素被排除,blob 面積縮小屬預期。
     last=(x,y):上一次角色位置;有多個候選時取最近者(就近追蹤,抗短暫誤判)。"""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (24, 200, 200), (34, 255, 255))
+    mask = cv2.inRange(hsv, (25, 235, 235), (31, 255, 255))
     n, _lab, stats, cent = cv2.connectedComponentsWithStats(mask)
     cands = []
     for i in range(1, n):
         a = int(stats[i, cv2.CC_STAT_AREA])
-        if a < 8 or a > 600:              # 黃點依解析度 ~10-130px;排除雜訊與大片
+        if a < 6 or a > 400:              # 固定素材的核心色面積(依視窗解析度)
             continue
         w_, h_ = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+        if w_ > 26 or h_ > 26:            # 點很小;大塊必是別的東西
+            continue
         if not (0.4 <= w_ / max(1, h_) <= 2.5):   # 圓點形狀(非長條亮帶)
             continue
         cands.append((int(cent[i][0]), int(cent[i][1]), a))
@@ -100,6 +112,29 @@ def _player_dot(bgr, last=None):
         return (near[0], near[1])
     best = max(cands, key=lambda c: c[2])
     return (best[0], best[1])
+
+
+# ---------- 紫色菱形標記 ----------
+def _purple_marks(bgr):
+    """小地圖內的紫色菱形標記 [(x, y), ...]。
+    同角色點:固定素材、顏色形狀永不變(使用者確認),用精確色窄容差。
+    實機採樣核心色 BGR(255,102,221) → HSV(143,153,255):H 138~148、
+    S 130~180、V≥235。點狀大小/形狀過濾同黃點。"""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, (138, 130, 235), (148, 180, 255))
+    n, _lab, stats, cent = cv2.connectedComponentsWithStats(mask)
+    out = []
+    for i in range(1, n):
+        a = int(stats[i, cv2.CC_STAT_AREA])
+        if a < 6 or a > 400:
+            continue
+        w_, h_ = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
+        if w_ > 26 or h_ > 26:
+            continue
+        if not (0.4 <= w_ / max(1, h_) <= 2.5):
+            continue
+        out.append((int(cent[i][0]), int(cent[i][1])))
+    return out
 
 
 # ---------- 小地圖畫布偵測(邊框線配對法) ----------
@@ -190,6 +225,7 @@ def _stable_bbox(bbox):
     """把本次 bbox 丟進歷史,回各分量中位數(抗單幀抖動)。None 就清空歷史。"""
     if bbox is None:
         _history.clear()
+        _hist_dot.clear()
         return None
     _history.append(bbox)
     arr = np.array(_history)
@@ -197,14 +233,18 @@ def _stable_bbox(bbox):
 
 
 def _maybe_lock(median):
-    """歷史滿且各分量擺動 ≤_LOCK_JITTER → 鎖定中位數 bbox。回傳鎖定與否。"""
+    """歷史滿、各分量擺動 ≤_LOCK_JITTER、且窗內至少一幀看過角色黃點 → 鎖定。
+    黃點門檻(嚴謹):角色點永遠在小地圖上,窗內一次都沒看到 = 抓到的極可能
+    不是小地圖(例:半透明活動面板的假配對)或小地圖被 UI 蓋住——都不該鎖。"""
     global _locked
     if median is None or len(_history) < _history.maxlen:
+        return False
+    if not any(_hist_dot):
         return False
     arr = np.array(_history)
     if int((arr.max(axis=0) - arr.min(axis=0)).max()) <= _LOCK_JITTER:
         _locked = median
-        print(f"[minimap] 小地圖鎖定 {median}(連續 {len(_history)} 幀穩定)")
+        print(f"[minimap] 小地圖鎖定 {median}(連續 {len(_history)} 幀穩定+黃點確認)")
         return True
     return False
 
@@ -223,13 +263,15 @@ def redetect():
         _locked_size = None
         _dot_last = None
         _history.clear()
+        _hist_dot.clear()
     print("[minimap] 手動重新偵測:解除鎖定")
 
 
 def detect_once():
     """抓一格 → 偵測 → 更新 _last。回 (frame, bbox, dot, cands);拿不到影格回 (None,)*4。
     已鎖定時直接用鎖定 bbox(不重偵測,地圖白色內容干擾不到),每幀只找黃點。"""
-    global _last, _locked, _locked_size, _dot_last, _dot_ts
+    global _last, _locked, _locked_size, _dot_last, _dot_ts, \
+        _purple_prev, _purple_notify_ts
     with _lock:
         frame = _grab_window()
         if frame is None:
@@ -242,14 +284,14 @@ def detect_once():
             _locked = None
             _dot_last = None
             _history.clear()
+            _hist_dot.clear()
         cands = []
+        was_unlocked = _locked is None
         if _locked is not None:
             bbox = _locked
         else:
             raw, _d, cands = _detect(frame)
             bbox = _stable_bbox(raw)
-            if _maybe_lock(bbox):
-                _locked_size = (w, h)
         # 黃點每幀都在(鎖定/偵測到的)bbox 內重找——角色會動,不能沿用舊值。
         # 就近追蹤 + 短暫殘影:多候選取離上次最近;抓不到時沿用舊值 ≤_DOT_GHOST 秒。
         dot, stale = None, False
@@ -265,15 +307,63 @@ def detect_once():
                 _dot_last = None
             if d:
                 dot = (x + d[0], y + d[1])
+        # 鎖定嘗試移到「黃點已算完」之後:鎖定門檻需要窗內黃點紀錄
+        if was_unlocked and bbox:
+            _hist_dot.append(dot is not None and not stale)
+            if _maybe_lock(bbox):
+                _locked_size = (w, h)
+        # 紫色菱形:出現的瞬間(前一幀無→這一幀有)發 Telegram,冷卻內不重發
+        purple = []
+        if bbox:
+            x, y, bw, bh = bbox
+            purple = _purple_marks(frame[y:y + bh, x:x + bw])
+            now = time.monotonic()
+            if purple and not _purple_prev \
+                    and now - _purple_notify_ts >= PURPLE_NOTIFY_COOLDOWN:
+                _purple_notify_ts = now
+                pos = ", ".join(f"({px},{py})" for px, py in purple)
+                notify.telegram(f"🟣 小地圖出現紫色標記 x{len(purple)} 位置 {pos}"
+                                f"（小地圖 {bw}x{bh}）")
+            _purple_prev = bool(purple)
         if bbox:
             _last = {"found": True, "locked": _locked is not None,
                      "x": bbox[0], "y": bbox[1], "w": bbox[2], "h": bbox[3],
                      "frame_w": w, "frame_h": h,
                      "dot": {"x": dot[0] - bbox[0], "y": dot[1] - bbox[1]} if dot else None,
-                     "dot_stale": stale}
+                     "dot_stale": stale,
+                     "purple": [{"x": px, "y": py} for px, py in purple]}
         else:
             _last = {"found": False, "locked": False, "frame_w": w, "frame_h": h}
         return frame, bbox, dot, cands
+
+
+# ---------- 背景監看(掛機時前端未開預覽也要能發紫標通知) ----------
+def _watch_loop(interval):
+    while not _watch_stop_ev.wait(interval):
+        try:
+            detect_once()
+        except Exception as e:
+            print(f"[minimap] 監看偵測錯誤: {e}")
+
+
+def watch_start(interval=2.0):
+    """啟動背景監看執行緒(每 interval 秒偵測一次;已在跑則不動作)。"""
+    global _watch_thread
+    if _watch_thread is not None and _watch_thread.is_alive():
+        return
+    _watch_stop_ev.clear()
+    _watch_thread = threading.Thread(target=_watch_loop, args=(interval,), daemon=True)
+    _watch_thread.start()
+    print("[minimap] 背景監看啟動(紫標 Telegram 通知)")
+
+
+def watch_stop():
+    global _watch_thread
+    if _watch_thread is None:
+        return
+    _watch_stop_ev.set()
+    _watch_thread = None
+    print("[minimap] 背景監看停止")
 
 
 def debug_jpeg(view="annot", quality=80):
@@ -290,6 +380,8 @@ def debug_jpeg(view="annot", quality=80):
             if dot:
                 cv2.drawMarker(crop, (dot[0] - x, dot[1] - y), (255, 0, 255),
                                cv2.MARKER_CROSS, 12, 1)
+            for p in _last.get("purple") or []:      # 紫標:白圈標註
+                cv2.circle(crop, (p["x"], p["y"]), 8, (255, 255, 255), 1)
             crop = cv2.resize(crop, (w * 2, h * 2), interpolation=cv2.INTER_NEAREST)
             out = crop
         else:

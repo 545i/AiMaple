@@ -26,3 +26,4 @@ scratch_*
 # MediaMTX 自動產生的憑證
 auto.crt
 auto.key
+server/telegram.json
