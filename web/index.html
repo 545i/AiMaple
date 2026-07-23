@@ -36,6 +36,13 @@
   body.guest #ownerScreen, body.guest #ownerClip,
   body.guest #toDashBtn, body.guest #idleBtn { display:none !important; }
   #rHours { width:70px; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:6px; font-size:14px; }
+  /* 閒置掛機按鍵追蹤燈(桌面寵物式) */
+  #klights { display:flex; align-items:center; gap:10px; margin-top:8px; }
+  #klights .klight { width:44px; height:44px; border-radius:10px; display:flex; align-items:center;
+                     justify-content:center; font-size:18px; font-weight:700;
+                     background:#23242e; border:1px solid #3a3d48; color:#6a6d78; transition:all .08s; }
+  #klights .klight.on { background:#3a7; border-color:#5fe0a0; color:#fff; box-shadow:0 0 10px #3a7; }
+  #klights .kinfo { margin-left:auto; font-size:13px; color:#b8bcc6; font-variant-numeric:tabular-nums; }
   #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
             border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
 
@@ -279,6 +286,14 @@
      <img id="monitorImg" alt="監視畫面"
           style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
      <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（MapleStory，約 1 秒更新）</div>
+     <!-- 按鍵追蹤燈(桌面寵物式):送出該鍵即亮 -->
+     <div id="klights">
+       <div class="klight" data-k="left">←</div>
+       <div class="klight" data-k="4">4</div>
+       <div class="klight" data-k="right">→</div>
+       <div id="nextSkill" class="kinfo">下一次放置輪迴：--</div>
+     </div>
+     <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
    </div>
 
    <button class="enter-btn" id="enterRemote">▶ 進入遠端</button>
@@ -634,20 +649,41 @@ $("#watchResume").onclick = () => setWatching(true);
 // ===== 閒置(掛機)模式(儀表板/中控頁)：伺服器端隨機時序自動輸入,僅主人、與出租互斥 =====
 // 開啟時同步顯示「監視畫面」——每秒抓一張 MapleStory 視窗 JPEG(約 1 秒延遲,
 // 省頻寬、穩定流暢),達到掛機監控效果。
-let idleOn = false, monitorTimer = null;
+let idleOn = false, monitorTimer = null, trackTimer = null;
 function refreshMonitorFrame(){
   const im = $("#monitorImg");
   im.onerror = ()=>{};   // 尚無影格(503)忽略,下一秒再試
   im.src = `/monitor/frame?token=${encodeURIComponent(token)}&_=${Date.now()}`;
 }
+// 按鍵追蹤:每 400ms 抓 /idle/status,亮燈(該鍵最近 <0.6 秒送出)+ 下一次技能倒數
+// + 焦點診斷(前景不是 MapleStory → 提示技能/字母送不進去)。
+async function refreshTrack(){
+  try{
+    const s = await (await fetch(`/idle/status?token=${encodeURIComponent(token)}`)).json();
+    const keys = s.keys || {};
+    document.querySelectorAll("#klights .klight").forEach(el => {
+      const ago = keys[el.dataset.k];
+      el.classList.toggle("on", typeof ago === "number" && ago < 0.6);
+    });
+    $("#nextSkill").textContent = s.running
+      ? `下一次放置輪迴：${s.next_skill_in}s` : "下一次放置輪迴：--";
+    const w = $("#focusWarn");
+    if(s.running && s.target_foreground === false){
+      w.style.display = "block";
+      w.textContent = "⚠ MapleStory 不在前景，技能/字母送不進去（方向鍵仍可）。焦點守衛每秒嘗試切回。";
+    } else w.style.display = "none";
+  }catch(_){}
+}
 function startMonitor(){
   if(monitorTimer) return;
   $("#monitorBox").style.display = "block";
-  refreshMonitorFrame();
+  refreshMonitorFrame(); refreshTrack();
   monitorTimer = setInterval(refreshMonitorFrame, 1000);   // 每秒一張,≈1 秒延遲
+  trackTimer = setInterval(refreshTrack, 400);             // 亮燈/倒數更即時
 }
 function stopMonitor(){
   if(monitorTimer){ clearInterval(monitorTimer); monitorTimer = null; }
+  if(trackTimer){ clearInterval(trackTimer); trackTimer = null; }
   $("#monitorBox").style.display = "none";
   $("#monitorImg").removeAttribute("src");
 }

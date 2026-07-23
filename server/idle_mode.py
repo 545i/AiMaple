@@ -26,6 +26,14 @@ _stop = threading.Event()
 _running = False
 _started_at = 0.0
 _op_lock = threading.Lock()   # 序列化 start/stop,防快速連點造成雙重啟動/旗標交錯
+# 按鍵追蹤(供中控頁監視「桌面寵物式亮燈」+ 下一次技能倒數):
+_events = {}                  # key -> 最近觸發的 monotonic 時間
+_next_skill_at = 0.0         # 下一次施放技能的 monotonic 時間
+
+
+def _note(key):
+    """記錄某鍵剛被送出(供前端亮燈)。"""
+    _events[key] = time.monotonic()
 
 
 def set_focus_fn(fn):
@@ -45,8 +53,15 @@ def is_running():
 
 
 def status():
+    now = time.monotonic()
+    keys = {}
+    for k in list(IDLE_MOVE_KEYS) + [IDLE_SKILL_KEY]:
+        ts = _events.get(k, 0.0)
+        keys[k] = round(now - ts, 2) if ts else 999.0   # 距今幾秒觸發(前端<0.6 亮燈)
     return {"running": _running,
-            "uptime": int(time.time() - _started_at) if _running else 0}
+            "uptime": int(time.time() - _started_at) if _running else 0,
+            "keys": keys,
+            "next_skill_in": max(0, round(_next_skill_at - now)) if (_running and _next_skill_at) else 0}
 
 
 def _lognorm(median, sigma, lo, hi):
@@ -66,6 +81,7 @@ def _move_once():
     mk = random.choice(IDLE_MOVE_KEYS)
     dur = _lognorm(0.55, 0.55, IDLE_MOVE_MIN, IDLE_MOVE_MAX)
     _keyboard.key_down(mk)
+    _note(mk)                       # 亮燈追蹤
     stopped = _stop.wait(dur)
     _keyboard.key_up(mk)
     return stopped
@@ -87,9 +103,11 @@ def _idle_gap():
 
 
 def _loop():
+    global _next_skill_at
     # 首次很快施放一次(暖身移動幾秒後),確保 buff 立即生效、不空窗;
-    # 之後每次都重設為 7~9 分(IDLE_SKILL_MIN~MAX)隨機,不壓 10 分上限。
+    # 之後每次都重設為 35~95 秒(IDLE_SKILL_MIN~MAX)隨機。
     next_skill = time.monotonic() + random.uniform(8, 20)
+    _next_skill_at = next_skill
     # 叢發狀態(burstiness):真人時而連續操作、時而停手。用一個會變的
     # 「本輪連續移動次數」取代固定機率,讓動作序列的節奏也不規律。
     burst = random.randint(1, 4)
@@ -112,7 +130,9 @@ def _loop():
                 # 讀到,與訪客模式同一條驗證有效的路徑。數字鍵走 DOWN:/UP: 實機無效,
                 # 故不用 key_down/key_up。
                 _keyboard.tap(IDLE_SKILL_KEY)
+                _note(IDLE_SKILL_KEY)               # 亮燈追蹤
                 next_skill = time.monotonic() + random.uniform(IDLE_SKILL_MIN, IDLE_SKILL_MAX)
+                _next_skill_at = next_skill
                 if _idle_gap():
                     break
                 burst = random.randint(1, 4)

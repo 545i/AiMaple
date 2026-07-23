@@ -398,7 +398,11 @@ def status(token: str = Query("")):
 @app.get("/idle/status")
 def idle_status(token: str = Query("")):
     _check_owner(token)
-    return JSONResponse(idle_mode.status())
+    s = idle_mode.status()
+    # 焦點診斷:前景是否真的是 MapleStory。若否,技能/字母(WM_KEYDOWN)送不進去,
+    # 只有方向鍵(GetAsyncKeyState 全域狀態)有效——中控頁據此提示使用者。
+    s["target_foreground"] = video_pipeline.is_target_foreground(GUARD_TITLE)
+    return JSONResponse(s)
 
 
 @app.post("/idle/start")

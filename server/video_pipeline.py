@@ -297,6 +297,21 @@ def window_abs_bbox(hwnd=None):
     return {"left": r.left, "top": r.top, "width": w, "height": h}
 
 
+def is_target_foreground(title_hint=""):
+    """目標視窗(state.hwnd 或依 title_hint 找)目前是否為前景視窗。
+    供中控頁診斷:前景不是遊戲 → WM_KEYDOWN 類按鍵(技能/字母)送不進去。"""
+    hwnd = 0
+    if state["source"] == "window" and state["hwnd"] \
+            and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
+        hwnd = int(state["hwnd"])
+    elif title_hint:
+        hwnd = find_window_by_title(title_hint)
+    if not hwnd:
+        return False
+    fg = _user32.GetForegroundWindow()
+    return bool(fg) and int(fg) == hwnd
+
+
 def find_window_by_title(sub):
     """依標題子字串(不分大小寫)找視窗,回 hwnd 或 0。"""
     sub = (sub or "").lower()
