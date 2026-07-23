@@ -298,15 +298,15 @@ def window_abs_bbox(hwnd=None):
     return {"left": r.left, "top": r.top, "width": w, "height": h}
 
 
-def is_target_foreground(title_hint=""):
-    """目標視窗(state.hwnd 或依 title_hint 找)目前是否為前景視窗。
+def is_target_foreground(exe_sub=""):
+    """目標視窗(state.hwnd 或依 exe_sub 找)目前是否為前景視窗。
     供中控頁診斷:前景不是遊戲 → WM_KEYDOWN 類按鍵(技能/字母)送不進去。"""
     hwnd = 0
     if state["source"] == "window" and state["hwnd"] \
             and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
         hwnd = int(state["hwnd"])
-    elif title_hint:
-        hwnd = find_window_by_title(title_hint)
+    elif exe_sub:
+        hwnd = find_window_by_exe(exe_sub)
     if not hwnd:
         return False
     fg = _user32.GetForegroundWindow()
@@ -324,53 +324,109 @@ def find_window_by_title(sub):
     return 0
 
 
-def target_window_valid(title_sub=""):
-    """視窗模式且目標視窗仍存在(且標題含 title_sub)才 True。
+# ---- 依「進程 exe 名」辨識目標(焦點守衛用;標題會變、exe 名固定) ----
+_kernel32.QueryFullProcessImageNameW.argtypes = [
+    wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+_kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+_kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+_kernel32.OpenProcess.restype = wintypes.HANDLE
+
+
+def _window_exe_base(hwnd):
+    """回傳擁有該視窗的進程 exe 檔名(小寫,如 'maplestory.exe');失敗回 ''。"""
+    pid = wintypes.DWORD()
+    _user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
+    if not pid.value:
+        return ""
+    h = _kernel32.OpenProcess(0x1000, False, pid.value)   # QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        size = wintypes.DWORD(512)
+        buf = ctypes.create_unicode_buffer(512)
+        if _kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return buf.value.rsplit("\\", 1)[-1].lower()
+        return ""
+    finally:
+        _kernel32.CloseHandle(h)
+
+
+def _window_title(hwnd):
+    n = _user32.GetWindowTextLengthW(hwnd)
+    if n <= 0:
+        return ""
+    buf = ctypes.create_unicode_buffer(n + 1)
+    _user32.GetWindowTextW(hwnd, buf, n + 1)
+    return buf.value.strip()
+
+
+def find_window_by_exe(exe_sub):
+    """找「進程 exe 名含 exe_sub、可見、有標題」的頂層視窗,回 hwnd 或 0。"""
+    exe_sub = (exe_sub or "").lower()
+    if not exe_sub:
+        return 0
+    found = [0]
+    proto = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def _cb(hwnd, _l):
+        if not _user32.IsWindowVisible(hwnd):
+            return True
+        if _user32.GetWindowTextLengthW(hwnd) <= 0:
+            return True                       # 只找有標題的主視窗(跳過隱形輔助視窗)
+        if exe_sub in _window_exe_base(hwnd):
+            found[0] = int(hwnd)
+            return False
+        return True
+
+    _user32.EnumWindows(proto(_cb), 0)
+    return found[0]
+
+
+def target_window_valid(exe_sub=""):
+    """視窗模式且目標視窗仍存在(且其進程 exe 名含 exe_sub)才 True。
     出租畫面守門用：不成立就不給訪客任何影格(遊戲關掉時嚴防退回整個桌面)。"""
     if state["source"] != "window" or not state["hwnd"]:
         return False
     if not _user32.IsWindow(wintypes.HWND(state["hwnd"])):
         return False
-    if title_sub and title_sub.lower() not in (state["window"] or "").lower():
+    if exe_sub and exe_sub.lower() not in _window_exe_base(state["hwnd"]):
         return False
     return True
 
 
-def force_window_target(title_sub):
-    """出租鎖定：強制來源=視窗模式、目標=標題含 title_sub 的視窗(MapleStory)。
+def force_window_target(exe_sub):
+    """鎖定：強制來源=視窗模式、目標=進程 exe 名含 exe_sub 的視窗(maplestory.exe)。
     已鎖定且仍有效就直接回 True(不重複列舉)。找不到目標回 False。"""
-    sub = (title_sub or "").lower()
-    if not sub:
+    if not exe_sub:
         return False
-    if target_window_valid(title_sub):
+    if target_window_valid(exe_sub):
         return True
-    for w in list_windows():
-        if sub in w["title"].lower():
-            state["source"] = "window"
-            state["window"] = w["title"]
-            state["hwnd"] = w["hwnd"]
-            print(f"[guard] 出租鎖定視窗: {w['title']!r}")
-            if is_running():
-                restart()      # WebRTC 管線改抓該視窗
-            return True
+    hwnd = find_window_by_exe(exe_sub)
+    if hwnd:
+        state["source"] = "window"
+        state["window"] = _window_title(hwnd) or exe_sub
+        state["hwnd"] = hwnd
+        print(f"[guard] 鎖定視窗(exe={exe_sub}): {state['window']!r}")
+        if is_running():
+            restart()          # WebRTC 管線改抓該視窗
+        return True
     return False
 
 
 _last_guard = 0.0
 
 
-def enforce_focus(title_hint=""):
-    """出租焦點守衛：目標視窗不在前景就強制切回,確保訪客輸入只進遊戲、
-    也確保 MJPEG 視窗區域擷取拍到的是遊戲而不是蓋在上面的別的視窗。
-    優先用視窗模式的 state.hwnd,否則依 title_hint(預設 MapleStory)找。
-    有 2 秒節流,避免與系統/使用者搶焦點抖動。回傳是否執行了切換。"""
+def enforce_focus(exe_sub=""):
+    """焦點守衛：目標視窗不在前景就強制切回,確保輸入只進遊戲、也確保 MJPEG
+    視窗擷取拍到的是遊戲。優先用視窗模式的 state.hwnd,否則依 exe_sub 找
+    (maplestory.exe)。有 2 秒節流,避免與系統/使用者搶焦點抖動。回傳是否切換。"""
     global _last_guard
     hwnd = 0
     if state["source"] == "window" and state["hwnd"] \
             and _user32.IsWindow(wintypes.HWND(state["hwnd"])):
         hwnd = int(state["hwnd"])
-    elif title_hint:
-        hwnd = find_window_by_title(title_hint)
+    elif exe_sub:
+        hwnd = find_window_by_exe(exe_sub)
     if not hwnd:
         return False
     fg = _user32.GetForegroundWindow()
@@ -394,12 +450,13 @@ def enforce_focus(title_hint=""):
 #   enforce_focus(title) —— guard_focus 的「失焦才切」內核(2 秒節流),
 #                           閒置施放技能前也單獨呼叫(只切焦點、不重啟管線)。
 # ========================================================================
-def guard_focus(title_sub):
-    """統一焦點守衛(訪客/閒置/守衛循環共用):確保來源=視窗模式且鎖定 title_sub
-    的視窗(MapleStory),並在失焦時用 Alt-hack 切回前景。回傳是否有有效目標。"""
-    ok = force_window_target(title_sub)
+def guard_focus(exe_sub):
+    """統一焦點守衛(訪客/閒置/守衛循環共用):確保來源=視窗模式且鎖定進程 exe 名
+    含 exe_sub 的視窗(maplestory.exe),並在失焦時用 Alt-hack 切回前景。
+    回傳是否有有效目標。"""
+    ok = force_window_target(exe_sub)
     if ok:
-        enforce_focus(title_sub)
+        enforce_focus(exe_sub)
     return ok
 
 

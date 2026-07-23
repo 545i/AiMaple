@@ -31,9 +31,10 @@ GUEST_COOLDOWN = max(0.05, float(_env("MAPLE_GUEST_COOLDOWN", "0.2")))
 # 訪客併發上限：同時允許的訪客 WS 連線數 / MJPEG 串流數(各自計)。
 # 沒有上限的話,一組密碼就能開幾十條串流塞爆家用上傳頻寬(DoS)。
 GUEST_MAX_CONN = max(1, int(_env("MAPLE_GUEST_MAX_CONN", "2")))
-# 出租焦點守衛：短密碼有效期間,目標視窗被切走就強制切回。
-# 視窗模式用選定的視窗;否則依此標題子字串尋找。設空字串停用標題尋找。
-GUARD_TITLE = _env("MAPLE_GUARD_TITLE", "MapleStory")
+# 焦點守衛的目標辨識:用【進程 exe 名】而非視窗標題——標題會隨登入/頻道/版本
+# 變動,exe 名固定。找 maplestory.exe 的主視窗來鎖定/切回前景。
+GUARD_EXE = _env("MAPLE_GUARD_EXE", "maplestory.exe")
+GUARD_TITLE = _env("MAPLE_GUARD_TITLE", "MapleStory")   # 保留(相容;list 顯示用)
 
 # ===== 閒置(掛機)模式 =====
 # 隨機時序的移動+施放技能,維持角色活動又不呈固定頻率(避免被判機器人)。

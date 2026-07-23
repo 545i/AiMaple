@@ -23,7 +23,7 @@ from fastapi.responses import (StreamingResponse, FileResponse, JSONResponse,
 
 from config import (AUTH_TOKEN, HOST, PORT, TARGET_FPS, MOUSE_SENSITIVITY,
                     REMOTE_MODE, REMOTE_TTL_HOURS, GUEST_COOLDOWN, GUEST_MAX_CONN,
-                    GUARD_TITLE)
+                    GUARD_EXE)
 from arduino import ArduinoKeyboard
 from kmbox import KMouse
 from capture import ScreenCapture
@@ -102,7 +102,7 @@ async def _rental_guard_loop():
     def _tick():
         # 統一焦點守衛(video_pipeline.guard_focus):鎖定 MapleStory + 失焦切回。
         # 可能觸發 restart(數秒阻塞)、含 sleep,故丟執行緒池,不阻塞事件迴圈。
-        video_pipeline.guard_focus(GUARD_TITLE)
+        video_pipeline.guard_focus(GUARD_EXE)
 
     loop = asyncio.get_event_loop()
     while True:
@@ -128,7 +128,7 @@ async def lifespan(app):
     idle_mode.set_keyboard(keyboard)
     # 閒置施放技能前的焦點確保:用統一焦點系統的輕量分支 enforce_focus
     # (只在失焦時切回、不重啟擷取管線),避免每次施放都觸發 restart。
-    idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_TITLE))
+    idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_EXE))
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -300,7 +300,7 @@ def video(request: Request, token: str = Query("")):
                     break
                 # 訪客只能看「視窗模式的 MapleStory」：目標不成立(遊戲關閉/切成
                 # 全螢幕來源)時一格都不給——嚴防把整個桌面外洩給訪客。
-                if guest and not video_pipeline.target_window_valid(GUARD_TITLE):
+                if guest and not video_pipeline.target_window_valid(GUARD_EXE):
                     await asyncio.sleep(0.5)
                     continue
                 frame = screen.latest(window_only=guest)
@@ -403,7 +403,7 @@ def idle_status(token: str = Query("")):
     s = idle_mode.status()
     # 焦點診斷:前景是否真的是 MapleStory。若否,技能/字母(WM_KEYDOWN)送不進去,
     # 只有方向鍵(GetAsyncKeyState 全域狀態)有效——中控頁據此提示使用者。
-    s["target_foreground"] = video_pipeline.is_target_foreground(GUARD_TITLE)
+    s["target_foreground"] = video_pipeline.is_target_foreground(GUARD_EXE)
     return JSONResponse(s)
 
 
@@ -416,7 +416,7 @@ def idle_start(token: str = Query("")):
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
     # 開場即統一焦點守衛一次(鎖定 MapleStory + 切到前景)+ 啟動擷取,
     # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
-    video_pipeline.guard_focus(GUARD_TITLE)
+    video_pipeline.guard_focus(GUARD_EXE)
     screen.ensure_started()
     idle_mode.start()
     return JSONResponse(idle_mode.status())
@@ -485,7 +485,7 @@ def guest_focus(token: str = Query("")):
     """訪客「對準視窗」：只會鎖定並聚焦 MapleStory 目標視窗——
     訪客無法指定任意視窗(與主人的 /window/focus 不同)。"""
     _check(token)
-    ok = video_pipeline.guard_focus(GUARD_TITLE)   # 統一焦點守衛(訪客)
+    ok = video_pipeline.guard_focus(GUARD_EXE)   # 統一焦點守衛(訪客)
     return JSONResponse({"ok": ok})
 
 
