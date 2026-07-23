@@ -33,7 +33,7 @@
   body.guest #pad { display:block !important; }          /* 電腦端也用螢幕按鈕 */
   body.guest #pad .btn { width:76px; height:76px; font-size:22px; }
   body.guest #mTarget, body.guest #mHw, body.guest #focusBtn, body.guest #editRow,
-  body.guest #ownerRemote, body.guest #ownerScreen, body.guest #ownerClip { display:none !important; }
+  body.guest #ownerScreen, body.guest #ownerClip { display:none !important; }
   #rHours { width:70px; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:6px; font-size:14px; }
   #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
             border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
@@ -126,9 +126,33 @@
   .mapply { width:100%; margin-top:18px; padding:13px; border:none; border-radius:10px; background:#3a7; color:#fff; font-size:15px; }
   #clipText { width:100%; box-sizing:border-box; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:8px; font-size:14px; resize:vertical; }
   body.desktop #editRow, body.desktop #layRow { display:none; }
+
+  /* ===== 三層 view：登入 / 儀表板(中控) / 主人遠端 ===== */
+  /* 覆寫原本的顯示規則,一律改由 body.view-* 控制,徹底分頁避免互相干擾 */
+  #setup   { display:none; }
+  #menuBtn { display:none; }
+  body.view-login  #setup   { display:flex; }
+  body.view-remote #menuBtn { display:flex; }
+  body.view-remote #toDashTop { display:flex; }
+
+  #dashView { position:fixed; inset:0; z-index:110; background:#0e0f14; color:#eee;
+              display:none; flex-direction:column; overflow-y:auto; padding:22px 16px 40px; }
+  body.view-dash #dashView { display:flex; }
+  .dash-card { max-width:540px; width:100%; margin:0 auto; }
+  .dash-h  { font-size:22px; font-weight:700; }
+  .dash-sub{ font-size:13px; color:#8a8f99; margin:4px 0 16px; }
+  .enter-btn { width:100%; margin-top:22px; padding:16px; border:none; border-radius:12px;
+               background:#3a7; color:#fff; font-size:17px; font-weight:700; }
+  .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
+                border-radius:10px; background:#1d1e26; color:#b8bcc6; font-size:14px; }
+  /* 遠端頁右上「≡ 儀表板」返回鈕(放漢堡左側,不擋左上狀態列) */
+  #toDashTop { position:fixed; top:8px; right:64px; z-index:60; display:none;
+               align-items:center; justify-content:center; height:40px; padding:0 14px;
+               font-size:14px; color:#fff; background:rgba(40,40,50,.72);
+               border:1px solid rgba(255,255,255,.25); border-radius:10px; }
 </style>
 </head>
-<body>
+<body class="view-login">
  <div id="stage">
   <video id="video" autoplay muted playsinline></video>
   <img id="mjpeg" alt="">
@@ -146,7 +170,8 @@
     <div id="setupHint" style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
   </div>
 
-  <div id="menuBtn" style="display:none">☰</div>
+  <div id="menuBtn">☰</div>
+  <div id="toDashTop">≡ 儀表板</div>
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
@@ -164,13 +189,9 @@
   <!-- 漢堡控制中心(Steam Deck 式) -->
   <div id="menuMask"></div>
   <div id="menu">
-    <div class="mhead"><b>控制中心</b><div class="mx" id="menuClose">✕</div></div>
-    <div class="mtabs">
-      <div class="mtab on" data-tab="conn">連接管理</div>
-      <div class="mtab" data-tab="rent">出租管理</div>
-    </div>
+    <div class="mhead"><b>連接管理</b><div class="mx" id="menuClose">✕</div></div>
     <div class="mbody">
-      <div id="tabConn">
+      <div class="mbtn" id="toDashBtn" style="margin-bottom:10px">≡ 回儀表板（暫停操作）</div>
       <div class="mstat" id="mTarget">🎯 全螢幕</div>
       <div class="mstat" id="mHw">硬體：載入中…</div>
 
@@ -213,32 +234,40 @@
       </div>
       <div id="clipMsg" style="font-size:12px;color:#7fe0b0;margin-top:6px;min-height:16px"></div>
       </div><!-- /#ownerClip -->
-      </div><!-- /#tabConn -->
-
-      <!-- 出租管理分頁：Quick Tunnel + 限時短密碼中控 -->
-      <div id="ownerRemote" style="display:none">
-        <div class="msec">出租管理（Cloudflare Tunnel）</div>
-        <div class="mstat" id="rTunnel" style="user-select:text;-webkit-user-select:text">🌐 隧道：未啟動</div>
-        <div class="mstat" id="rPass" style="user-select:text;-webkit-user-select:text">🔑 密碼：未產生</div>
-        <div class="mgrid2">
-          <div class="mbtn" id="rTunnelBtn">🚀 啟動出租</div>
-          <div class="mbtn" id="rNewBtn">🔑 產生新密碼</div>
-        </div>
-        <div class="mgrid2">
-          <div class="mbtn" id="rExtBtn">⏳ 延長 +30 分</div>
-          <div class="mbtn" id="rRevokeBtn">🛑 撤銷密碼</div>
-        </div>
-        <div class="mrow"><label>自訂</label>
-          <input type="number" id="rHours" min="0.5" max="24" step="0.5" value="0.5"><span>小時</span>
-          <div class="mbtn" id="rHoursBtn" style="flex:1">延長此時數</div>
-        </div>
-        <div style="font-size:12px;color:#8a8f99;margin-top:4px">
-          訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
-          滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
-      </div>
     </div>
   </div>
  </div><!-- /#stage -->
+
+ <!-- ===== 儀表板（中控頁）：出租管理 + 進入主人操作頁 ===== -->
+ <div id="dashView">
+  <div class="dash-card">
+   <div class="dash-h">maple 儀表板</div>
+   <div class="dash-sub">出租中控與進入主人操作（連接管理在主人頁內）</div>
+   <div class="mstat" id="dHw">硬體：載入中…</div>
+
+   <div class="msec">出租管理（Cloudflare Tunnel）</div>
+   <div class="mstat" id="rTunnel" style="user-select:text;-webkit-user-select:text">🌐 隧道：未啟動</div>
+   <div class="mstat" id="rPass" style="user-select:text;-webkit-user-select:text">🔑 密碼：未產生</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rTunnelBtn">🚀 啟動出租</div>
+     <div class="mbtn" id="rNewBtn">🔑 產生新密碼</div>
+   </div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rExtBtn">⏳ 延長 +30 分</div>
+     <div class="mbtn" id="rRevokeBtn">🛑 撤銷密碼</div>
+   </div>
+   <div class="mrow"><label>自訂</label>
+     <input type="number" id="rHours" min="0.5" max="24" step="0.5" value="0.5"><span>小時</span>
+     <div class="mbtn" id="rHoursBtn" style="flex:1">延長此時數</div>
+   </div>
+   <div style="font-size:12px;color:#8a8f99;margin-top:4px">
+     訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
+     滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
+
+   <button class="enter-btn" id="enterRemote">▶ 進入主人操作頁</button>
+   <button class="logout-btn" id="logout">登出</button>
+  </div>
+ </div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -334,7 +363,7 @@ function bindButton(el,b,del){
     if(editMode){
       const t=e.touches[0]; sx=t.clientX; sy=t.clientY; moved=false; dragging=true;
       arr = isPortrait()? b.port : b.land; spx=arr[0]; spy=arr[1];
-    } else { el.classList.add("active"); send({t:"kd",k:b.key}); }
+    } else { el.classList.add("active"); vheld.add(b.key); send({t:"kd",k:b.key}); }
   }, {passive:false});
   el.addEventListener("touchmove", e=>{
     if(!editMode||!dragging) return; e.preventDefault(); e.stopPropagation();
@@ -348,16 +377,16 @@ function bindButton(el,b,del){
   }, {passive:false});
   const end = e=>{ e.preventDefault(); e.stopPropagation();
     if(editMode){ dragging=false; if(moved) saveButtons(); else openPicker(b); }
-    else { el.classList.remove("active"); send({t:"ku",k:b.key}); } };
+    else { el.classList.remove("active"); vheld.delete(b.key); send({t:"ku",k:b.key}); } };
   el.addEventListener("touchend", end, {passive:false});
   el.addEventListener("touchcancel", end, {passive:false});
   del.addEventListener("touchstart", e=>{ if(!editMode) return; e.preventDefault(); e.stopPropagation();
     buttons = buttons.filter(x=>x!==b); saveButtons(); renderButtons(); }, {passive:false});
   if(!IS_TOUCH){   // 電腦端(訪客模式)：螢幕按鈕用滑鼠點
     el.addEventListener("mousedown", e=>{ e.preventDefault(); e.stopPropagation();
-      if(!editMode){ el.classList.add("active"); send({t:"kd",k:b.key}); } });
+      if(!editMode){ el.classList.add("active"); vheld.add(b.key); send({t:"kd",k:b.key}); } });
     const mend = e=>{ e.stopPropagation();
-      if(!editMode && el.classList.contains("active")){ el.classList.remove("active"); send({t:"ku",k:b.key}); } };
+      if(!editMode && el.classList.contains("active")){ el.classList.remove("active"); vheld.delete(b.key); send({t:"ku",k:b.key}); } };
     el.addEventListener("mouseup", mend);
     el.addEventListener("mouseleave", mend);
   }
@@ -397,6 +426,7 @@ function enterGuest(remain){
     guest = true;
     document.body.classList.add("guest");
     document.body.classList.remove("desktop");   // 電腦端也一律用螢幕按鈕
+    showView("remote");                          // 訪客沒有儀表板,直接進操作畫面
     buttons = GUEST_BUTTONS; editMode = false;
     renderButtons();
   }
@@ -420,11 +450,41 @@ function updateCursor(nx,ny){
 }
 const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 
+// ===== 三層 view 導航：login → dash(儀表板) → remote(主人操作) =====
+// dash 純 HTTP(出租管理)、不連 WS 不開影像 → 管理時完全不影響/不佔用遊玩硬體。
+let vheld = new Set();     // 虛擬按鍵目前按住的鍵(回儀表板時全放,避免卡鍵)
+function showView(name){
+  document.body.classList.remove("view-login","view-dash","view-remote");
+  document.body.classList.add("view-"+name);
+}
+function loadDash(){ fetchStatus(); refreshRemote(); }   // 儀表板資料(硬體+出租狀態)
+async function enterRemote(){
+  showView("remote");
+  if(!ws || ws.readyState > 1) connect();     // 進主人頁才連 WS
+  await syncConfig(); renderButtons(); setWatching(true);
+}
+function pauseAll(){
+  // 回儀表板：全部暫停——停影像、放開所有虛擬鍵與電腦端映射鍵、停用鍵鼠映射
+  // (active() 靠 body.view-remote 判斷,離開此 view 即失效,不會誤送輸入到遊戲)。
+  setWatching(false);
+  vheld.forEach(k => send({t:"ku", k})); vheld.clear();
+  document.querySelectorAll("#pad .btn.active").forEach(el => el.classList.remove("active"));
+  if(window.__releaseDesktop) window.__releaseDesktop();   // 電腦端實體鍵鼠映射的 held
+}
+function backToDash(){ showView("dash"); pauseAll(); closeMenu(); loadDash(); }
+
 $("#go").onclick = () => {
   token = $("#token").value.trim(); if(!token) return;
   localStorage.setItem("maple_token", token);
-  $("#setup").style.display="none"; $("#menuBtn").style.display="flex";
-  renderButtons(); syncConfig(); setWatching(true); connect();
+  showView("dash"); loadDash();
+};
+$("#enterRemote").onclick = enterRemote;
+$("#toDashTop").onclick = backToDash;
+$("#toDashBtn").onclick = backToDash;
+$("#logout").onclick = () => {
+  try{ if(ws) ws.close(); }catch(_){}
+  ws = null; setWatching(false);
+  showView("login");
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
 if(REMOTE){
@@ -659,13 +719,15 @@ async function fetchStatus(){
   try{ const s=await (await fetch(`/status?token=${encodeURIComponent(token)}`)).json();
     const kb=s.keyboard.arduino?"Arduino✓":"鍵盤✗";
     const ms=s.mouse.connected ? (s.mouse.software?"軟體滑鼠":"KMBox✓") : "滑鼠✗";
-    $("#mHw").textContent = `硬體：${kb}　${ms}`;
-  }catch(e){ $("#mHw").textContent="硬體：查詢失敗"; }
+    const txt = `硬體：${kb}　${ms}`;
+    $("#mHw").textContent = txt;                          // 連接管理
+    const d=$("#dHw"); if(d) d.textContent = txt;          // 儀表板
+  }catch(e){ const t="硬體：查詢失敗"; $("#mHw").textContent=t; const d=$("#dHw"); if(d) d.textContent=t; }
 }
+// 漢堡=連接管理(僅主人操作頁)：載入畫面設定 / 視窗清單 / 硬體狀態
 $("#menuBtn").onclick = async () => {
   openMenu();
   if(guest) return;    // 訪客選單只剩「注視/方向」，不打主人專屬 API
-  refreshRemote();
   try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
   try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
   updateTarget(); renderScreenPanel(); fetchStatus();
@@ -753,14 +815,6 @@ async function remoteAct(path){
     renderRemote(r); }
   catch(_){ $("#rTunnel").textContent = "🌐 操作失敗（連線？）"; }
 }
-// 分頁切換：連接管理 / 出租管理
-document.querySelectorAll(".mtab").forEach(t => t.onclick = () => {
-  document.querySelectorAll(".mtab").forEach(x => x.classList.toggle("on", x===t));
-  const rent = t.dataset.tab === "rent";
-  $("#tabConn").style.display = rent ? "none" : "";
-  $("#ownerRemote").style.display = rent ? "" : "none";
-  if(rent) refreshRemote();
-});
 $("#rTunnelBtn").onclick = () => remoteAct($("#rTunnelBtn").dataset.running==="1" ? "/remote/tunnel/stop" : "/remote/tunnel/start");
 $("#rNewBtn").onclick   = () => remoteAct(`/remote/new?hours=${parseFloat($("#rHours").value)||0.5}`);
 $("#rExtBtn").onclick   = () => remoteAct(`/remote/extend?hours=0.5`);
@@ -776,8 +830,9 @@ if(!IS_TOUCH){
   const video = $("#video");
   const held = new Set();
   let overVideo = false;
-  const connected = () => $("#menuBtn").style.display !== "none";
-  const uiBlocking = () => $("#menu").classList.contains("on") || $("#picker").classList.contains("on") || $("#setup").style.display!=="none";
+  // 只有身處「主人操作頁」才捕捉實體鍵鼠(離開此 view→儀表板/登入 即完全停用)
+  const connected = () => document.body.classList.contains("view-remote");
+  const uiBlocking = () => $("#menu").classList.contains("on") || $("#picker").classList.contains("on");
   const active = () => connected() && !uiBlocking() && !guest;
 
   function codeToToken(code){
@@ -803,6 +858,7 @@ if(!IS_TOUCH){
     return [+nx.toFixed(4), +ny.toFixed(4)];
   }
   const releaseKeys = () => { held.forEach(k=>send({t:"ku",k})); held.clear(); };
+  window.__releaseDesktop = releaseKeys;    // 供 pauseAll(回儀表板)呼叫,放開電腦端 held
   function setOver(on){
     if(on===overVideo) return;
     overVideo=on;
@@ -837,6 +893,7 @@ if(!IS_TOUCH){
 }
 
 applyLayout();   // 依裝置/鎖定套用直橫佈局並繪製按鈕
+showView("login");   // 初始一律登入頁(登入後→儀表板→主人操作頁)
 </script>
 </body>
 </html>
