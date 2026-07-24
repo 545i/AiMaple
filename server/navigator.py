@@ -121,14 +121,24 @@ def _release_move_keys():
             pass
 
 
-def _same_skills(skills):
-    """移動時同時按壓技能鍵(不影響移動)。tap 即可,不阻塞。"""
-    if skills:
-        for sk in skills:
-            try:
-                _keyboard.tap(sk)
-            except Exception:
-                pass
+_last_atk = 0.0
+
+
+def _same_skills(skills, interval=0.35):
+    """移動時穿插施放技能(移動平A):限流每 interval 秒一次、用 press(key_down→短holds
+    →key_up),避免 tap 被遊戲漏讀、也避免每 0.04s 迴圈太頻繁。"""
+    global _last_atk
+    if not skills:
+        return
+    now = time.monotonic()
+    if now - _last_atk < interval:
+        return
+    _last_atk = now
+    for sk in skills:
+        try:
+            _keyboard.key_down(sk); time.sleep(0.02); _keyboard.key_up(sk)
+        except Exception:
+            pass
 
 
 def _double_jump(direction, skills=None):

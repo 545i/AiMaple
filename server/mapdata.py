@@ -183,8 +183,9 @@ def get_attack():
     try:
         with open(_ATTACK_PATH, encoding="utf-8") as f:
             a = json.load(f)
+        m = a.get("mode")
         return {"key": str(a.get("key", "a") or "a"),
-                "mode": "tap2" if a.get("mode") == "tap2" else "hold2s"}
+                "mode": m if m in ("tap2", "hold2s", "move") else "hold2s"}
     except Exception:
         return {"key": "a", "mode": "hold2s"}
 
