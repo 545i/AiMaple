@@ -179,6 +179,9 @@
                    border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
   .ptrow .ptdel { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
                   background:#7a2530; color:#fff; font-size:13px; cursor:pointer; }
+  .ptrow .ptprec { flex:0 0 auto; padding:6px 8px; border:1px solid #3a3f4b; border-radius:6px;
+                   background:#20242e; color:#9aa0ac; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .ptrow .ptprec.on { background:#1e7e34; color:#fff; border-color:#1e7e34; }
   .ptrow .ptidx { flex:0 0 20px; height:20px; border-radius:50%; background:#ff9820; color:#000;
                   font-weight:800; display:flex; align-items:center; justify-content:center; font-size:11px; }
   .ptrow .ptxy { flex:0 0 58px; color:#8a8f99; font-size:12px; }
@@ -1017,22 +1020,27 @@ function renderPoints(s){                         // 放置技能:已設定行 +
     box.appendChild(d);
   }
   configured.forEach(p=>{
-    const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = p.skill;
+    const row = document.createElement("div"); row.className = "ptrow";
+    row.dataset.skill = p.skill; row.dataset.precise = p.precise ? "1" : "";
     row.innerHTML =
       `<span class="ptidx">${p.i+1}</span>`+
       `<span class="ptxy">(${p.x},${p.y})</span>`+
       `<button class="ptskill"></button>`+
       `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s" value="${p.cd||''}">`+
+      `<button class="ptprec"></button>`+
       `<button class="ptsave">存</button>`+
       `<button class="ptdel">刪</button>`;
     const skBtn = row.querySelector(".ptskill");
     const paint = ()=>{ skBtn.textContent = `技能 ${labelFor(row.dataset.skill)}`; };
-    paint();
+    const precBtn = row.querySelector(".ptprec");
+    const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
+    paint(); paintPrec();
     skBtn.onclick = ()=> openKeyPicker(`第 ${p.i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
+    precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
     row.querySelector(".ptsave").onclick = async ()=>{
       const cd = row.querySelector(".ptcd").value || 0;
-      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}`);
-      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：放置技能 ${labelFor(row.dataset.skill)} / 冷卻 ${cd}s（已存,巡邏中即時生效）`; renderPoints(j); }
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}`);
+      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確到位":"範圍"}（已存,巡邏中即時生效）`; renderPoints(j); }
     };
     row.querySelector(".ptdel").onclick = async ()=>{
       const j = await mapAct(`/map/point_skill?index=${p.i}&skill=&cd=0`);
@@ -1049,25 +1057,29 @@ function showAddRow(pts, box, addBtn){
   const avail = pts.map((p,i)=>({...p, i})).filter(p=>!p.skill);   // 未設定的記錄點(已設定不可選)
   if(!avail.length){ $("#mapMsg").textContent = "所有記錄點都已設定放置技能"; return; }
   addBtn.style.display = "none";
-  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = "";
+  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = ""; row.dataset.precise = "";
   row.innerHTML =
     `<select class="ptpick">`+
       avail.map(p=>`<option value="${p.i}">${p.i+1} (${p.x},${p.y})</option>`).join("")+
     `</select>`+
     `<button class="ptskill">＋技能鍵</button>`+
     `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s">`+
+    `<button class="ptprec"></button>`+
     `<button class="ptsave">存</button>`+
     `<button class="ptdel">取消</button>`;
   const skBtn = row.querySelector(".ptskill");
   const paint = ()=>{ skBtn.textContent = row.dataset.skill?`技能 ${labelFor(row.dataset.skill)}`:"＋技能鍵"; skBtn.style.opacity = row.dataset.skill?"1":"0.6"; };
-  paint();
+  const precBtn = row.querySelector(".ptprec");
+  const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
+  paint(); paintPrec();
   skBtn.onclick = ()=> openKeyPicker("放置技能 → 點鍵盤選鍵", tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
+  precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
   row.querySelector(".ptsave").onclick = async ()=>{
     if(!row.dataset.skill){ $("#mapMsg").textContent = "請先點「＋技能鍵」選一個鍵"; return; }
     const idx = row.querySelector(".ptpick").value;
     const cd = row.querySelector(".ptcd").value || 0;
-    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}`);
-    if(j){ $("#mapMsg").textContent = `第 ${Number(idx)+1} 點：放置技能 ${labelFor(row.dataset.skill)} / 冷卻 ${cd}s（已存,巡邏中即時生效）`; renderPoints(j); }
+    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}`);
+    if(j){ $("#mapMsg").textContent = `第 ${Number(idx)+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確到位":"範圍"}（已存,巡邏中即時生效）`; renderPoints(j); }
   };
   row.querySelector(".ptdel").onclick = ()=> renderPoints({points:pts});   // 取消:重繪回列表
   box.insertBefore(row, addBtn);

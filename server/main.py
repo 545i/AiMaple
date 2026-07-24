@@ -137,6 +137,8 @@ async def lifespan(app):
     calib.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_keyboard(keyboard)
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
+    # 紫標(特殊NPC/玩家進圖)出現 → 即時暫停巡邏(危險規避);Telegram 通知照舊
+    minimap.set_event_hook(lambda kind, data: navigator.pause_purple() if kind == "purple" else None)
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -494,13 +496,14 @@ def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query(
 
 @app.post("/map/point_skill")
 def map_point_skill(token: str = Query(""), index: int = Query(...),
-                    skill: str = Query(""), cd: float = Query(0.0)):
+                    skill: str = Query(""), cd: float = Query(0.0),
+                    precise: bool = Query(False)):
     """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(空鍵=取消)。僅到點施放、冷卻中略過。"""
     _check_owner(token)
     mid = mapdata.current_map_id()
     if not mid:
         raise HTTPException(status_code=400, detail="偵測不到小地圖")
-    mapdata.set_point_skill(mid, index, skill, cd)
+    mapdata.set_point_skill(mid, index, skill, cd, precise)
     return JSONResponse(mapdata.status())
 
 

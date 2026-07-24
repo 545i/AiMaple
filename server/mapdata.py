@@ -82,11 +82,12 @@ def has_layout(mid):
 
 
 def _norm(p):
-    """點格式正規化。相容舊 [x,y] → {x,y,skill:'',cd:0};新 dict 補齊欄位。"""
+    """點格式正規化。相容舊 [x,y] → {x,y,skill:'',cd:0,precise:False};新 dict 補齊欄位。"""
     if isinstance(p, dict):
         return {"x": int(p["x"]), "y": int(p["y"]),
-                "skill": str(p.get("skill", "") or ""), "cd": float(p.get("cd", 0) or 0)}
-    return {"x": int(p[0]), "y": int(p[1]), "skill": "", "cd": 0.0}
+                "skill": str(p.get("skill", "") or ""), "cd": float(p.get("cd", 0) or 0),
+                "precise": bool(p.get("precise", False))}
+    return {"x": int(p[0]), "y": int(p[1]), "skill": "", "cd": 0.0, "precise": False}
 
 
 def add_point(mid, x, y, tol=3):
@@ -102,8 +103,9 @@ def add_point(mid, x, y, tol=3):
         return True, len(d["points"])
 
 
-def set_point_skill(mid, index, skill, cd):
-    """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(僅到點施放、冷卻中略過)。
+def set_point_skill(mid, index, skill, cd, precise=False):
+    """設第 index 個巡邏點的『放置技能』鍵、冷卻秒數與精確到位模式。
+    precise=True 時導航會用脈衝走路精調到 ±1px 才施放(定點召喚/圖騰用)。
     空鍵=取消該點放置技能。回目前點數。"""
     with _lock:
         d = load(mid)
@@ -114,6 +116,7 @@ def set_point_skill(mid, index, skill, cd):
                 p["cd"] = max(0.0, float(cd or 0))
             except Exception:
                 p["cd"] = 0.0
+            p["precise"] = bool(precise)
             d["points"][index] = p
             save(mid, d)
         return len(d["points"])

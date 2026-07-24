@@ -49,6 +49,13 @@ _DOT_GHOST = 3.0
 # 冷卻 PURPLE_NOTIFY_COOLDOWN 秒內不重發。
 _purple_prev = False
 _purple_notify_ts = 0.0
+_event_hook = None       # 事件回調(紫標出現瞬間 → 暫停巡邏);由 main 註冊
+
+
+def set_event_hook(fn):
+    """註冊事件回調 fn(kind, data)。目前 kind='purple' 於紫標出現瞬間觸發。"""
+    global _event_hook
+    _event_hook = fn
 # 背景監看:掛機時前端可能沒開預覽,由此執行緒定期跑 detect_once 觸發紫標通知
 _watch_stop_ev = threading.Event()
 _watch_thread = None
@@ -324,6 +331,11 @@ def detect_once():
                 pos = ", ".join(f"({px},{py})" for px, py in purple)
                 notify.telegram(f"🟣 小地圖出現紫色標記 x{len(purple)} 位置 {pos}"
                                 f"（小地圖 {bw}x{bh}）")
+                if _event_hook:                  # 紫標出現 → 通知外部(暫停巡邏)
+                    try:
+                        _event_hook("purple", purple)
+                    except Exception as _e:
+                        print(f"[minimap] 事件回調錯誤: {_e}")
             _purple_prev = bool(purple)
         if bbox:
             _last = {"found": True, "locked": _locked is not None,

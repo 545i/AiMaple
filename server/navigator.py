@@ -33,6 +33,8 @@ Y_TOL = 4             # 垂直到達容差
 JUMP_INTERVAL = 0.20  # X→P 的間隔(down-to-down)
 KEY_HOLD = 0.06
 FALL_MAX = 8          # 下跳閉環最多跳幾次
+PRECISE_X_TOL = 1     # 精確模式水平容差(px):二段跳到位後(可過衝)再走路回正到 ±1
+PRECISE_STEPS = 10    # 精確走路回正最多步數
 X_MAX_STEPS = 14      # 水平閉環步數上限
 
 
@@ -209,8 +211,31 @@ def _move_to_x(tx, skills=None):
             _walk_to_x(d, tx, skills)
 
 
-def _goto_sync(tx, ty, skills=None):
-    """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。"""
+def _fine_tune_x(tx, tol=PRECISE_X_TOL):
+    """精確回正:二段跳到位後可能過衝,用短促走路脈衝雙向微調,收斂到 |dx|<=tol。
+    距離越近脈衝越短、避免再次過衝(此處不用二段跳,那會又飛 ~30px)。"""
+    for _ in range(PRECISE_STEPS):
+        if _stop.is_set():
+            return False
+        p = _dot()
+        if not p:
+            continue
+        _state["pos"] = list(p)
+        dx = tx - p[0]
+        if abs(dx) <= tol:
+            return True
+        d = "right" if dx > 0 else "left"
+        dur = min(0.13, 0.03 + abs(dx) * 0.02)   # 距離越近走越短,避免過衝
+        _keyboard.key_down(d)
+        time.sleep(dur)
+        _keyboard.key_up(d)
+        time.sleep(0.18)                          # 等停穩再讀黃點
+    return False
+
+
+def _goto_sync(tx, ty, skills=None, precise=False):
+    """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。
+    precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。"""
     _state.update({"target": [tx, ty], "arrived": False})
     p = _settle()
     if p is None:
@@ -230,10 +255,14 @@ def _goto_sync(tx, ty, skills=None):
         _fall_to_y(ty, skills)
     _state["phase"] = "move_x"
     _move_to_x(tx, skills)
+    if precise:                            # 精確到位:二段跳可能過衝 → 走路回正到 ±1px
+        _state["phase"] = "fine_x"
+        _fine_tune_x(tx)
     p = _dot()
     if p:
         _state["pos"] = list(p)
-    arrived = bool(p and abs(p[0] - tx) <= X_TOL and abs(p[1] - ty) <= Y_TOL)
+    xtol = PRECISE_X_TOL if precise else X_TOL
+    arrived = bool(p and abs(p[0] - tx) <= xtol and abs(p[1] - ty) <= Y_TOL)
     _state["arrived"] = arrived
     return arrived
 
@@ -290,13 +319,28 @@ def _refresh_places(pts):
     _place.update(new)
 
 
+def _purple_present():
+    """小地圖目前是否有紫標。抓不到狀態回 False。"""
+    try:
+        return bool(minimap.status().get("purple"))
+    except Exception:
+        return False
+
+
 def _patrol_run(points_fn, attack_key, cast_mode):
     """巡邏循環:【每輪重讀最新巡邏點】→ 運行中新增/修改放置技能、冷卻即時生效。
     巡邏點順序完全隨機、不連號(不會連續造訪同一點,如 111;例 1231/13231/1321231)。
-    到點:① 先平A(確保落地站穩) ② 放置技能(冷卻已過才放,僅到點、只按該鍵、不移動)。"""
+    到點:① 先平A(確保落地站穩) ② 放置技能(冷卻已過才放,僅到點、只按該鍵、不移動)。
+    紫標(特殊NPC/玩家進圖)出現 → 自動暫停巡邏(危險規避;另有即時 hook 兜兩道)。
+    點若設 precise=True,到點會走路回正到 ±1px 才施放(定點放置技能)。"""
     visits = 0
     prev = None                            # 上一點座標 (x,y),用於不連號
     while not _stop.is_set():
+        if _purple_present():              # 紫標兜底:巡邏中/重開時紫標仍在 → 暫停
+            _state["phase"] = "purple_pause"
+            _state["error"] = "偵測到紫標,已自動暫停巡邏"
+            print("[nav] 紫標存在 → 暫停巡邏")
+            return
         pts = points_fn() or []            # 每輪重讀:運行中改放置技能/冷卻即時生效
         if not pts:
             if _stop.wait(0.5):
@@ -308,7 +352,7 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
-        _goto_sync(tx, ty)
+        _goto_sync(tx, ty, precise=bool(pt.get("precise")))
         if _stop.is_set():
             return
         _release_move_keys()               # 到點靜止:先放開移動鍵,平A/放置技能時皆不移動
@@ -408,3 +452,13 @@ def stop():
         t.join(timeout=3.0)
     _state["running"] = False
     return True
+
+
+def pause_purple():
+    """紫標偵測 hook 呼叫:標記原因後停止巡邏/導航(危險規避)。
+    若由巡邏執行緒自身觸發(_dot→detect→hook),stop() 只 set 事件、不 join 自己→安全。"""
+    if _state.get("running"):
+        _state["error"] = "偵測到紫標,已自動暫停巡邏"
+        _state["phase"] = "purple_pause"
+        print("[nav] 紫標 hook → 暫停巡邏")
+    stop()
