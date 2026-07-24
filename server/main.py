@@ -427,12 +427,8 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
     if calib.is_running():
         raise HTTPException(status_code=409, detail="運動校準進行中，請先等它結束/停止")
-    # 沒設定該地圖座標 → 不可開掛機(自動導航需要巡邏點;每張地圖獨立,A 圖座標不用於 B 圖)
-    _mid = mapdata.current_map_id()
-    if not mapdata.has_layout(_mid):
-        raise HTTPException(status_code=409, detail=(
-            "此地圖尚未設定座標，請先在中控『地圖座標』記錄巡邏點再開掛機"
-            if _mid else "偵測不到小地圖，無法確認是哪張地圖（先開啟小地圖偵測預覽）"))
+    # 閒置模式=純隨機 AFK(隨機移動＋放置輪迴),不導航、不需小地圖/座標。
+    # (座標僅『自動巡邏』需要;紫標背景監看仍會啟動,但只做通知、不阻擋。)
     # 開場即統一焦點守衛一次(鎖定 MapleStory + 切到前景)+ 啟動擷取,
     # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
     video_pipeline.guard_focus(GUARD_EXE)
