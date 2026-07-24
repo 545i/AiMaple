@@ -275,25 +275,37 @@ def _cast_skill(skill_key, mode="hold2s"):
         pass
 
 
-def _patrol_run(points, attack_key, cast_mode):
-    """巡邏循環:巡邏點【順序完全隨機、但不連號】(不會連續造訪同一點,如 111)——
-    例 1231 / 13231 / 1321231。每到一點:
-      ① 平A攻擊(attack_key,長按2秒/按兩次)
-      ② 若該點有設『放置技能』且冷卻已過 → 放一次(僅到點放、冷卻中略過)。"""
-    pts = list(points)
+def _refresh_places(pts):
+    """依最新點清單更新放置技能冷卻表(保留同鍵既有冷卻,故運行中改設定即時生效、
+    冷卻計時不歸零)。"""
+    new = {}
+    for p in pts:
+        sk = p.get("skill")
+        if sk:
+            key = (p["x"], p["y"])
+            old = _place.get(key)
+            new[key] = {"skill": sk, "cd": float(p.get("cd", 0) or 0),
+                        "last": old["last"] if (old and old["skill"] == sk) else None}
     _place.clear()
-    for p in pts:                          # 預先登記有放置技能的點(初始就緒),供監控下次觸發
-        if p.get("skill"):
-            _place[(p["x"], p["y"])] = {"skill": p["skill"],
-                                        "cd": float(p.get("cd", 0) or 0), "last": None}
+    _place.update(new)
+
+
+def _patrol_run(points_fn, attack_key, cast_mode):
+    """巡邏循環:【每輪重讀最新巡邏點】→ 運行中新增/修改放置技能、冷卻即時生效。
+    巡邏點順序完全隨機、不連號(不會連續造訪同一點,如 111;例 1231/13231/1321231)。
+    到點:① 先平A(確保落地站穩) ② 放置技能(冷卻已過才放,僅到點、只按該鍵、不移動)。"""
     visits = 0
-    prev = None
+    prev = None                            # 上一點座標 (x,y),用於不連號
     while not _stop.is_set():
-        if len(pts) > 1:                   # 隨機挑下一點,排除上一點 → 不連號
-            pt = random.choice([p for p in pts if p is not prev])
-        else:
-            pt = pts[0]
-        prev = pt
+        pts = points_fn() or []            # 每輪重讀:運行中改放置技能/冷卻即時生效
+        if not pts:
+            if _stop.wait(0.5):
+                return
+            continue
+        _refresh_places(pts)
+        choices = [p for p in pts if (p["x"], p["y"]) != prev]   # 排除上一點座標→不連號
+        pt = random.choice(choices) if choices else pts[0]
+        prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
         _goto_sync(tx, ty)
@@ -309,9 +321,19 @@ def _patrol_run(points, attack_key, cast_mode):
             rec = _place.get((tx, ty))
             now = time.monotonic()
             if rec and (rec["last"] is None or now - rec["last"] >= rec["cd"]):
-                _state["phase"] = "place"
+                # 安全停止攻擊:放開平A鍵與移動鍵 + 等攻擊後搖結束、角色站穩,
+                # 再放置(否則角色還在攻擊動作中,放置技能常被吃掉→成功率低)
+                try:
+                    _keyboard.key_up(attack_key)
+                except Exception:
+                    pass
                 _release_move_keys()
-                _press(sk, hold=0.1)
+                if _stop.wait(0.45):       # 後搖緩衝(可中斷)
+                    return
+                _state["phase"] = "place"
+                _press(sk, hold=0.12)
+                if _stop.wait(0.2):        # 放置後稍等,確保技能發動再離開
+                    return
                 rec["last"] = time.monotonic()
         # ③ 才離開(下方施放後延遲 0.5s,可中斷)
         visits += 1
@@ -320,7 +342,7 @@ def _patrol_run(points, attack_key, cast_mode):
             return
 
 
-def _patrol_wrap(points, attack_key, cast_mode):
+def _patrol_wrap(points_fn, attack_key, cast_mode):
     try:
         _state["error"] = ""
         if _focus_fn:
@@ -328,7 +350,7 @@ def _patrol_wrap(points, attack_key, cast_mode):
                 _focus_fn()
             except Exception:
                 pass
-        _patrol_run(points, attack_key, cast_mode)
+        _patrol_run(points_fn, attack_key, cast_mode)
     except Exception as e:
         _state["error"] = f"{e!r}"
         print(f"[nav] 巡邏錯誤: {e!r}")
@@ -358,21 +380,23 @@ def move_to(tx, ty, skills=None):
         return True, "ok"
 
 
-def patrol_start(points, attack_key="a", cast_mode="hold2s"):
-    """啟動背景巡邏:隨機不連號造訪各點 + 到點平A、放置技能(含冷卻)。回 (ok,msg)。"""
+def patrol_start(points_fn, attack_key="a", cast_mode="hold2s"):
+    """啟動背景巡邏。points_fn=無參函式,回傳最新巡邏點清單;每輪重讀 →
+    巡邏運行中新增/修改放置技能、冷卻皆即時生效(不必停巡邏)。回 (ok,msg)。"""
     global _thread
     with _op_lock:
         if _state["running"]:
             return False, "導航/巡邏進行中"
         if _keyboard is None:
             return False, "鍵盤未連線"
-        if not points:
+        if not (points_fn() or []):
             return False, "沒有巡邏點"
         _stop.clear()
+        _place.clear()
         _state.update({"running": True, "phase": "patrol", "mode": "patrol",
                        "arrived": False, "error": "", "rounds": 0})
         _thread = threading.Thread(target=_patrol_wrap,
-                                   args=(list(points), attack_key, cast_mode), daemon=True)
+                                   args=(points_fn, attack_key, cast_mode), daemon=True)
         _thread.start()
         return True, "ok"
 

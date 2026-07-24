@@ -534,11 +534,11 @@ def nav_patrol(token: str = Query("")):
     if not mapdata.has_layout(mid):
         raise HTTPException(status_code=409,
                             detail="此地圖尚未設定座標,請先在中控記錄巡邏點")
-    points = mapdata.points(mid)
     att = mapdata.get_attack()
     screen.ensure_started()
     video_pipeline.guard_focus(GUARD_EXE)
-    ok, msg = navigator.patrol_start(points, att["key"], att["mode"])
+    # 傳函式而非快照:巡邏每輪重讀最新點 → 運行中改放置技能/冷卻即時生效(不必停巡邏)
+    ok, msg = navigator.patrol_start(lambda: mapdata.points(mid), att["key"], att["mode"])
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return JSONResponse(navigator.status())

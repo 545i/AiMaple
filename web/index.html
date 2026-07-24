@@ -174,7 +174,11 @@
   /* 平A設定 / 記錄點放置技能列表 */
   .mfield { padding:8px; border-radius:8px; border:1px solid #3a3f4b;
             background:#20242e; color:#e6e6e6; font-size:14px; width:100%; box-sizing:border-box; }
-  .ptrow { display:flex; align-items:center; gap:6px; }
+  .ptrow { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .ptrow .ptpick { flex:1 1 40%; min-width:0; padding:6px; border-radius:6px;
+                   border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
+  .ptrow .ptdel { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
+                  background:#7a2530; color:#fff; font-size:13px; cursor:pointer; }
   .ptrow .ptidx { flex:0 0 20px; height:20px; border-radius:50%; background:#ff9820; color:#000;
                   font-weight:800; display:flex; align-items:center; justify-content:center; font-size:11px; }
   .ptrow .ptxy { flex:0 0 58px; color:#8a8f99; font-size:12px; }
@@ -1001,32 +1005,72 @@ $("#atkKeyBtn").onclick = ()=> openKeyPicker("選平A攻擊鍵 → 點鍵盤上�
   atkKeyVal = tok;
   $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(tok)}（點我選）`;
 });
-function renderPoints(s){                         // 僅在點數變化時重建(不打斷編輯)
+function renderPoints(s){                         // 放置技能:已設定行 +「＋新增」選記錄點
   const box = $("#ptList"); if(!box) return;
   const pts = (s && s.points) || [];
-  if(!pts.length){ box.innerHTML = '<div style="font-size:12px;color:#8a8f99">尚無巡邏點（先記錄位置）</div>'; return; }
   box.innerHTML = "";
-  pts.forEach((p,i)=>{
-    const row = document.createElement("div"); row.className = "ptrow";
-    row.dataset.skill = p.skill || "";
+  const configured = pts.map((p,i)=>({...p, i})).filter(p=>p.skill);   // 已設放置技能的點
+  if(!configured.length){
+    const d = document.createElement("div"); d.style.cssText = "font-size:12px;color:#8a8f99";
+    d.textContent = pts.length ? "尚無放置技能。按下方「＋ 新增放置技能」選一個記錄點設定。"
+                               : "尚無巡邏點（先記錄位置）。";
+    box.appendChild(d);
+  }
+  configured.forEach(p=>{
+    const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = p.skill;
     row.innerHTML =
-      `<span class="ptidx">${i+1}</span>`+
+      `<span class="ptidx">${p.i+1}</span>`+
       `<span class="ptxy">(${p.x},${p.y})</span>`+
       `<button class="ptskill"></button>`+
       `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s" value="${p.cd||''}">`+
-      `<button class="ptsave">存</button>`;
+      `<button class="ptsave">存</button>`+
+      `<button class="ptdel">刪</button>`;
     const skBtn = row.querySelector(".ptskill");
-    const paint = ()=>{ const v=row.dataset.skill; skBtn.textContent = v?`技能 ${labelFor(v)}`:"＋設放置技能"; skBtn.style.opacity = v?"1":"0.6"; };
+    const paint = ()=>{ skBtn.textContent = `技能 ${labelFor(row.dataset.skill)}`; };
     paint();
-    skBtn.onclick = ()=> openKeyPicker(`第 ${i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ row.dataset.skill=tok; paint(); }, true);
+    skBtn.onclick = ()=> openKeyPicker(`第 ${p.i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
     row.querySelector(".ptsave").onclick = async ()=>{
-      const sk = row.dataset.skill || "";
       const cd = row.querySelector(".ptcd").value || 0;
-      const j = await mapAct(`/map/point_skill?index=${i}&skill=${encodeURIComponent(sk)}&cd=${encodeURIComponent(cd)}`);
-      if(j){ $("#mapMsg").textContent = sk ? `第 ${i+1} 點：放置技能 ${labelFor(sk)}${cd?(' / 冷卻 '+cd+'s'):''}` : `第 ${i+1} 點：已清除放置技能`; lastPtCount = -1; }
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}`);
+      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：放置技能 ${labelFor(row.dataset.skill)} / 冷卻 ${cd}s（已存,巡邏中即時生效）`; renderPoints(j); }
+    };
+    row.querySelector(".ptdel").onclick = async ()=>{
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=&cd=0`);
+      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：已移除放置技能`; renderPoints(j); }
     };
     box.appendChild(row);
   });
+  const addBtn = document.createElement("div"); addBtn.className = "mbtn"; addBtn.style.marginTop = "8px";
+  addBtn.textContent = "＋ 新增放置技能";
+  addBtn.onclick = ()=> showAddRow(pts, box, addBtn);
+  box.appendChild(addBtn);
+}
+function showAddRow(pts, box, addBtn){
+  const avail = pts.map((p,i)=>({...p, i})).filter(p=>!p.skill);   // 未設定的記錄點(已設定不可選)
+  if(!avail.length){ $("#mapMsg").textContent = "所有記錄點都已設定放置技能"; return; }
+  addBtn.style.display = "none";
+  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = "";
+  row.innerHTML =
+    `<select class="ptpick">`+
+      avail.map(p=>`<option value="${p.i}">${p.i+1} (${p.x},${p.y})</option>`).join("")+
+    `</select>`+
+    `<button class="ptskill">＋技能鍵</button>`+
+    `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s">`+
+    `<button class="ptsave">存</button>`+
+    `<button class="ptdel">取消</button>`;
+  const skBtn = row.querySelector(".ptskill");
+  const paint = ()=>{ skBtn.textContent = row.dataset.skill?`技能 ${labelFor(row.dataset.skill)}`:"＋技能鍵"; skBtn.style.opacity = row.dataset.skill?"1":"0.6"; };
+  paint();
+  skBtn.onclick = ()=> openKeyPicker("放置技能 → 點鍵盤選鍵", tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
+  row.querySelector(".ptsave").onclick = async ()=>{
+    if(!row.dataset.skill){ $("#mapMsg").textContent = "請先點「＋技能鍵」選一個鍵"; return; }
+    const idx = row.querySelector(".ptpick").value;
+    const cd = row.querySelector(".ptcd").value || 0;
+    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}`);
+    if(j){ $("#mapMsg").textContent = `第 ${Number(idx)+1} 點：放置技能 ${labelFor(row.dataset.skill)} / 冷卻 ${cd}s（已存,巡邏中即時生效）`; renderPoints(j); }
+  };
+  row.querySelector(".ptdel").onclick = ()=> renderPoints({points:pts});   // 取消:重繪回列表
+  box.insertBefore(row, addBtn);
 }
 $("#atkSaveBtn").onclick = async ()=>{
   const key = atkKeyVal || "a";
