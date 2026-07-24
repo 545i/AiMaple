@@ -250,6 +250,8 @@
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
       <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
+      <div class="mbtn" id="menuPatrolStop" style="margin:9px 0;background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
+      <div id="menuPatrolMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
       <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
         <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
       </div></div>
@@ -1229,18 +1231,21 @@ $("#atkSaveBtn").onclick = async ()=>{
   const mtxt = mode==="tap2"?"到點按兩次":(mode==="move"?"移動時按壓":"到點長按2秒");
   if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mtxt}`;
 };
-$("#patrolStartBtn").onclick = async ()=>{
+async function doPatrolStart(sel){
   try{
     const r = await fetch(`/nav/patrol?token=${encodeURIComponent(token)}`, { method:"POST" });
     const j = await r.json().catch(()=>({}));
-    $("#patrolMsg").textContent = r.ok ? "▶ 巡邏掛機已啟動（隨機不連號走位＋到點平A/放置技能）"
-                                       : ("⚠ " + (j.detail || "啟動失敗"));
-  }catch(_){ $("#patrolMsg").textContent = "啟動失敗（連線？）"; }
-};
-$("#patrolStopBtn").onclick = async ()=>{
+    const txt = r.ok ? "▶ 巡邏已啟動（隨機跨層走位＋到點平A/放置技能）" : ("⚠ " + (j.detail || "啟動失敗"));
+    document.querySelectorAll(sel).forEach(e=>e.textContent = txt);
+  }catch(_){ document.querySelectorAll(sel).forEach(e=>e.textContent = "啟動失敗（連線？）"); }
+}
+async function doPatrolStop(sel){
   try{ await fetch(`/nav/stop?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(_){}
-  $("#patrolMsg").textContent = "⏹ 已停止巡邏";
-};
+  document.querySelectorAll(sel).forEach(e=>e.textContent = "⏹ 已停止巡邏");
+}
+$("#patrolStartBtn").onclick = ()=> doPatrolStart("#patrolMsg,#menuPatrolMsg");
+$("#patrolStopBtn").onclick  = ()=> doPatrolStop("#patrolMsg,#menuPatrolMsg");
+$("#menuPatrolStop").onclick  = ()=> doPatrolStop("#menuPatrolMsg,#patrolMsg");
 
 // ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
 document.querySelectorAll(".dtab").forEach(t=>{
