@@ -35,6 +35,7 @@ import tunnel
 import wgc
 import idle_mode
 import mapdata
+import navigator
 import minimap
 import calib
 
@@ -134,6 +135,8 @@ async def lifespan(app):
     idle_mode.set_focus_fn(lambda: video_pipeline.enforce_focus(GUARD_EXE))
     calib.set_keyboard(keyboard)
     calib.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
+    navigator.set_keyboard(keyboard)
+    navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -483,6 +486,35 @@ def map_name(token: str = Query(""), name: str = Query("")):
     if mid:
         mapdata.set_name(mid, name)
     return JSONResponse(mapdata.status())
+
+
+# ===== 自動導航(掛機用):背景執行緒走到目標座標,狀態可查 =====
+@app.post("/nav/move_to")
+def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)):
+    """啟動背景導航到小地圖座標 (x,y)。與訪客/校準互斥。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中,不可導航")
+    if calib.is_running():
+        raise HTTPException(status_code=409, detail="運動校準進行中")
+    screen.ensure_started()
+    ok, msg = navigator.move_to(x, y)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return JSONResponse(navigator.status())
+
+
+@app.get("/nav/status")
+def nav_status(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse(navigator.status())
+
+
+@app.post("/nav/stop")
+def nav_stop(token: str = Query("")):
+    _check_owner(token)
+    navigator.stop()
+    return JSONResponse(navigator.status())
 
 
 # ===== 中控頁監視畫面：最新單張 JPEG(主人專用,前端每秒抓一張 ≈1 秒延遲) =====
