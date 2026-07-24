@@ -306,8 +306,9 @@ def _rope_to(nx, ty):
     return False
 
 
-def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False):
-    """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。"""
+def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None):
+    """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。
+    skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。"""
     p = _settle()
     if p is None:
         _state["error"] = "抓不到角色黃點"
@@ -329,15 +330,15 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False):
         nx, ny = node
         _state["phase"] = "g_" + mt
         if mt == "walk":
-            _move_to_x(nx)
+            _move_to_x(nx, skills)                      # 水平走位:移動攻擊模式穿插平A
         elif mt == "fall":
-            _move_to_x(nx); _settle(); _fall_to_y(ny)
+            _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 下跳本身不攻擊
         elif mt == "jump":
-            _move_to_x(nx); _settle()
+            _move_to_x(nx, skills); _settle()
             if not _rope_to(nx, ny):       # 優先繩索上升(可靠);附近真的無繩索才二段跳
-                _jump_up(ny)
+                _jump_up(ny)               # 上升不攻擊
         elif mt == "rope":
-            _move_to_x(nx); _settle(); _rope_to(nx, ny)
+            _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 繩索不攻擊
     if precise:
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
@@ -356,7 +357,7 @@ def _goto_sync(tx, ty, skills=None, precise=False):
     terr = _terrain_fn() if _terrain_fn else None
     _state["terr_n"] = (-1 if terr is None else (len(terr[1]) if terr[1] else 0))
     if terr and terr[1]:                   # 有平台 → 用平台重疊圖規劃跨層路徑(按鍵流程)
-        return _goto_via_graph(tx, ty, terr[0], terr[1], precise)
+        return _goto_via_graph(tx, ty, terr[0], terr[1], precise, skills)
     p = _settle()
     if p is None:
         _state["error"] = "抓不到角色黃點"
@@ -474,7 +475,8 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
-        arrived = _goto_sync(tx, ty, precise=bool(pt.get("precise")))
+        atk_skills = [attack_key] if cast_mode == "move" else None   # 移動攻擊:走位穿插平A
+        arrived = _goto_sync(tx, ty, skills=atk_skills, precise=bool(pt.get("precise")))
         if _stop.is_set():
             return
         _release_move_keys()               # 到點靜止:先放開移動鍵,平A/放置技能時皆不移動
@@ -484,9 +486,10 @@ def _patrol_run(points_fn, attack_key, cast_mode):
             if _stop.wait(0.3):
                 return
             continue
-        # ① 先平A:先攻擊可確保角色已落地站穩(避免還在下落時放置技能)
-        _state["phase"] = "cast"
-        _cast_skill(attack_key, cast_mode)
+        # ① 平A:移動攻擊模式已在走位中穿插,到點不再cast;其他模式到點施放(確保站穩)
+        if cast_mode != "move":
+            _state["phase"] = "cast"
+            _cast_skill(attack_key, cast_mode)
         # ② 再檢查放置技能:冷卻已過則放置(僅到點、只按該鍵、絕不移動)
         sk = pt.get("skill")
         if sk:

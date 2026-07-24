@@ -412,8 +412,9 @@
    <div class="mgrid2">
      <div class="mbtn" id="atkKeyBtn">攻擊鍵：A（點我選）</div>
      <select id="atkMode" class="mfield">
-       <option value="hold2s">長按 2 秒</option>
-       <option value="tap2">按兩次</option>
+       <option value="hold2s">到點長按2秒</option>
+       <option value="tap2">到點按兩次</option>
+       <option value="move">移動時按壓（走位攻擊）</option>
      </select>
    </div>
    <div class="mbtn" id="atkSaveBtn" style="margin-top:6px">💾 儲存平A設定</div>
@@ -1225,7 +1226,8 @@ $("#atkSaveBtn").onclick = async ()=>{
   const key = atkKeyVal || "a";
   const mode = $("#atkMode").value || "hold2s";
   const j = await mapAct(`/map/attack?key=${encodeURIComponent(key)}&mode=${encodeURIComponent(mode)}`);
-  if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mode==="tap2"?"按兩次":"長按2秒"}`;
+  const mtxt = mode==="tap2"?"到點按兩次":(mode==="move"?"移動時按壓":"到點長按2秒");
+  if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mtxt}`;
 };
 $("#patrolStartBtn").onclick = async ()=>{
   try{

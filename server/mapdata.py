@@ -192,7 +192,7 @@ def get_attack():
 def set_attack(key, mode):
     with _lock:
         a = {"key": (str(key or "a").strip().lower()[:12] or "a"),
-             "mode": "tap2" if mode == "tap2" else "hold2s"}
+             "mode": mode if mode in ("tap2", "hold2s", "move") else "hold2s"}
         os.makedirs(_DIR, exist_ok=True)
         with open(_ATTACK_PATH, "w", encoding="utf-8") as f:
             json.dump(a, f, ensure_ascii=False)
