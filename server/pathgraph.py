@@ -132,3 +132,54 @@ def build_from_platforms(points, platforms, ropes, y_tol=4, margin=1):
             edges[dn].append((up, dy, "rope"))          # 下→上:上繩
             edges[up].append((dn, dy, "fall"))          # 上→下:下跳
     return nodes, edges
+
+
+def build_overlap(points, platforms, jump_dy=11, y_tol=4, overlap_min=2):
+    """【只用平台】建圖:層間連接由平台 x 重疊幾何推得,不需任何繩索資料。
+      * 兩平台 x 重疊 → 重疊區可上下;連接點取重疊區中點(節點)。
+      * 高度差 <= jump_dy → 上升動作 "jump"(二段跳,重疊區任意點可上,零繩索);
+        否則 "rope"(需繩索,確切 x 執行時在此重疊區探測/緩存)。
+      * 只連相鄰層(兩平台間該重疊 x 無第三平台夾在中間),避免跨層直連。
+    回 (nodes, edges);邊型:walk/jump(上)/rope(上)/fall(下,下跳)。"""
+    plats = [dict(p) for p in platforms]
+    nodes = [(int(x), int(y)) for x, y in points]
+    node_plat = {}
+    for n in nodes:
+        for i, pf in enumerate(plats):
+            if abs(pf["y"] - n[1]) <= y_tol and pf["xA"] - 1 <= n[0] <= pf["xB"] + 1:
+                node_plat[n] = i
+                break
+    conns = []                                          # (nlo, nhi, dy, mode)
+    for i in range(len(plats)):
+        for j in range(len(plats)):
+            a, b = plats[i], plats[j]
+            if a["y"] <= b["y"]:                        # 只處理 a 低(y大) → b 高(y小)
+                continue
+            ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+            if ox2 - ox1 < overlap_min:
+                continue
+            # 相鄰層檢查:a、b 之間該重疊 x 範圍內無第三平台夾層
+            mid = (ox1 + ox2) // 2
+            blocked = any(b["y"] < c["y"] < a["y"] and c["xA"] - 1 <= mid <= c["xB"] + 1
+                          for c in plats)
+            if blocked:
+                continue
+            dy = a["y"] - b["y"]
+            nlo, nhi = (mid, a["y"]), (mid, b["y"])
+            for n, pi in ((nlo, i), (nhi, j)):
+                if n not in nodes:
+                    nodes.append(n)
+                    node_plat[n] = pi
+            conns.append((nlo, nhi, dy, "jump" if dy <= jump_dy else "rope"))
+    edges = {n: [] for n in nodes}
+    for a in nodes:                                     # 同平台 walk
+        pa = node_plat.get(a)
+        if pa is None:
+            continue
+        for b in nodes:
+            if a != b and node_plat.get(b) == pa:
+                edges[a].append((b, abs(a[0] - b[0]) + 1, "walk"))
+    for nlo, nhi, dy, mode in conns:                    # 層間:上(jump/rope)、下(fall)
+        edges[nlo].append((nhi, dy + 1, mode))
+        edges[nhi].append((nlo, dy + 1, "fall"))
+    return nodes, edges
