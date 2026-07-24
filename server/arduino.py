@@ -57,6 +57,9 @@ class ArduinoKeyboard:
         self._q = queue.Queue()
         self._worker = None
         self.connected = False
+        # 最後觸發的方向鍵 = 角色當前面向(方向預覽用)。任何來源(WS/校準/掛機/
+        # 轉向)按下 left/right 都會更新這裡,達成「最後觸發即當前方向」。
+        self.last_dir = "right"
 
     def _detect_port(self):
         """自動找 Arduino 的序列埠(依描述/VID)，避免燒錄後埠號變動。"""
@@ -148,6 +151,8 @@ class ArduinoKeyboard:
                 self._write_cmd(cmd)
 
     def tap(self, key):
+        if key in ("left", "right"):
+            self.last_dir = key
         self._q.put(_token(key))
 
     # ===== 滑鼠(硬體 HID，需燒錄 arduino_kbm 韌體) =====
@@ -162,6 +167,8 @@ class ArduinoKeyboard:
         self._q.put(("MDOWN:" if down else "MUP:") + b)
 
     def key_down(self, key):
+        if key in ("left", "right"):
+            self.last_dir = key
         self._q.put("DOWN:" + _token(key))
 
     def key_up(self, key):

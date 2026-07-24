@@ -446,6 +446,26 @@ def monitor_frame(token: str = Query("")):
                     headers={"Cache-Control": "no-store"})
 
 
+# ===== 轉向控制 + 方向預覽：以「最後觸發的方向鍵」為當前面向 =====
+# 面向直接讀 keyboard.last_dir——任何來源(WS 輸入/校準/掛機/轉向)按下 left/right
+# 都會更新它,所以永遠反映「最後一次觸發的方向」。二段跳/移動一律朝此方向前進。
+@app.get("/face")
+def get_face(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse({"dir": getattr(keyboard, "last_dir", "right")})
+
+
+@app.post("/face/{d}")
+def set_face(d: str, token: str = Query("")):
+    """輕點方向鍵轉向(不移動)。keyboard.tap 會把 last_dir 更新成這個方向。"""
+    _check_owner(token)
+    if d not in ("left", "right"):
+        raise HTTPException(status_code=400, detail="dir 必須是 left/right")
+    keyboard.tap(d)
+    print(f"[face] 轉向 {d}")
+    return JSONResponse({"dir": getattr(keyboard, "last_dir", "right")})
+
+
 # ===== 掛機(自動)模式基礎：小地圖偵測(自適應大小)+遠端預覽,僅主人 =====
 @app.get("/minimap/frame")
 def minimap_frame(token: str = Query(""), view: str = Query("annot")):

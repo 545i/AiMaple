@@ -289,9 +289,16 @@
    <div class="mbtn" id="idleBtn">🤖 閒置掛機：關</div>
    <div id="idleMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
    <div id="monitorBox" style="display:none;margin-top:8px">
-     <img id="monitorImg" alt="監視畫面"
-          style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
-     <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（MapleStory，約 1 秒更新）</div>
+     <div style="position:relative">
+       <img id="monitorImg" alt="監視畫面"
+            style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
+       <div id="faceArrow" style="position:absolute;top:8px;right:12px;font-size:34px;font-weight:800;color:#ffb020;text-shadow:0 0 6px #000,0 0 3px #000;line-height:1;">→</div>
+     </div>
+     <div class="mgrid2" style="margin-top:6px">
+       <div class="mbtn" id="faceLeft">← 轉向左</div>
+       <div class="mbtn" id="faceRight">轉向右 →</div>
+     </div>
+     <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（約 1 秒更新）· 右上箭頭＝目前面向（最後觸發的方向鍵）</div>
      <!-- 按鍵追蹤燈(桌面寵物式):送出該鍵即亮 -->
      <div id="klights">
        <div class="klight" data-k="left">←</div>
@@ -693,6 +700,20 @@ function refreshMonitorFrame(){
   im.onerror = ()=>{};   // 尚無影格(503)忽略,下一秒再試
   im.src = `/monitor/frame?token=${encodeURIComponent(token)}&_=${Date.now()}`;
 }
+// ===== 方向預覽:面向=最後觸發的方向鍵(伺服器 keyboard.last_dir) =====
+function setFaceArrow(dir){
+  const a = $("#faceArrow"); if(!a) return;
+  a.textContent = dir === "left" ? "←" : "→";
+  a.style.color = dir === "left" ? "#5b8cff" : "#ffb020";
+}
+async function refreshFace(){
+  try{ const j = await (await fetch(`/face?token=${encodeURIComponent(token)}`)).json();
+    setFaceArrow(j.dir); }catch(_){}
+}
+async function turnFace(dir){
+  try{ const j = await (await fetch(`/face/${dir}?token=${encodeURIComponent(token)}`, { method:"POST" })).json();
+    setFaceArrow(j.dir); }catch(_){}
+}
 // 按鍵追蹤:每 400ms 抓 /idle/status,亮燈(該鍵最近 <0.6 秒送出)+ 下一次技能倒數
 // + 焦點診斷(前景不是 MapleStory → 提示技能/字母送不進去)。
 async function refreshTrack(){
@@ -724,8 +745,8 @@ async function refreshTrack(){
 function startMonitor(){
   if(monitorTimer) return;
   $("#monitorBox").style.display = "block";
-  refreshMonitorFrame(); refreshTrack();
-  monitorTimer = setInterval(refreshMonitorFrame, 1000);   // 每秒一張,≈1 秒延遲
+  refreshMonitorFrame(); refreshTrack(); refreshFace();
+  monitorTimer = setInterval(()=>{ refreshMonitorFrame(); refreshFace(); }, 1000);   // 畫面+面向
   trackTimer = setInterval(refreshTrack, 400);             // 亮燈/倒數更即時
 }
 function stopMonitor(){
@@ -758,6 +779,8 @@ $("#idleBtn").onclick = async () => {
     $("#idleMsg").textContent = j.running ? "已啟動：隨機左右移動、隨機間隔施放（下方監視畫面約 1 秒更新）" : "";
   }catch(_){ $("#idleMsg").textContent = "操作失敗（連線？）"; }
 };
+$("#faceLeft").onclick = ()=>turnFace("left");
+$("#faceRight").onclick = ()=>turnFace("right");
 $("#focusBtn").onclick = async () => { const el=$("#focusBtn"); el.classList.add("on"); await focusTarget(); setTimeout(()=>el.classList.remove("on"), 400); };
 
 // ===== 掛機模式(開發中)：小地圖偵測遠端預覽 =====
