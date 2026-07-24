@@ -1100,7 +1100,7 @@ function renderProfList(profs){
   profs.forEach(p=>{
     const row = document.createElement("div"); row.className = "ptrow";
     row.innerHTML =
-      `<span style="flex:1;min-width:0">${p.name}　<span style="color:#8a8f99;font-size:12px">${p.count}點/${p.skills}放置 · ${p.map_id||"?"}</span></span>`+
+      `<span style="flex:1;min-width:0">${p.name}　<span style="color:#8a8f99;font-size:12px">${p.count}點/${p.skills}放置/${p.platforms||0}平台 · ${p.map_id||"?"}</span></span>`+
       `<button class="ptsave">載入</button>`+
       `<button class="ptdel">刪</button>`;
     row.querySelector(".ptsave").onclick = async ()=>{

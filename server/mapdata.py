@@ -268,7 +268,9 @@ def list_profiles():
                     d = json.load(f)
                 pts = [_norm(p) for p in d.get("points", [])]
                 out.append({"name": d.get("name", fn[:-5]), "map_id": d.get("map_id", ""),
-                            "count": len(pts), "skills": sum(1 for p in pts if p.get("skill"))})
+                            "count": len(pts), "skills": sum(1 for p in pts if p.get("skill")),
+                            "platforms": len(d.get("platforms", [])),
+                            "ropes": len(d.get("ropes", []))})
             except Exception:
                 pass
     except FileNotFoundError:
