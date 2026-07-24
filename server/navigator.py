@@ -16,6 +16,7 @@ import threading
 import time
 
 import minimap
+import pathgraph
 
 _keyboard = None
 _focus_fn = None
@@ -46,6 +47,15 @@ def set_keyboard(kb):
 def set_focus_fn(fn):
     global _focus_fn
     _focus_fn = fn
+
+
+_terrain_fn = None
+
+
+def set_terrain_fn(fn):
+    """注入地形來源 fn()→(points_dicts, platforms)。有平台時導航改用平台重疊圖規劃。"""
+    global _terrain_fn
+    _terrain_fn = fn
 
 
 def is_running():
@@ -235,10 +245,118 @@ def _fine_tune_x(tx, tol=PRECISE_X_TOL):
     return False
 
 
+# ---------- 平台圖導航(按鍵流程):沿 pathgraph 路徑分段執行 ----------
+def _walk_to(tx, tol=1):
+    """走路脈衝到 tx(小範圍精走,繩索掃描/連接點對齊用)。"""
+    for _ in range(12):
+        if _stop.is_set():
+            return
+        p = _dot()
+        if not p:
+            continue
+        _state["pos"] = list(p)
+        dx = tx - p[0]
+        if abs(dx) <= tol:
+            return
+        d = "right" if dx > 0 else "left"
+        adx = abs(dx)
+        dur = 0.25 if adx > 6 else (0.12 if adx >= 3 else (0.08 if adx == 2 else 0.06))
+        _keyboard.key_down(d); time.sleep(dur); _keyboard.key_up(d)
+        time.sleep(0.1)
+
+
+def _jump_up(ty):
+    """二段跳上一層平台:朝面向二段跳(有垂直分量),確認 y 上升到目標層(最多 4 次)。"""
+    for _ in range(4):
+        if _stop.is_set():
+            return
+        p = _dot()
+        if p and p[1] <= ty + Y_TOL:
+            return
+        d = getattr(_keyboard, "last_dir", None) or "right"
+        _double_jump(d)
+        time.sleep(0.2)
+
+
+def _try_rope_here(ty):
+    """當前位置按 C:若上升則上到頂+下跳修正到 ty,回 True;沒上升回 False。"""
+    p0 = _settle()
+    if not p0:
+        return False
+    _rope_up()
+    p1 = _dot() or p0
+    if p1[1] < p0[1] - 3:                   # y 變小=上升成功
+        if p1[1] < ty - Y_TOL:             # 上過頭 → 下跳修正到目標層
+            _fall_to_y(ty)
+        return True
+    return False
+
+
+def _rope_to(nx, ty):
+    """繩索上到目標層:在 nx 附近找繩索(按C測,不行沿重疊區小幅掃)→上頂→下跳修正。"""
+    if _try_rope_here(ty):
+        return True
+    for off in (-4, 4, -8, 8, -12, 12):    # 附近掃繩索(重疊區內)
+        if _stop.is_set():
+            return False
+        _walk_to(nx + off)
+        if _try_rope_here(ty):
+            return True
+    print(f"[nav] 在 x≈{nx} 附近找不到繩索")
+    return False
+
+
+def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False):
+    """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。"""
+    p = _settle()
+    if p is None:
+        _state["error"] = "抓不到角色黃點"
+        return False
+    _state["pos"] = list(p)
+    pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
+    nodes, edges = pathgraph.build_overlap(pts + [(int(tx), int(ty))], platforms)
+    start = pathgraph.nearest_node(nodes, p)
+    path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
+    if path is None:
+        _state["error"] = f"無路徑 {start}→({tx},{ty})"
+        print(f"[nav] 無路徑 {start}→({tx},{ty})")
+        return False
+    _state["path"] = [[list(n), mt] for n, mt in path]
+    print(f"[nav] 路徑 {start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
+    for node, mt in path:
+        if _stop.is_set():
+            return False
+        nx, ny = node
+        _state["phase"] = "g_" + mt
+        if mt == "walk":
+            _move_to_x(nx)
+        elif mt == "fall":
+            _move_to_x(nx); _settle(); _fall_to_y(ny)
+        elif mt == "jump":
+            _move_to_x(nx); _settle()
+            if not _rope_to(nx, ny):       # 優先繩索上升(可靠);附近真的無繩索才二段跳
+                _jump_up(ny)
+        elif mt == "rope":
+            _move_to_x(nx); _settle(); _rope_to(nx, ny)
+    if precise:
+        _state["phase"] = "fine_x"
+        _fine_tune_x(tx)
+    p = _settle()
+    if p:
+        _state["pos"] = list(p)
+    arrived = bool(p and abs(p[0] - tx) <= X_TOL and abs(p[1] - ty) <= Y_TOL)
+    _state["arrived"] = arrived
+    return arrived
+
+
 def _goto_sync(tx, ty, skills=None, precise=False):
     """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。
     precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。"""
     _state.update({"target": [tx, ty], "arrived": False})
+    terr = _terrain_fn() if _terrain_fn else None
+    _state["terr_n"] = (-1 if terr is None else (len(terr[1]) if terr[1] else 0))
+    if terr and terr[1]:                   # 有平台 → 用平台重疊圖規劃跨層路徑(按鍵流程)
+        return _goto_via_graph(tx, ty, terr[0], terr[1], precise)
     p = _settle()
     if p is None:
         _state["error"] = "抓不到角色黃點"

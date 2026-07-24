@@ -137,6 +137,8 @@ async def lifespan(app):
     calib.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_keyboard(keyboard)
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
+    navigator.set_terrain_fn(lambda: (mapdata.points(mapdata.current_map_id()),
+                                      mapdata.platforms(mapdata.current_map_id())))
     # 紫標(特殊NPC/玩家進圖)出現 → 即時暫停巡邏(危險規避);Telegram 通知照舊
     minimap.set_event_hook(lambda kind, data: navigator.pause_purple() if kind == "purple" else None)
     if not mouse.start():
