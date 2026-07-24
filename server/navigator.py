@@ -212,24 +212,26 @@ def _move_to_x(tx, skills=None):
 
 
 def _fine_tune_x(tx, tol=PRECISE_X_TOL):
-    """精確回正:二段跳到位後可能過衝,用短促走路脈衝雙向微調,收斂到 |dx|<=tol。
-    距離越近脈衝越短、避免再次過衝(此處不用二段跳,那會又飛 ~30px)。"""
+    """精確回正(實測驗證版):每步先 _settle 等角色【完全停穩】再讀黃點判定——
+    黃點靜止時 0px 抖動、讀數極準;而移動中/慣性讀取會把『經過瞬間』誤判成到位
+    (放置技能因此放不準)。未達則走路脈衝,依實測位移分檔:≥3px→0.12s、2px→0.08s、
+    1px→0.06s(走路慢、慣性極小,故小步即可)。實測從偏移 8px 約 4~5 步收斂到 ±1px。"""
     for _ in range(PRECISE_STEPS):
         if _stop.is_set():
             return False
-        p = _dot()
+        p = _settle(retries=10)          # 關鍵:停穩後才判定,不用移動中瞬時值
         if not p:
             continue
         _state["pos"] = list(p)
         dx = tx - p[0]
         if abs(dx) <= tol:
             return True
+        adx = abs(dx)
+        dur = 0.12 if adx >= 3 else (0.08 if adx == 2 else 0.06)   # 實測分檔
         d = "right" if dx > 0 else "left"
-        dur = min(0.13, 0.03 + abs(dx) * 0.02)   # 距離越近走越短,避免過衝
         _keyboard.key_down(d)
         time.sleep(dur)
         _keyboard.key_up(d)
-        time.sleep(0.18)                          # 等停穩再讀黃點
     return False
 
 
@@ -258,7 +260,9 @@ def _goto_sync(tx, ty, skills=None, precise=False):
     if precise:                            # 精確到位:二段跳可能過衝 → 走路回正到 ±1px
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
-    p = _dot()
+        p = _settle()                      # 精確:停穩(0抖動)後才判定,不用移動中瞬時值
+    else:
+        p = _dot()
     if p:
         _state["pos"] = list(p)
     xtol = PRECISE_X_TOL if precise else X_TOL
