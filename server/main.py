@@ -457,11 +457,14 @@ def get_face(token: str = Query("")):
 
 @app.post("/face/{d}")
 def set_face(d: str, token: str = Query("")):
-    """輕點方向鍵轉向(不移動)。keyboard.tap 會把 last_dir 更新成這個方向。"""
+    """轉向:key_down→按住 60ms→key_up。用 press 而非 tap,確保遊戲讀到轉向
+    (tap 放開太快會漏讀 → 轉向失敗)。keyboard 會把 last_dir 更新成這個方向。"""
     _check_owner(token)
     if d not in ("left", "right"):
         raise HTTPException(status_code=400, detail="dir 必須是 left/right")
-    keyboard.tap(d)
+    keyboard.key_down(d)
+    time.sleep(0.06)
+    keyboard.key_up(d)
     print(f"[face] 轉向 {d}")
     return JSONResponse({"dir": getattr(keyboard, "last_dir", "right")})
 
