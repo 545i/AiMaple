@@ -260,13 +260,11 @@ def _goto_sync(tx, ty, skills=None, precise=False):
     if precise:                            # 精確到位:二段跳可能過衝 → 走路回正到 ±1px
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
-        p = _settle()                      # 精確:停穩(0抖動)後才判定,不用移動中瞬時值
-    else:
-        p = _dot()
+    p = _settle()                          # 統一:停穩(0抖動)後才判定到達,不用移動中瞬時值
     if p:
         _state["pos"] = list(p)
-    xtol = PRECISE_X_TOL if precise else X_TOL
-    arrived = bool(p and abs(p[0] - tx) <= xtol and abs(p[1] - ty) <= Y_TOL)
+    # 到達判定用範圍容差(保證平A能施放);精確點的 ±1 已由 _fine_tune_x 盡量達成
+    arrived = bool(p and abs(p[0] - tx) <= X_TOL and abs(p[1] - ty) <= Y_TOL)
     _state["arrived"] = arrived
     return arrived
 
@@ -356,10 +354,16 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
-        _goto_sync(tx, ty, precise=bool(pt.get("precise")))
+        arrived = _goto_sync(tx, ty, precise=bool(pt.get("precise")))
         if _stop.is_set():
             return
         _release_move_keys()               # 到點靜止:先放開移動鍵,平A/放置技能時皆不移動
+        if not arrived:                    # 沒到點附近(導航受阻)→ 不施放平A/放置技能,重挑點重試
+            _state["phase"] = "retry"
+            print(f"[nav] 未到達 ({tx},{ty}) pos={_state.get('pos')},跳過施放、重試")
+            if _stop.wait(0.3):
+                return
+            continue
         # ① 先平A:先攻擊可確保角色已落地站穩(避免還在下落時放置技能)
         _state["phase"] = "cast"
         _cast_skill(attack_key, cast_mode)
