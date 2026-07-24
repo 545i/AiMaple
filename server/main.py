@@ -523,10 +523,11 @@ def map_profile_delete(token: str = Query(""), name: str = Query("")):
 
 
 @app.post("/map/attack")
-def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query("hold2s")):
+def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query("hold2s"),
+               jump_atk: bool = Query(False), fall_atk: bool = Query(False)):
     """設定平A(普通攻擊)鍵與施放方式:mode=hold2s(長按2秒) / tap2(按兩次)。全域共用。"""
     _check_owner(token)
-    mapdata.set_attack(key, mode)
+    mapdata.set_attack(key, mode, jump_atk, fall_atk)
     return JSONResponse(mapdata.status())
 
 
@@ -612,6 +613,8 @@ def nav_patrol(token: str = Query("")):
         raise HTTPException(status_code=409,
                             detail="此地圖尚未設定座標,請先在中控記錄巡邏點")
     att = mapdata.get_attack()
+    navigator.set_jump_hold_atk(att.get("jump_atk", False))
+    navigator.set_fall_hold_atk(att.get("fall_atk", False))
     screen.ensure_started()
     video_pipeline.guard_focus(GUARD_EXE)
     # 傳函式而非快照:巡邏每輪重讀最新點 → 運行中改放置技能/冷卻即時生效(不必停巡邏)

@@ -157,6 +157,12 @@
   .dtab.on { background:#2d6cdf; color:#fff; border-color:#2d6cdf; }
   .dpane { display:none; }
   .dpane.on { display:block; }
+  #toast { position:fixed; top:14px; left:50%; transform:translate(-50%,-24px); z-index:200;
+           background:rgba(30,126,52,.96); color:#fff; padding:10px 18px; border-radius:10px;
+           font-size:14px; max-width:82vw; text-align:center; box-shadow:0 6px 20px rgba(0,0,0,.45);
+           opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
+  #toast.show { opacity:1; transform:translate(-50%,0); }
+  #toast.err { background:rgba(192,57,43,.96); }
   .enter-btn { width:100%; margin-top:22px; padding:16px; border:none; border-radius:12px;
                background:#3a7; color:#fff; font-size:17px; font-weight:700; }
   .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
@@ -429,6 +435,12 @@
        <option value="move">移動時按壓（走位攻擊）</option>
      </select>
    </div>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="atkJumpHold"> 二段跳時保持攻擊（某些技能支援邊跳邊連發）
+   </label>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="atkFallHold"> 下跳時保持攻擊
+   </label>
    <div class="mbtn" id="atkSaveBtn" style="margin-top:6px">💾 儲存平A設定</div>
 
    <div class="msec" style="margin-top:14px">記錄點放置技能（僅到點施放·各自冷卻）</div>
@@ -453,6 +465,14 @@
 
 <script>
 const $ = s => document.querySelector(s);
+let _toastTimer=null;
+function toast(msg, ok=true){
+  let t=document.getElementById("toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; document.body.appendChild(t); }
+  t.textContent=msg; t.className="show"+(ok?"":" err");
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>{ t.className=t.className.replace(/show/g,"").trim(); }, 2500);
+}
 let ws=null, token="", editMode=false, watching=true, editingBtn=null, pickerOnPick=null;
 let guest=false, expired=false;   // 訪客(短密碼)模式：由伺服器 WS "mode" 訊息判定
 const IS_TOUCH = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
@@ -1019,9 +1039,9 @@ async function mapAct(path){
   try{
     const r = await fetch(`${path}${path.includes("?")?"&":"?"}token=${encodeURIComponent(token)}`, { method:"POST" });
     const j = await r.json().catch(()=>({}));
-    if(!r.ok){ $("#mapMsg").textContent = "⚠ " + (j.detail || "操作失敗"); return null; }
-    renderMapStat(j); return j;
-  }catch(_){ $("#mapMsg").textContent = "操作失敗（連線？）"; return null; }
+    if(!r.ok){ $("#mapMsg").textContent = "⚠ " + (j.detail || "操作失敗"); toast(j.detail||"操作失敗", false); return null; }
+    renderMapStat(j); toast("✓ 已套用設定"); return j;
+  }catch(_){ $("#mapMsg").textContent = "操作失敗（連線？）"; toast("操作失敗（連線？）", false); return null; }
 }
 $("#mapRecordBtn").onclick = async ()=>{
   const j = await mapAct("/map/record");
@@ -1142,6 +1162,8 @@ function fillAttack(s){                          // 平A只填一次(避免每�
   atkKeyVal = s.attack.key || "a";
   $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(atkKeyVal)}（點我選）`;
   $("#atkMode").value = s.attack.mode || "hold2s";
+  $("#atkJumpHold").checked = !!s.attack.jump_atk;
+  $("#atkFallHold").checked = !!s.attack.fall_atk;
   atkFilled = true;
 }
 $("#atkKeyBtn").onclick = ()=> openKeyPicker("選平A攻擊鍵 → 點鍵盤上的按鍵", tok=>{
@@ -1227,7 +1249,9 @@ function showAddRow(pts, box, addBtn){
 $("#atkSaveBtn").onclick = async ()=>{
   const key = atkKeyVal || "a";
   const mode = $("#atkMode").value || "hold2s";
-  const j = await mapAct(`/map/attack?key=${encodeURIComponent(key)}&mode=${encodeURIComponent(mode)}`);
+  const jh = $("#atkJumpHold").checked ? 1 : 0;
+  const fh = $("#atkFallHold").checked ? 1 : 0;
+  const j = await mapAct(`/map/attack?key=${encodeURIComponent(key)}&mode=${encodeURIComponent(mode)}&jump_atk=${jh}&fall_atk=${fh}`);
   const mtxt = mode==="tap2"?"到點按兩次":(mode==="move"?"移動時按壓":"到點長按2秒");
   if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mtxt}`;
 };
@@ -1237,11 +1261,13 @@ async function doPatrolStart(sel){
     const j = await r.json().catch(()=>({}));
     const txt = r.ok ? "▶ 巡邏已啟動（隨機跨層走位＋到點平A/放置技能）" : ("⚠ " + (j.detail || "啟動失敗"));
     document.querySelectorAll(sel).forEach(e=>e.textContent = txt);
-  }catch(_){ document.querySelectorAll(sel).forEach(e=>e.textContent = "啟動失敗（連線？）"); }
+    toast(r.ok ? "▶ 巡邏已啟動" : (j.detail||"啟動失敗"), r.ok);
+  }catch(_){ document.querySelectorAll(sel).forEach(e=>e.textContent = "啟動失敗（連線？）"); toast("啟動失敗（連線？）", false); }
 }
 async function doPatrolStop(sel){
   try{ await fetch(`/nav/stop?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(_){}
   document.querySelectorAll(sel).forEach(e=>e.textContent = "⏹ 已停止巡邏");
+  toast("⏹ 已停止巡邏");
 }
 $("#patrolStartBtn").onclick = ()=> doPatrolStart("#patrolMsg,#menuPatrolMsg");
 $("#patrolStopBtn").onclick  = ()=> doPatrolStop("#patrolMsg,#menuPatrolMsg");

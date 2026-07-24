@@ -129,6 +129,18 @@ def _press(k, hold=KEY_HOLD):
 
 
 _atk_held = set()
+_jump_hold_atk = False   # 二段跳時是否保持攻擊鍵(不放開);由平A設定勾選
+_fall_hold_atk = False   # 下跳時是否保持攻擊鍵
+
+
+def set_jump_hold_atk(v):
+    global _jump_hold_atk
+    _jump_hold_atk = bool(v)
+
+
+def set_fall_hold_atk(v):
+    global _fall_hold_atk
+    _fall_hold_atk = bool(v)
 
 
 def _release_atk():
@@ -166,13 +178,17 @@ def _same_skills(skills):
 
 
 def _double_jump(direction, skills=None):
-    """朝 direction 二段跳(X→interval→P)。跳躍前放開移動攻擊鍵,避免與 X/P 衝突。"""
-    _release_atk()
+    """朝 direction 二段跳(X→interval→P)。預設跳前放開攻擊鍵(避免與 X/P 衝突);
+    勾「二段跳保持攻擊」則不放、跳後重新按住(某些技能支援邊跳邊連發)。"""
+    if not _jump_hold_atk:
+        _release_atk()
     _press(direction)                      # 轉向(press,確保面向)
     time.sleep(0.12)
     _keyboard.key_down("x"); time.sleep(KEY_HOLD); _keyboard.key_up("x")
     time.sleep(max(0.0, JUMP_INTERVAL - KEY_HOLD))
     _keyboard.key_down("p"); time.sleep(KEY_HOLD); _keyboard.key_up("p")
+    if _jump_hold_atk:
+        _same_skills(skills)               # 保持攻擊:跳後重新按住
     time.sleep(1.0)                        # 等落地
 
 
@@ -205,8 +221,9 @@ def _walk_to_x(direction, target_x, skills=None, timeout_s=2.5):
 
 
 def _fall_to_y(ty, skills=None):
-    """閉環下跳到目標 y:壓 down + 重複跳,讀黃點收斂,FALL_MAX 上限。下跳期間放開攻擊鍵。"""
-    _release_atk()
+    """閉環下跳到目標 y。預設下跳期間放開攻擊鍵;勾「下跳保持攻擊」則保持按住。"""
+    if not _fall_hold_atk:
+        _release_atk()
     _keyboard.key_down("down")
     time.sleep(0.2)
     try:
@@ -219,6 +236,8 @@ def _fall_to_y(ty, skills=None):
                 if p[1] >= ty - Y_TOL:
                     break
             _keyboard.key_down("x"); time.sleep(0.08); _keyboard.key_up("x")
+            if _fall_hold_atk:
+                _same_skills(skills)
             time.sleep(0.45)
     finally:
         _keyboard.key_up("down")

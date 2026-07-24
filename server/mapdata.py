@@ -185,15 +185,18 @@ def get_attack():
             a = json.load(f)
         m = a.get("mode")
         return {"key": str(a.get("key", "a") or "a"),
-                "mode": m if m in ("tap2", "hold2s", "move") else "hold2s"}
+                "mode": m if m in ("tap2", "hold2s", "move") else "hold2s",
+                "jump_atk": bool(a.get("jump_atk", False)),
+                "fall_atk": bool(a.get("fall_atk", False))}
     except Exception:
         return {"key": "a", "mode": "hold2s"}
 
 
-def set_attack(key, mode):
+def set_attack(key, mode, jump_atk=False, fall_atk=False):
     with _lock:
         a = {"key": (str(key or "a").strip().lower()[:12] or "a"),
-             "mode": mode if mode in ("tap2", "hold2s", "move") else "hold2s"}
+             "mode": mode if mode in ("tap2", "hold2s", "move") else "hold2s",
+             "jump_atk": bool(jump_atk), "fall_atk": bool(fall_atk)}
         os.makedirs(_DIR, exist_ok=True)
         with open(_ATTACK_PATH, "w", encoding="utf-8") as f:
             json.dump(a, f, ensure_ascii=False)
