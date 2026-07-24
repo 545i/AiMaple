@@ -534,13 +534,13 @@ def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query(
 @app.post("/map/point_skill")
 def map_point_skill(token: str = Query(""), index: int = Query(...),
                     skill: str = Query(""), cd: float = Query(0.0),
-                    precise: bool = Query(False)):
+                    precise: bool = Query(False), skip: bool = Query(False)):
     """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(空鍵=取消)。僅到點施放、冷卻中略過。"""
     _check_owner(token)
     mid = mapdata.current_map_id()
     if not mid:
         raise HTTPException(status_code=400, detail="偵測不到小地圖")
-    mapdata.set_point_skill(mid, index, skill, cd, precise)
+    mapdata.set_point_skill(mid, index, skill, cd, precise, skip)
     return JSONResponse(mapdata.status())
 
 

@@ -544,8 +544,25 @@ def _patrol_run(points_fn, attack_key, cast_mode):
                 return
             continue
         _refresh_places(pts)
-        choices = [p for p in pts if (p["x"], p["y"]) != prev]   # 排除上一點座標→不連號
-        pt = random.choice(choices) if choices else pts[0]
+        now = time.monotonic()
+        # 略過放置技能點:冷卻好→優先去放;冷卻中→排除(只在普通點循環刷怪)
+        skip_ready, normal = [], []
+        for p in pts:
+            if p.get("skill") and p.get("skip"):
+                rec = _place.get((p["x"], p["y"]))
+                if rec and (rec["last"] is None or now - rec["last"] >= rec["cd"]):
+                    skip_ready.append(p)
+            else:
+                normal.append(p)
+        if skip_ready:
+            pt = skip_ready[0]                                   # 冷卻好的放置技能點→優先導航
+        elif normal:
+            choices = [p for p in normal if (p["x"], p["y"]) != prev]   # 普通點不連號循環
+            pt = random.choice(choices) if choices else normal[0]
+        else:
+            if _stop.wait(1.0):                                  # 只剩冷卻中的略過點→等待
+                return
+            continue
         prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
