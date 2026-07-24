@@ -289,16 +289,9 @@
    <div class="mbtn" id="idleBtn">🤖 閒置掛機：關</div>
    <div id="idleMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
    <div id="monitorBox" style="display:none;margin-top:8px">
-     <div style="position:relative">
-       <img id="monitorImg" alt="監視畫面"
-            style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
-       <div id="faceArrow" style="position:absolute;top:8px;right:12px;font-size:34px;font-weight:800;color:#ffb020;text-shadow:0 0 6px #000,0 0 3px #000;line-height:1;">→</div>
-     </div>
-     <div class="mgrid2" style="margin-top:6px">
-       <div class="mbtn" id="faceLeft">← 轉向左</div>
-       <div class="mbtn" id="faceRight">轉向右 →</div>
-     </div>
-     <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（約 1 秒更新）· 右上箭頭＝目前面向（最後觸發的方向鍵）</div>
+     <img id="monitorImg" alt="監視畫面"
+          style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
+     <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（MapleStory，約 1 秒更新）</div>
      <!-- 按鍵追蹤燈(桌面寵物式):送出該鍵即亮 -->
      <div id="klights">
        <div class="klight" data-k="left">←</div>
@@ -308,6 +301,13 @@
      </div>
      <div id="idleRemain" style="font-size:13px;color:#7fe0b0;margin-top:6px;font-variant-numeric:tabular-nums"></div>
      <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
+   </div>
+
+   <div class="msec">目前方向（最後觸發的方向鍵＝角色面向）</div>
+   <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
+     <div id="faceArrow" style="font-size:40px;font-weight:800;color:#ffb020;width:56px;text-align:center;line-height:1">→</div>
+     <div class="mbtn" id="faceLeft" style="flex:1">← 轉向左</div>
+     <div class="mbtn" id="faceRight" style="flex:1">轉向右 →</div>
    </div>
 
    <div class="msec">掛機模式（開發中）· 小地圖偵測</div>
@@ -514,13 +514,19 @@ const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 // ===== 三層 view 導航：login → dash(儀表板) → remote(主人操作) =====
 // dash 純 HTTP(出租管理)、不連 WS 不開影像 → 管理時完全不影響/不佔用遊玩硬體。
 let vheld = new Set();     // 虛擬按鍵目前按住的鍵(回儀表板時全放,避免卡鍵)
+let faceTimer = null;
 function showView(name){
   document.body.classList.remove("view-login","view-dash","view-remote");
   document.body.classList.add("view-"+name);
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
   if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
+  if(name !== "dash" && faceTimer){ clearInterval(faceTimer); faceTimer = null; }  // 停方向輪詢
 }
-function loadDash(){ fetchStatus(); refreshRemote(); refreshIdle(); }   // 硬體+出租+閒置狀態
+function loadDash(){
+  fetchStatus(); refreshRemote(); refreshIdle();
+  refreshFace();                                        // 方向條:進儀表板即更新
+  if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
+}
 async function enterRemote(){
   showView("remote");
   if(!ws || ws.readyState > 1) connect();     // 進主人頁才連 WS
