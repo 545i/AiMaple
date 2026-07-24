@@ -393,6 +393,21 @@
    <div id="mapMsg" style="font-size:12px;color:#8a8f99;margin-top:4px">
      移動角色到巡邏點 → 按「記錄目前位置」。至少 1 點才能開掛機（自動識別地圖，免命名）。</div>
 
+   <div class="msec" style="margin-top:14px">地形設定（跨層路徑用 · 標一次存進設置）</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     平台＝可走線段：走到左端按「記A端」、右端按「記B端」、再「新增平台」。繩索：站到繩索上按「記繩索」。</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="platMarkA">📍 記A端</div>
+     <div class="mbtn" id="platMarkB">📍 記B端</div>
+   </div>
+   <div class="mgrid2" style="margin-top:6px">
+     <div class="mbtn" id="platAddBtn">➕ 新增平台</div>
+     <div class="mbtn" id="ropeAddBtn">🪢 記繩索</div>
+   </div>
+   <div id="platInfo" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <div id="platList" style="display:flex;flex-direction:column;gap:4px;margin-top:6px"></div>
+   <div id="ropeList" style="display:flex;flex-direction:column;gap:4px;margin-top:4px"></div>
+
    <div class="msec" style="margin-top:14px">平A（普通攻擊）設定</div>
    <div class="mgrid2">
      <div class="mbtn" id="atkKeyBtn">攻擊鍵：A（點我選）</div>
@@ -921,6 +936,29 @@ async function mmTick(){
           renderMapStat(mm);
           if(mm.count !== lastPtCount){ lastPtCount = mm.count; renderPoints(mm); }
           fillAttack(mm);
+          const tsig = (mm.platforms||[]).length+'/'+(mm.ropes||[]).length;
+          if(tsig !== lastTerrSig){ lastTerrSig = tsig; renderTerrain(mm); }
+          // 地形疊加:平台=水平線(藍)、繩索=垂直虛線(黃)
+          const terr = mm.platforms || [], rps = mm.ropes || [];
+          if(terr.length || rps.length){
+            const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+            svg.setAttribute("viewBox","0 0 100 100"); svg.setAttribute("preserveAspectRatio","none");
+            terr.forEach(p=>{
+              const ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+              ln.setAttribute("x1",p.xA/s.w*100); ln.setAttribute("y1",p.y/s.h*100);
+              ln.setAttribute("x2",p.xB/s.w*100); ln.setAttribute("y2",p.y/s.h*100);
+              ln.setAttribute("stroke","#4bd"); ln.setAttribute("stroke-width","1.4"); ln.setAttribute("opacity","0.85");
+              svg.appendChild(ln);
+            });
+            rps.forEach(r=>{
+              const ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+              ln.setAttribute("x1",r.x/s.w*100); ln.setAttribute("y1","0");
+              ln.setAttribute("x2",r.x/s.w*100); ln.setAttribute("y2","100");
+              ln.setAttribute("stroke","#fd5"); ln.setAttribute("stroke-width","0.8"); ln.setAttribute("stroke-dasharray","2 2"); ln.setAttribute("opacity","0.7");
+              svg.appendChild(ln);
+            });
+            ov.appendChild(svg);
+          }
           const pts = mm.points || [];
           // 隨機巡邏無固定路線,故不畫連接線,只標各站立點(橘點=站立位置、青圈=攻擊範圍)
           pts.forEach((p,i)=>{
@@ -991,6 +1029,61 @@ $("#mapClearBtn").onclick = async ()=>{
   if(!confirm("清空此地圖所有巡邏座標？")) return;
   const j = await mapAct("/map/clear"); if(j) $("#mapMsg").textContent="已清空此地圖座標";
 };
+
+// ---- 地形:平台(A/B端)+繩索,供跨層路徑規劃 ----
+let platA=null, platB=null, lastTerrSig="";
+async function readDot(){
+  try{
+    await fetch(`/minimap/frame?view=crop&token=${encodeURIComponent(token)}`);
+    const s = await (await fetch(`/minimap/status?token=${encodeURIComponent(token)}`)).json();
+    return (s.dot && !s.dot_stale) ? s.dot : null;
+  }catch(_){ return null; }
+}
+$("#platMarkA").onclick = async ()=>{
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（開小地圖預覽、站定）"; return; }
+  platA = d; $("#platInfo").textContent = `A端 (${d.x},${d.y})${platB?`　B端 (${platB.x},${platB.y})`:'　→ 走到右端再記B端'}`;
+};
+$("#platMarkB").onclick = async ()=>{
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（開小地圖預覽、站定）"; return; }
+  platB = d; $("#platInfo").textContent = `${platA?`A端 (${platA.x},${platA.y})　`:'（尚未記A端）　'}B端 (${d.x},${d.y})`;
+};
+$("#platAddBtn").onclick = async ()=>{
+  if(!platA || !platB){ $("#platInfo").textContent = "請先記 A端 和 B端"; return; }
+  const y = Math.round((platA.y + platB.y)/2);
+  const j = await mapAct(`/map/platform/add?y=${y}&xa=${platA.x}&xb=${platB.x}`);
+  if(j){ $("#platInfo").textContent = `已新增平台 層${y} [${Math.min(platA.x,platB.x)}–${Math.max(platA.x,platB.x)}]`; platA=platB=null; lastTerrSig=""; renderTerrain(j); }
+};
+$("#ropeAddBtn").onclick = async ()=>{
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（站到繩索上）"; return; }
+  const j = await mapAct(`/map/rope/add?x=${d.x}`);
+  if(j){ $("#platInfo").textContent = `已記繩索 x=${d.x}`; lastTerrSig=""; renderTerrain(j); }
+};
+function renderTerrain(s){
+  const pf=(s&&s.platforms)||[], rp=(s&&s.ropes)||[];
+  const pl=$("#platList");
+  if(pl){
+    pl.innerHTML = pf.length ? "" : '<div style="font-size:12px;color:#8a8f99">尚無平台</div>';
+    pf.forEach((p,i)=>{
+      const row=document.createElement("div"); row.className="ptrow";
+      row.innerHTML=`<span style="flex:1;min-width:0">🟦 平台 層${p.y} [${p.xA}–${p.xB}]</span><button class="ptdel">刪</button>`;
+      row.querySelector(".ptdel").onclick=async()=>{ const j=await mapAct(`/map/platform/remove?index=${i}`); if(j){ lastTerrSig=""; renderTerrain(j); } };
+      pl.appendChild(row);
+    });
+  }
+  const rl=$("#ropeList");
+  if(rl){
+    rl.innerHTML = rp.length ? "" : '<div style="font-size:12px;color:#8a8f99">尚無繩索</div>';
+    rp.forEach((r,i)=>{
+      const row=document.createElement("div"); row.className="ptrow";
+      row.innerHTML=`<span style="flex:1;min-width:0">🪢 繩索 x=${r.x}</span><button class="ptdel">刪</button>`;
+      row.querySelector(".ptdel").onclick=async()=>{ const j=await mapAct(`/map/rope/remove?index=${i}`); if(j){ lastTerrSig=""; renderTerrain(j); } };
+      rl.appendChild(row);
+    });
+  }
+}
 $("#mapSaveBtn").onclick = async ()=>{
   const name = prompt("設置名稱（會保存目前記錄點＋放置技能＋平A）：", "");
   if(name === null || !name.trim()) return;
