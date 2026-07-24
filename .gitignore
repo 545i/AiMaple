@@ -28,3 +28,4 @@ auto.crt
 auto.key
 server/telegram.json
 layouts/
+rune_model_rnn_filtered_cannied/
