@@ -541,6 +541,44 @@ def map_point_skill(token: str = Query(""), index: int = Query(...),
     return JSONResponse(mapdata.status())
 
 
+# ===== 地形:平台(可走線段) + 繩索(層間電梯),供跨層路徑規劃 =====
+@app.post("/map/platform/add")
+def map_platform_add(token: str = Query(""), y: int = Query(...),
+                     xa: int = Query(...), xb: int = Query(...)):
+    """新增平台:A端x=xa、B端x=xb、所在層 y(前端讀黃點得出)。"""
+    _check_owner(token)
+    mid = mapdata.current_map_id()
+    if not mid:
+        raise HTTPException(status_code=400, detail="偵測不到小地圖")
+    mapdata.add_platform(mid, y, xa, xb)
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/platform/remove")
+def map_platform_remove(token: str = Query(""), index: int = Query(...)):
+    _check_owner(token)
+    mapdata.remove_platform(mapdata.current_map_id(), index)
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/rope/add")
+def map_rope_add(token: str = Query(""), x: int = Query(...)):
+    """新增繩索(只記 x=當前黃點;覆蓋哪些層由平台幾何推斷)。"""
+    _check_owner(token)
+    mid = mapdata.current_map_id()
+    if not mid:
+        raise HTTPException(status_code=400, detail="偵測不到小地圖")
+    mapdata.add_rope(mid, x)
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/rope/remove")
+def map_rope_remove(token: str = Query(""), index: int = Query(...)):
+    _check_owner(token)
+    mapdata.remove_rope(mapdata.current_map_id(), index)
+    return JSONResponse(mapdata.status())
+
+
 # ===== 自動導航(掛機用):背景執行緒走到目標座標,狀態可查 =====
 @app.post("/nav/move_to")
 def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)):

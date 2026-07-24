@@ -123,8 +123,56 @@ def set_point_skill(mid, index, skill, cd, precise=False):
 
 
 def points(mid):
-    """正規化後的巡邏點清單(給導航/巡邏用):[{x,y,skill,cd}, ...]。"""
+    """正規化後的巡邏點清單(給導航/巡邏用):[{x,y,skill,cd,precise}, ...]。"""
     return [_norm(p) for p in load(mid).get("points", [])]
+
+
+# ---- 地形:平台(可走線段 {y,xA,xB}) + 繩索(層間電梯 {x}),供跨層路徑規劃 ----
+def platforms(mid):
+    return [dict(p) for p in load(mid).get("platforms", [])]
+
+
+def ropes(mid):
+    return [dict(r) for r in load(mid).get("ropes", [])]
+
+
+def add_platform(mid, y, xa, xb):
+    """新增平台(記錄 A/B 兩端 x 與所在層 y)。回目前平台數。"""
+    with _lock:
+        d = load(mid)
+        d.setdefault("platforms", []).append(
+            {"y": int(y), "xA": int(min(xa, xb)), "xB": int(max(xa, xb))})
+        save(mid, d)
+        return len(d["platforms"])
+
+
+def remove_platform(mid, index):
+    with _lock:
+        d = load(mid)
+        pf = d.get("platforms", [])
+        if 0 <= index < len(pf):
+            pf.pop(index)
+            save(mid, d)
+        return len(d.get("platforms", []))
+
+
+def add_rope(mid, x):
+    """新增繩索(只記 x;覆蓋哪些層由平台幾何推斷)。回目前繩索數。"""
+    with _lock:
+        d = load(mid)
+        d.setdefault("ropes", []).append({"x": int(x)})
+        save(mid, d)
+        return len(d["ropes"])
+
+
+def remove_rope(mid, index):
+    with _lock:
+        d = load(mid)
+        rp = d.get("ropes", [])
+        if 0 <= index < len(rp):
+            rp.pop(index)
+            save(mid, d)
+        return len(d.get("ropes", []))
 
 
 # ---- 平A(普通攻擊)全域設定:攻擊鍵 + 施放方式(hold2s長按2秒 / tap2按兩次) ----
@@ -196,8 +244,11 @@ def save_profile(name):
     if not name:
         return False, "請輸入設置名稱"
     with _lock:
+        _d = load(mid)
         prof = {"name": name[:40], "map_id": mid,
-                "points": [_norm(p) for p in load(mid).get("points", [])],
+                "points": [_norm(p) for p in _d.get("points", [])],
+                "platforms": _d.get("platforms", []),
+                "ropes": _d.get("ropes", []),
                 "attack": get_attack()}
         os.makedirs(_PROF_DIR, exist_ok=True)
         with open(os.path.join(_PROF_DIR, _safe_name(name) + ".json"), "w", encoding="utf-8") as f:
@@ -238,6 +289,8 @@ def load_profile(name):
     with _lock:                              # 只在鎖內寫 points;set_attack 自帶鎖,避免巢狀死鎖
         d = load(mid)
         d["points"] = [_norm(p) for p in prof.get("points", [])]
+        d["platforms"] = prof.get("platforms", [])
+        d["ropes"] = prof.get("ropes", [])
         save(mid, d)
     att = prof.get("attack")
     if att:
@@ -263,6 +316,8 @@ def status():
             "name": d.get("name", ""),
             "count": len(pts),
             "points": pts,
+            "platforms": d.get("platforms", []),
+            "ropes": d.get("ropes", []),
             "attack": get_attack()}
 
 
