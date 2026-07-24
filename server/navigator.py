@@ -189,45 +189,106 @@ def _move_to_x(tx, skills=None):
             _walk_to_x(d, tx, skills)
 
 
+def _goto_sync(tx, ty, skills=None):
+    """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。"""
+    _state.update({"target": [tx, ty], "arrived": False})
+    p = _settle()
+    if p is None:
+        _state["error"] = "抓不到角色黃點"
+        return False
+    _state["pos"] = list(p)
+    dy = ty - p[1]
+    if dy < -Y_TOL:                        # 目標更高 → 繩索上
+        _state["phase"] = "rope_up"
+        _rope_up(skills)
+        p = _dot() or p
+        if p[1] > ty + Y_TOL:             # 繩索衝過頭 → 下跳修正
+            _state["phase"] = "fall_adjust"
+            _fall_to_y(ty, skills)
+    elif dy > Y_TOL:                       # 目標更低 → 下跳
+        _state["phase"] = "fall"
+        _fall_to_y(ty, skills)
+    _state["phase"] = "move_x"
+    _move_to_x(tx, skills)
+    p = _dot()
+    if p:
+        _state["pos"] = list(p)
+    arrived = bool(p and abs(p[0] - tx) <= X_TOL and abs(p[1] - ty) <= Y_TOL)
+    _state["arrived"] = arrived
+    return arrived
+
+
 def _run(tx, ty, skills):
     try:
-        _state.update({"phase": "settle", "target": [tx, ty], "arrived": False,
-                       "error": "", "steps": 0})
+        _state.update({"phase": "settle", "steps": 0, "error": ""})
         if _focus_fn:
             try:
                 _focus_fn()
             except Exception:
                 pass
-        p = _settle()
-        if p is None:
-            _state["error"] = "抓不到角色黃點"
-            return
-        _state["pos"] = list(p)
-        # 垂直對齊
-        dy = ty - p[1]
-        if dy < -Y_TOL:
-            _state["phase"] = "rope_up"
-            _rope_up(skills)
-            p = _dot() or p
-            if p[1] > ty + Y_TOL:          # 繩索衝過頭 → 下跳修正
-                _state["phase"] = "fall_adjust"
-                _fall_to_y(ty, skills)
-        elif dy > Y_TOL:
-            _state["phase"] = "fall"
-            _fall_to_y(ty, skills)
-        # 水平對齊
-        _state["phase"] = "move_x"
-        _move_to_x(tx, skills)
-        p = _dot()
-        if p:
-            _state["pos"] = list(p)
-            _state["arrived"] = abs(p[0] - tx) <= X_TOL and abs(p[1] - ty) <= Y_TOL
+        _goto_sync(tx, ty, skills)
         _state["phase"] = "done"
     except Exception as e:
         _state["error"] = f"{e!r}"
         print(f"[nav] 導航錯誤: {e!r}")
     finally:
-        # 收尾放開可能按著的鍵
+        for k in ("left", "right", "down"):
+            try:
+                _keyboard.key_up(k)
+            except Exception:
+                pass
+        _state["running"] = False
+
+
+def _cast_skill(skill_key, mode="hold2s"):
+    """到站立點施放攻擊技能。mode: hold2s(長按 2 秒) / tap2(按兩次)。"""
+    try:
+        if mode == "tap2":
+            _press(skill_key)
+            time.sleep(0.3)
+            _press(skill_key)
+        else:
+            _keyboard.key_down(skill_key)
+            time.sleep(2.0)
+            _keyboard.key_up(skill_key)
+    except Exception:
+        pass
+
+
+def _patrol_run(points, skill_key, cast_mode):
+    """巡邏循環:按 x 排序,左→右、右→左來回掃。每站立點 goto→施放技能→延遲 0.5s。"""
+    pts = sorted(points, key=lambda q: q[0])       # 由左至右排序(不依記錄順序)
+    rounds = 0
+    while not _stop.is_set():
+        for order in (pts, list(reversed(pts))):   # 左到右, 再右到左
+            for (tx, ty) in order:
+                if _stop.is_set():
+                    return
+                _state["phase"] = "goto"
+                _goto_sync(tx, ty)
+                if _stop.is_set():
+                    return
+                _state["phase"] = "cast"
+                _cast_skill(skill_key, cast_mode)
+                if _stop.wait(0.5):                # 施放後延遲再移動(可中斷)
+                    return
+        rounds += 1
+        _state["rounds"] = rounds
+
+
+def _patrol_wrap(points, skill_key, cast_mode):
+    try:
+        _state["error"] = ""
+        if _focus_fn:
+            try:
+                _focus_fn()
+            except Exception:
+                pass
+        _patrol_run(points, skill_key, cast_mode)
+    except Exception as e:
+        _state["error"] = f"{e!r}"
+        print(f"[nav] 巡邏錯誤: {e!r}")
+    finally:
         for k in ("left", "right", "down"):
             try:
                 _keyboard.key_up(k)
@@ -249,6 +310,25 @@ def move_to(tx, ty, skills=None):
                        "arrived": False, "error": ""})
         _thread = threading.Thread(target=_run, args=(int(tx), int(ty), skills or []),
                                    daemon=True)
+        _thread.start()
+        return True, "ok"
+
+
+def patrol_start(points, skill_key="a", cast_mode="hold2s"):
+    """啟動背景巡邏:按 x 左右來回掃 + 到站立點施放技能。回 (ok,msg)。"""
+    global _thread
+    with _op_lock:
+        if _state["running"]:
+            return False, "導航/巡邏進行中"
+        if _keyboard is None:
+            return False, "鍵盤未連線"
+        if not points:
+            return False, "沒有巡邏點"
+        _stop.clear()
+        _state.update({"running": True, "phase": "patrol", "mode": "patrol",
+                       "arrived": False, "error": "", "rounds": 0})
+        _thread = threading.Thread(target=_patrol_wrap,
+                                   args=(list(points), skill_key, cast_mode), daemon=True)
         _thread.start()
         return True, "ok"
 

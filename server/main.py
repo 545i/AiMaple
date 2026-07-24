@@ -504,6 +504,29 @@ def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)
     return JSONResponse(navigator.status())
 
 
+@app.post("/nav/patrol")
+def nav_patrol(token: str = Query(""), skill: str = Query("a"),
+               mode: str = Query("hold2s")):
+    """啟動自動巡邏掛機:沿當前地圖巡邏點(按 x 左右來回)走位+到點施放技能。
+    需先設定座標(has_layout);與訪客/校準/閒置互斥。mode=hold2s|tap2。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中,不可巡邏")
+    if calib.is_running() or idle_mode.is_running():
+        raise HTTPException(status_code=409, detail="校準/閒置模式進行中,請先停止")
+    mid = mapdata.current_map_id()
+    if not mapdata.has_layout(mid):
+        raise HTTPException(status_code=409,
+                            detail="此地圖尚未設定座標,請先在中控記錄巡邏點")
+    points = mapdata.load(mid).get("points", [])
+    screen.ensure_started()
+    video_pipeline.guard_focus(GUARD_EXE)
+    ok, msg = navigator.patrol_start(points, skill, mode)
+    if not ok:
+        raise HTTPException(status_code=409, detail=msg)
+    return JSONResponse(navigator.status())
+
+
 @app.get("/nav/status")
 def nav_status(token: str = Query("")):
     _check_owner(token)
