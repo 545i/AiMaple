@@ -81,16 +81,71 @@ def has_layout(mid):
     return bool(mid) and len(load(mid).get("points", [])) > 0
 
 
+def _norm(p):
+    """點格式正規化。相容舊 [x,y] → {x,y,skill:'',cd:0};新 dict 補齊欄位。"""
+    if isinstance(p, dict):
+        return {"x": int(p["x"]), "y": int(p["y"]),
+                "skill": str(p.get("skill", "") or ""), "cd": float(p.get("cd", 0) or 0)}
+    return {"x": int(p[0]), "y": int(p[1]), "skill": "", "cd": 0.0}
+
+
 def add_point(mid, x, y, tol=3):
     """記錄一個巡邏點(容差去重)。回 (是否新增, 目前點數)。"""
     with _lock:
         d = load(mid)
-        for px, py in d["points"]:
-            if abs(px - x) <= tol and abs(py - y) <= tol:
+        for p in d["points"]:
+            pp = _norm(p)
+            if abs(pp["x"] - x) <= tol and abs(pp["y"] - y) <= tol:
                 return False, len(d["points"])
-        d["points"].append([int(x), int(y)])
+        d["points"].append({"x": int(x), "y": int(y), "skill": "", "cd": 0.0})
         save(mid, d)
         return True, len(d["points"])
+
+
+def set_point_skill(mid, index, skill, cd):
+    """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(僅到點施放、冷卻中略過)。
+    空鍵=取消該點放置技能。回目前點數。"""
+    with _lock:
+        d = load(mid)
+        if 0 <= index < len(d["points"]):
+            p = _norm(d["points"][index])
+            p["skill"] = str(skill or "").strip().lower()[:12]
+            try:
+                p["cd"] = max(0.0, float(cd or 0))
+            except Exception:
+                p["cd"] = 0.0
+            d["points"][index] = p
+            save(mid, d)
+        return len(d["points"])
+
+
+def points(mid):
+    """正規化後的巡邏點清單(給導航/巡邏用):[{x,y,skill,cd}, ...]。"""
+    return [_norm(p) for p in load(mid).get("points", [])]
+
+
+# ---- 平A(普通攻擊)全域設定:攻擊鍵 + 施放方式(hold2s長按2秒 / tap2按兩次) ----
+_ATTACK_PATH = os.path.join(_DIR, "_attack.json")
+
+
+def get_attack():
+    try:
+        with open(_ATTACK_PATH, encoding="utf-8") as f:
+            a = json.load(f)
+        return {"key": str(a.get("key", "a") or "a"),
+                "mode": "tap2" if a.get("mode") == "tap2" else "hold2s"}
+    except Exception:
+        return {"key": "a", "mode": "hold2s"}
+
+
+def set_attack(key, mode):
+    with _lock:
+        a = {"key": (str(key or "a").strip().lower()[:12] or "a"),
+             "mode": "tap2" if mode == "tap2" else "hold2s"}
+        os.makedirs(_DIR, exist_ok=True)
+        with open(_ATTACK_PATH, "w", encoding="utf-8") as f:
+            json.dump(a, f, ensure_ascii=False)
+        return a
 
 
 def remove_last(mid):
@@ -122,11 +177,13 @@ def status():
     """當前地圖狀態(供中控顯示)。map_id 為 None 表示偵測不到小地圖。"""
     mid = current_map_id()
     d = load(mid) if mid else {"name": "", "points": []}
+    pts = [_norm(p) for p in d.get("points", [])]
     return {"map_id": mid,
             "has_layout": has_layout(mid),
             "name": d.get("name", ""),
-            "count": len(d.get("points", [])),
-            "points": d.get("points", [])}
+            "count": len(pts),
+            "points": pts,
+            "attack": get_attack()}
 
 
 def list_maps():

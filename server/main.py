@@ -488,6 +488,26 @@ def map_name(token: str = Query(""), name: str = Query("")):
     return JSONResponse(mapdata.status())
 
 
+@app.post("/map/attack")
+def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query("hold2s")):
+    """設定平A(普通攻擊)鍵與施放方式:mode=hold2s(長按2秒) / tap2(按兩次)。全域共用。"""
+    _check_owner(token)
+    mapdata.set_attack(key, mode)
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/point_skill")
+def map_point_skill(token: str = Query(""), index: int = Query(...),
+                    skill: str = Query(""), cd: float = Query(0.0)):
+    """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(空鍵=取消)。僅到點施放、冷卻中略過。"""
+    _check_owner(token)
+    mid = mapdata.current_map_id()
+    if not mid:
+        raise HTTPException(status_code=400, detail="偵測不到小地圖")
+    mapdata.set_point_skill(mid, index, skill, cd)
+    return JSONResponse(mapdata.status())
+
+
 # ===== 自動導航(掛機用):背景執行緒走到目標座標,狀態可查 =====
 @app.post("/nav/move_to")
 def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)):
@@ -505,10 +525,10 @@ def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)
 
 
 @app.post("/nav/patrol")
-def nav_patrol(token: str = Query(""), skill: str = Query("a"),
-               mode: str = Query("hold2s")):
-    """啟動自動巡邏掛機:沿當前地圖巡邏點(按 x 左右來回)走位+到點施放技能。
-    需先設定座標(has_layout);與訪客/校準/閒置互斥。mode=hold2s|tap2。"""
+def nav_patrol(token: str = Query("")):
+    """啟動自動巡邏掛機:巡邏點【隨機不連號】走位 + 到點平A + 放置技能(含冷卻)。
+    平A鍵/施放方式取自中控『平A設定』;放置技能取自各點設定。
+    需先設定座標(has_layout);與訪客/校準/閒置互斥。"""
     _check_owner(token)
     if remote_access.info()["active"]:
         raise HTTPException(status_code=409, detail="訪客(出租)進行中,不可巡邏")
@@ -518,10 +538,11 @@ def nav_patrol(token: str = Query(""), skill: str = Query("a"),
     if not mapdata.has_layout(mid):
         raise HTTPException(status_code=409,
                             detail="此地圖尚未設定座標,請先在中控記錄巡邏點")
-    points = mapdata.load(mid).get("points", [])
+    points = mapdata.points(mid)
+    att = mapdata.get_attack()
     screen.ensure_started()
     video_pipeline.guard_focus(GUARD_EXE)
-    ok, msg = navigator.patrol_start(points, skill, mode)
+    ok, msg = navigator.patrol_start(points, att["key"], att["mode"])
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return JSONResponse(navigator.status())

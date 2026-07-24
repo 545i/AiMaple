@@ -11,6 +11,7 @@
 向量參數來自校準(docs/jump-vectors.md):二段跳水平 ~30px、繩索上第4層、
 下跳閉環。所有按鍵用 press(按住 60ms)避免 tap 漏讀。
 """
+import random
 import threading
 import time
 
@@ -255,28 +256,42 @@ def _cast_skill(skill_key, mode="hold2s"):
         pass
 
 
-def _patrol_run(points, skill_key, cast_mode):
-    """巡邏循環:按 x 排序,左→右、右→左來回掃。每站立點 goto→施放技能→延遲 0.5s。"""
-    pts = sorted(points, key=lambda q: q[0])       # 由左至右排序(不依記錄順序)
-    rounds = 0
+def _patrol_run(points, attack_key, cast_mode):
+    """巡邏循環:巡邏點【順序完全隨機、但不連號】(不會連續造訪同一點,如 111)——
+    例 1231 / 13231 / 1321231。每到一點:
+      ① 平A攻擊(attack_key,長按2秒/按兩次)
+      ② 若該點有設『放置技能』且冷卻已過 → 放一次(僅到點放、冷卻中略過)。"""
+    pts = list(points)
+    place_last = {}                        # (x,y) → 上次放置技能的 monotonic
+    visits = 0
+    prev = None
     while not _stop.is_set():
-        for order in (pts, list(reversed(pts))):   # 左到右, 再右到左
-            for (tx, ty) in order:
-                if _stop.is_set():
-                    return
-                _state["phase"] = "goto"
-                _goto_sync(tx, ty)
-                if _stop.is_set():
-                    return
-                _state["phase"] = "cast"
-                _cast_skill(skill_key, cast_mode)
-                if _stop.wait(0.5):                # 施放後延遲再移動(可中斷)
-                    return
-        rounds += 1
-        _state["rounds"] = rounds
+        if len(pts) > 1:                   # 隨機挑下一點,排除上一點 → 不連號
+            pt = random.choice([p for p in pts if p is not prev])
+        else:
+            pt = pts[0]
+        prev = pt
+        tx, ty = pt["x"], pt["y"]
+        _state["phase"] = "goto"
+        _goto_sync(tx, ty)
+        if _stop.is_set():
+            return
+        _state["phase"] = "cast"
+        _cast_skill(attack_key, cast_mode)                 # 平A攻擊
+        sk, cd = pt.get("skill"), float(pt.get("cd", 0) or 0)
+        if sk:                                              # 放置技能:僅到點、冷卻已過才放
+            now = time.monotonic()
+            if now - place_last.get((tx, ty), -1e9) >= cd:
+                _state["phase"] = "place"
+                _press(sk, hold=0.1)
+                place_last[(tx, ty)] = now
+        visits += 1
+        _state["rounds"] = visits          # 語意=已造訪點數(隨機無「圈」概念)
+        if _stop.wait(0.5):                # 施放後延遲再移動(可中斷)
+            return
 
 
-def _patrol_wrap(points, skill_key, cast_mode):
+def _patrol_wrap(points, attack_key, cast_mode):
     try:
         _state["error"] = ""
         if _focus_fn:
@@ -284,7 +299,7 @@ def _patrol_wrap(points, skill_key, cast_mode):
                 _focus_fn()
             except Exception:
                 pass
-        _patrol_run(points, skill_key, cast_mode)
+        _patrol_run(points, attack_key, cast_mode)
     except Exception as e:
         _state["error"] = f"{e!r}"
         print(f"[nav] 巡邏錯誤: {e!r}")
@@ -314,8 +329,8 @@ def move_to(tx, ty, skills=None):
         return True, "ok"
 
 
-def patrol_start(points, skill_key="a", cast_mode="hold2s"):
-    """啟動背景巡邏:按 x 左右來回掃 + 到站立點施放技能。回 (ok,msg)。"""
+def patrol_start(points, attack_key="a", cast_mode="hold2s"):
+    """啟動背景巡邏:隨機不連號造訪各點 + 到點平A、放置技能(含冷卻)。回 (ok,msg)。"""
     global _thread
     with _op_lock:
         if _state["running"]:
@@ -328,7 +343,7 @@ def patrol_start(points, skill_key="a", cast_mode="hold2s"):
         _state.update({"running": True, "phase": "patrol", "mode": "patrol",
                        "arrived": False, "error": "", "rounds": 0})
         _thread = threading.Thread(target=_patrol_wrap,
-                                   args=(list(points), skill_key, cast_mode), daemon=True)
+                                   args=(list(points), attack_key, cast_mode), daemon=True)
         _thread.start()
         return True, "ok"
 
