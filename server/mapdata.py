@@ -176,6 +176,83 @@ def set_name(mid, name):
         save(mid, d)
 
 
+# ---- 具名設置(profile):保存/讀取一整套「記錄點(含放置技能/精確)+平A」 ----
+_PROF_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                          "..", "profiles"))
+
+
+def _safe_name(name):
+    """設置名 → 安全檔名(濾掉路徑非法字元;中文/英數/空白/-_()保留)。"""
+    s = "".join(c for c in str(name) if c.isalnum() or c in "-_ （）()").strip()
+    return s[:40] or "default"
+
+
+def save_profile(name):
+    """把當前地圖的巡邏點(含放置技能/精確)+平A設定,存成具名設置。回 (ok, 名稱/訊息)。"""
+    mid = current_map_id()
+    if not mid:
+        return False, "偵測不到小地圖,無法保存"
+    name = str(name or "").strip()
+    if not name:
+        return False, "請輸入設置名稱"
+    with _lock:
+        prof = {"name": name[:40], "map_id": mid,
+                "points": [_norm(p) for p in load(mid).get("points", [])],
+                "attack": get_attack()}
+        os.makedirs(_PROF_DIR, exist_ok=True)
+        with open(os.path.join(_PROF_DIR, _safe_name(name) + ".json"), "w", encoding="utf-8") as f:
+            json.dump(prof, f, ensure_ascii=False, indent=1)
+    return True, name[:40]
+
+
+def list_profiles():
+    """列出所有保存的設置:[{name, map_id, count, skills}]。"""
+    out = []
+    try:
+        for fn in sorted(os.listdir(_PROF_DIR)):
+            if not fn.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(_PROF_DIR, fn), encoding="utf-8") as f:
+                    d = json.load(f)
+                pts = [_norm(p) for p in d.get("points", [])]
+                out.append({"name": d.get("name", fn[:-5]), "map_id": d.get("map_id", ""),
+                            "count": len(pts), "skills": sum(1 for p in pts if p.get("skill"))})
+            except Exception:
+                pass
+    except FileNotFoundError:
+        pass
+    return out
+
+
+def load_profile(name):
+    """讀取具名設置 → 寫入當前地圖的巡邏點(含放置技能),並套用平A。回 (ok, 名稱/訊息)。"""
+    mid = current_map_id()
+    if not mid:
+        return False, "偵測不到小地圖,無法載入"
+    path = os.path.join(_PROF_DIR, _safe_name(name) + ".json")
+    if not os.path.exists(path):
+        return False, "找不到該設置"
+    with open(path, encoding="utf-8") as f:
+        prof = json.load(f)
+    with _lock:                              # 只在鎖內寫 points;set_attack 自帶鎖,避免巢狀死鎖
+        d = load(mid)
+        d["points"] = [_norm(p) for p in prof.get("points", [])]
+        save(mid, d)
+    att = prof.get("attack")
+    if att:
+        set_attack(att.get("key", "a"), att.get("mode", "hold2s"))
+    return True, prof.get("name", name)
+
+
+def delete_profile(name):
+    try:
+        os.remove(os.path.join(_PROF_DIR, _safe_name(name) + ".json"))
+        return True
+    except OSError:
+        return False
+
+
 def status():
     """當前地圖狀態(供中控顯示)。map_id 為 None 表示偵測不到小地圖。"""
     mid = current_map_id()

@@ -385,9 +385,11 @@
      <div class="mbtn" id="mapUndoBtn">↩ 刪除上一點</div>
    </div>
    <div class="mgrid2">
-     <div class="mbtn" id="mapNameBtn">✏ 命名（可選）</div>
-     <div class="mbtn" id="mapClearBtn">🗑 清空座標</div>
+     <div class="mbtn" id="mapSaveBtn">💾 保存設置</div>
+     <div class="mbtn" id="mapLoadBtn">📂 讀取設置</div>
    </div>
+   <div class="mbtn" id="mapClearBtn" style="margin-top:6px">🗑 清空座標</div>
+   <div id="profList" style="display:none;flex-direction:column;gap:5px;margin-top:6px"></div>
    <div id="mapMsg" style="font-size:12px;color:#8a8f99;margin-top:4px">
      移動角色到巡邏點 → 按「記錄目前位置」。至少 1 點才能開掛機（自動識別地圖，免命名）。</div>
 
@@ -989,10 +991,52 @@ $("#mapClearBtn").onclick = async ()=>{
   if(!confirm("清空此地圖所有巡邏座標？")) return;
   const j = await mapAct("/map/clear"); if(j) $("#mapMsg").textContent="已清空此地圖座標";
 };
-$("#mapNameBtn").onclick = async ()=>{
-  const name = prompt("為此地圖命名（可選，方便辨識）：", "");
-  if(name === null) return;
-  const j = await mapAct(`/map/name?name=${encodeURIComponent(name)}`); if(j) $("#mapMsg").textContent="已命名";
+$("#mapSaveBtn").onclick = async ()=>{
+  const name = prompt("設置名稱（會保存目前記錄點＋放置技能＋平A）：", "");
+  if(name === null || !name.trim()) return;
+  try{
+    const r = await fetch(`/map/profile/save?name=${encodeURIComponent(name.trim())}&token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    $("#mapMsg").textContent = r.ok ? `已保存設置「${j.name}」（記錄點＋放置技能）` : ("⚠ " + (j.detail || "保存失敗"));
+  }catch(_){ $("#mapMsg").textContent = "保存失敗（連線？）"; }
+};
+function renderProfList(profs){
+  const box = $("#profList"); box.style.display = "flex";
+  if(!profs.length){ box.innerHTML = '<div style="font-size:12px;color:#8a8f99;padding:4px">尚無保存的設置</div>'; return; }
+  box.innerHTML = "";
+  profs.forEach(p=>{
+    const row = document.createElement("div"); row.className = "ptrow";
+    row.innerHTML =
+      `<span style="flex:1;min-width:0">${p.name}　<span style="color:#8a8f99;font-size:12px">${p.count}點/${p.skills}放置 · ${p.map_id||"?"}</span></span>`+
+      `<button class="ptsave">載入</button>`+
+      `<button class="ptdel">刪</button>`;
+    row.querySelector(".ptsave").onclick = async ()=>{
+      if(!confirm(`載入設置「${p.name}」？會覆蓋目前地圖的記錄點與放置技能。`)) return;
+      try{
+        const r = await fetch(`/map/profile/load?name=${encodeURIComponent(p.name)}&token=${encodeURIComponent(token)}`, { method:"POST" });
+        const j = await r.json().catch(()=>({}));
+        if(r.ok){ $("#mapMsg").textContent = `已載入設置「${j.loaded}」`; renderMapStat(j); renderPoints(j); atkFilled=false; fillAttack(j); box.style.display="none"; }
+        else $("#mapMsg").textContent = "⚠ " + (j.detail || "載入失敗");
+      }catch(_){ $("#mapMsg").textContent = "載入失敗（連線？）"; }
+    };
+    row.querySelector(".ptdel").onclick = async ()=>{
+      if(!confirm(`刪除設置「${p.name}」？`)) return;
+      try{
+        const r = await fetch(`/map/profile/delete?name=${encodeURIComponent(p.name)}&token=${encodeURIComponent(token)}`, { method:"POST" });
+        const j = await r.json().catch(()=>({}));
+        renderProfList(j.profiles || []);
+      }catch(_){}
+    };
+    box.appendChild(row);
+  });
+}
+$("#mapLoadBtn").onclick = async ()=>{
+  const box = $("#profList");
+  if(box.style.display === "flex"){ box.style.display = "none"; return; }
+  try{
+    const j = await (await fetch(`/map/profile/list?token=${encodeURIComponent(token)}`)).json();
+    renderProfList(j.profiles || []);
+  }catch(_){ $("#mapMsg").textContent = "讀取清單失敗"; }
 };
 
 // ---- 平A設定 + 各記錄點放置技能 + 巡邏開關（按鍵一律用虛擬鍵盤點選） ----

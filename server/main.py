@@ -486,6 +486,40 @@ def map_name(token: str = Query(""), name: str = Query("")):
     return JSONResponse(mapdata.status())
 
 
+# ===== 具名設置(profile):保存/讀取整套「記錄點+放置技能+平A」 =====
+@app.post("/map/profile/save")
+def map_profile_save(token: str = Query(""), name: str = Query("")):
+    """把當前地圖的記錄點(含放置技能/精確)+平A,存成具名設置。"""
+    _check_owner(token)
+    ok, msg = mapdata.save_profile(name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return JSONResponse({"ok": True, "name": msg, "profiles": mapdata.list_profiles()})
+
+
+@app.get("/map/profile/list")
+def map_profile_list(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse({"profiles": mapdata.list_profiles()})
+
+
+@app.post("/map/profile/load")
+def map_profile_load(token: str = Query(""), name: str = Query("")):
+    """載入具名設置 → 覆蓋當前地圖的記錄點(含放置技能),並套用平A。"""
+    _check_owner(token)
+    ok, msg = mapdata.load_profile(name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return JSONResponse({"ok": True, "loaded": msg, **mapdata.status()})
+
+
+@app.post("/map/profile/delete")
+def map_profile_delete(token: str = Query(""), name: str = Query("")):
+    _check_owner(token)
+    mapdata.delete_profile(name)
+    return JSONResponse({"profiles": mapdata.list_profiles()})
+
+
 @app.post("/map/attack")
 def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query("hold2s")):
     """設定平A(普通攻擊)鍵與施放方式:mode=hold2s(長按2秒) / tap2(按兩次)。全域共用。"""
