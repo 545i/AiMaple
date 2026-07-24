@@ -154,6 +154,11 @@
   .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
                 border-radius:10px; background:#1d1e26; color:#b8bcc6; font-size:14px; }
   /* 遠端頁右上「≡ 儀表板」返回鈕(放漢堡左側,不擋左上狀態列) */
+  /* 小地圖預覽上的巡邏點圓圈(仿 auto-maple draw_location 容差圈) */
+  .patrol-dot { position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
+                border:2px solid #33ffdd; border-radius:50%; background:rgba(51,255,221,.22);
+                display:flex; align-items:center; justify-content:center; font-size:9px;
+                font-weight:700; color:#fff; text-shadow:0 0 2px #000; box-shadow:0 0 4px #000; }
   #toDashTop { position:fixed; top:8px; right:64px; z-index:60; display:none;
                align-items:center; justify-content:center; height:40px; padding:0 14px;
                font-size:14px; color:#fff; background:rgba(40,40,50,.72);
@@ -316,8 +321,11 @@
      顯示偵測到的小地圖放大圖，洋紅十字＝角色。僅擷取 maplestory.exe 視窗。</div>
    <div class="mbtn" id="mmBtn">🗺 小地圖偵測預覽：關</div>
    <div id="mmBox" style="display:none;margin-top:8px">
-     <img id="mmImg" alt="小地圖偵測"
-          style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+     <div style="position:relative">
+       <img id="mmImg" alt="小地圖偵測"
+            style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+       <div id="mmOverlay" style="position:absolute;inset:0;pointer-events:none"></div>
+     </div>
      <div id="mmInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
      <div class="mbtn" id="mmRedetectBtn" style="margin-top:6px">🔄 重新偵測（換地圖後按）</div>
    </div>
@@ -820,6 +828,22 @@ async function mmTick(){
         + (s.purple && s.purple.length ? `　🟣 紫標 ×${s.purple.length}！` : "");
     } else {
       $("#mmInfo").textContent = s.error ? `❌ ${s.error}` : "🔎 尚未偵測到小地圖（小地圖有展開嗎？）";
+    }
+    // 疊加巡邏點圓圈:巡邏點座標(x,y)在小地圖系[0~w,0~h],crop 圖顯示整個小地圖,
+    // 故位置=(x/w, y/h)百分比。同步刷新中控地圖座標狀態。
+    const ov = $("#mmOverlay"); if(ov){
+      ov.innerHTML = "";
+      if(s.found && s.w && s.h){
+        try{
+          const mm = await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json();
+          renderMapStat(mm);
+          (mm.points||[]).forEach((p,i)=>{
+            const d=document.createElement("div"); d.className="patrol-dot";
+            d.style.left=(p[0]/s.w*100)+"%"; d.style.top=(p[1]/s.h*100)+"%";
+            d.textContent=i+1; ov.appendChild(d);
+          });
+        }catch(_){}
+      }
     }
   }catch(_){ $("#mmInfo").textContent = "連線失敗"; }
 }
