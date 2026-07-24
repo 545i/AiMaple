@@ -88,3 +88,47 @@ def shortest_path(edges, start, goal):
         cur = u
     path.reverse()
     return path
+
+
+def build_from_platforms(points, platforms, ropes, y_tol=4, margin=1):
+    """用【平台(可走線段)+繩索(x)】幾何建圖,免探測點對可走性:
+      * 平台 = {"y":層, "xA":左端, "xB":右端};繩索 = {"x":位置}。
+      * 節點 = 記錄點 + 繩索在【每個穿過的平台】的進出點(繩索 x 落在 [xA,xB] 內)。
+      * 邊:①同一平台內任兩節點 walk ②繩索連相鄰上下平台的進出點 rope(上)/fall(下)。
+    繩索覆蓋哪些層完全由幾何推得(繩索 x 落在哪些平台區間),不需探測。回 (nodes, edges)。"""
+    def plat_of(x, y):
+        for i, pf in enumerate(platforms):
+            if abs(pf["y"] - y) <= y_tol and pf["xA"] - margin <= x <= pf["xB"] + margin:
+                return i
+        return None
+
+    nodes = [(int(x), int(y)) for x, y in points]
+    node_plat = {n: plat_of(n[0], n[1]) for n in nodes}
+    rope_pts = {}                                   # rope_idx -> [(node, y), ...] 依 y
+    for ri, r in enumerate(ropes):
+        rx = int(r["x"]); pts = []
+        for pf in platforms:
+            if pf["xA"] - margin <= rx <= pf["xB"] + margin:
+                n = (rx, int(pf["y"]))
+                if n not in nodes:
+                    nodes.append(n)
+                node_plat[n] = platforms.index(pf)
+                pts.append((n, int(pf["y"])))
+        rope_pts[ri] = sorted(pts, key=lambda t: t[1])   # y 小(高層)在前
+    edges = {n: [] for n in nodes}
+    # ① 同平台互走
+    for a in nodes:
+        pa = node_plat.get(a)
+        if pa is None:
+            continue
+        for b in nodes:
+            if a != b and node_plat.get(b) == pa:
+                edges[a].append((b, abs(a[0] - b[0]) + 1, "walk"))
+    # ② 繩索相鄰層上下
+    for pts in rope_pts.values():
+        for i in range(len(pts) - 1):
+            up, dn = pts[i][0], pts[i + 1][0]           # up 高(y小), dn 低(y大)
+            dy = abs(dn[1] - up[1]) + 1
+            edges[dn].append((up, dy, "rope"))          # 下→上:上繩
+            edges[up].append((dn, dy, "fall"))          # 上→下:下跳
+    return nodes, edges
