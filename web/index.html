@@ -171,7 +171,8 @@
                   font-weight:800; display:flex; align-items:center; justify-content:center; font-size:11px; }
   .ptrow .ptxy { flex:0 0 58px; color:#8a8f99; font-size:12px; }
   .ptrow .ptskill { flex:1 1 auto; min-width:0; padding:6px; border-radius:6px;
-                    border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
+                    border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px;
+                    cursor:pointer; text-align:left; }
   .ptrow .ptcd { flex:0 0 56px; padding:6px; border-radius:6px;
                  border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
   .ptrow .ptsave { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
@@ -214,6 +215,7 @@
   <!-- 模擬鍵盤 -->
   <div id="picker">
     <h3 id="pickerTitle">選擇要綁定的按鍵</h3>
+    <button id="pickerClear" style="display:none;margin-bottom:10px;padding:8px 16px;border:1px solid #c0392b;border-radius:8px;background:#2a1416;color:#ff9a8a;font-size:14px">✕ 不設放置技能（只平A）</button>
     <div id="kbd"></div>
     <button class="modal-close" id="pickerClose">取消</button>
   </div>
@@ -364,7 +366,7 @@
 
    <div class="msec" style="margin-top:14px">平A（普通攻擊）設定</div>
    <div class="mgrid2">
-     <input id="atkKey" class="mfield" maxlength="12" placeholder="攻擊鍵（預設 a）" value="a">
+     <div class="mbtn" id="atkKeyBtn">攻擊鍵：A（點我選）</div>
      <select id="atkMode" class="mfield">
        <option value="hold2s">長按 2 秒</option>
        <option value="tap2">按兩次</option>
@@ -393,7 +395,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
-let ws=null, token="", editMode=false, watching=true, editingBtn=null;
+let ws=null, token="", editMode=false, watching=true, editingBtn=null, pickerOnPick=null;
 let guest=false, expired=false;   // 訪客(短密碼)模式：由伺服器 WS "mode" 訊息判定
 const IS_TOUCH = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
 
@@ -955,41 +957,51 @@ $("#mapNameBtn").onclick = async ()=>{
   const j = await mapAct(`/map/name?name=${encodeURIComponent(name)}`); if(j) $("#mapMsg").textContent="已命名";
 };
 
-// ---- 平A設定 + 各記錄點放置技能 + 巡邏開關 ----
-let lastPtCount = -1, atkFilled = false;
-function fillAttack(s){                          // 平A欄位只填一次(避免每秒覆蓋使用者輸入)
+// ---- 平A設定 + 各記錄點放置技能 + 巡邏開關（按鍵一律用虛擬鍵盤點選） ----
+let lastPtCount = -1, atkFilled = false, atkKeyVal = "a";
+function fillAttack(s){                          // 平A只填一次(避免每秒覆蓋)
   if(atkFilled || !s || !s.attack) return;
-  $("#atkKey").value = s.attack.key || "a";
+  atkKeyVal = s.attack.key || "a";
+  $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(atkKeyVal)}（點我選）`;
   $("#atkMode").value = s.attack.mode || "hold2s";
   atkFilled = true;
 }
-function renderPoints(s){                         // 僅在點數變化時重建(不打斷編輯中的輸入)
+$("#atkKeyBtn").onclick = ()=> openKeyPicker("選平A攻擊鍵 → 點鍵盤上的按鍵", tok=>{
+  atkKeyVal = tok;
+  $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(tok)}（點我選）`;
+});
+function renderPoints(s){                         // 僅在點數變化時重建(不打斷編輯)
   const box = $("#ptList"); if(!box) return;
   const pts = (s && s.points) || [];
   if(!pts.length){ box.innerHTML = '<div style="font-size:12px;color:#8a8f99">尚無巡邏點（先記錄位置）</div>'; return; }
   box.innerHTML = "";
   pts.forEach((p,i)=>{
     const row = document.createElement("div"); row.className = "ptrow";
+    row.dataset.skill = p.skill || "";
     row.innerHTML =
       `<span class="ptidx">${i+1}</span>`+
       `<span class="ptxy">(${p.x},${p.y})</span>`+
-      `<input class="ptskill" maxlength="12" placeholder="放置技能鍵" value="${p.skill||''}">`+
+      `<button class="ptskill"></button>`+
       `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s" value="${p.cd||''}">`+
       `<button class="ptsave">存</button>`;
+    const skBtn = row.querySelector(".ptskill");
+    const paint = ()=>{ const v=row.dataset.skill; skBtn.textContent = v?`技能 ${labelFor(v)}`:"＋設放置技能"; skBtn.style.opacity = v?"1":"0.6"; };
+    paint();
+    skBtn.onclick = ()=> openKeyPicker(`第 ${i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ row.dataset.skill=tok; paint(); }, true);
     row.querySelector(".ptsave").onclick = async ()=>{
-      const sk = row.querySelector(".ptskill").value.trim();
+      const sk = row.dataset.skill || "";
       const cd = row.querySelector(".ptcd").value || 0;
       const j = await mapAct(`/map/point_skill?index=${i}&skill=${encodeURIComponent(sk)}&cd=${encodeURIComponent(cd)}`);
-      if(j){ $("#mapMsg").textContent = sk ? `第 ${i+1} 點：放置技能 ${sk}${cd?(' / 冷卻 '+cd+'s'):''}` : `第 ${i+1} 點：已清除放置技能`; lastPtCount = -1; }
+      if(j){ $("#mapMsg").textContent = sk ? `第 ${i+1} 點：放置技能 ${labelFor(sk)}${cd?(' / 冷卻 '+cd+'s'):''}` : `第 ${i+1} 點：已清除放置技能`; lastPtCount = -1; }
     };
     box.appendChild(row);
   });
 }
 $("#atkSaveBtn").onclick = async ()=>{
-  const key = ($("#atkKey").value || "a").trim() || "a";
+  const key = atkKeyVal || "a";
   const mode = $("#atkMode").value || "hold2s";
   const j = await mapAct(`/map/attack?key=${encodeURIComponent(key)}&mode=${encodeURIComponent(mode)}`);
-  if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${key}」、${mode==="tap2"?"按兩次":"長按2秒"}`;
+  if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mode==="tap2"?"按兩次":"長按2秒"}`;
 };
 $("#patrolStartBtn").onclick = async ()=>{
   try{
@@ -1035,13 +1047,24 @@ const KBD_ROWS = [
 (function(){ const kbd=$("#kbd");
   KBD_ROWS.forEach(row => { const r=document.createElement("div"); r.className="row";
     row.forEach(tok => { const k=document.createElement("div"); k.className="k"; k.textContent=labelFor(tok);
-      k.onclick=()=>{ if(editingBtn){ editingBtn.key=tok; saveButtons(); renderButtons(); } closePicker(); };
+      k.onclick=()=>{
+        if(pickerOnPick){ const cb=pickerOnPick; closePicker(); cb(tok); return; }   // 通用選鍵(平A/放置技能)
+        if(editingBtn){ editingBtn.key=tok; saveButtons(); renderButtons(); } closePicker();
+      };
       r.appendChild(k); });
     kbd.appendChild(r); });
 })();
-function openPicker(b){ editingBtn=b; $("#pickerTitle").textContent=`設定「${labelFor(b.key)}」→ 點新按鍵`; $("#picker").classList.add("on"); }
-function closePicker(){ editingBtn=null; $("#picker").classList.remove("on"); }
+function openPicker(b){ editingBtn=b; pickerOnPick=null; $("#pickerClear").style.display="none";
+  $("#pickerTitle").textContent=`設定「${labelFor(b.key)}」→ 點新按鍵`; $("#picker").classList.add("on"); }
+function openKeyPicker(title, cb, clearable){   // 平A/放置技能設定用:點虛擬鍵盤選鍵
+  editingBtn=null; pickerOnPick=cb;
+  $("#pickerTitle").textContent=title;
+  $("#pickerClear").style.display = clearable ? "block" : "none";
+  $("#picker").classList.add("on");
+}
+function closePicker(){ editingBtn=null; pickerOnPick=null; $("#pickerClear").style.display="none"; $("#picker").classList.remove("on"); }
 $("#pickerClose").onclick = closePicker;
+$("#pickerClear").onclick = ()=>{ if(pickerOnPick){ const cb=pickerOnPick; closePicker(); cb(""); } };
 
 // ===== 觸控板滑鼠（Steam Link 觸控板模式） =====
 let accX=0, accY=0;
