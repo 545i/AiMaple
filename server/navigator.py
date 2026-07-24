@@ -24,6 +24,7 @@ _stop = threading.Event()
 _op_lock = threading.Lock()
 _state = {"running": False, "phase": "idle", "target": None,
           "pos": None, "arrived": False, "error": "", "steps": 0}
+_place = {}   # (x,y) → {"skill","cd","last"(monotonic|None)};放置技能冷卻狀態,供監控下次觸發
 
 # ---- 向量/容差參數 ----
 JUMP_DX = 30          # 二段跳一次水平飛距(px)
@@ -50,7 +51,16 @@ def is_running():
 
 
 def status():
-    return dict(_state)
+    s = dict(_state)
+    now = time.monotonic()
+    pl = []
+    for (x, y), v in _place.items():
+        last = v.get("last")
+        rem = 0.0 if last is None else max(0.0, v["cd"] - (now - last))
+        pl.append({"x": x, "y": y, "skill": v["skill"], "cd": v["cd"],
+                   "remaining": round(rem, 1), "ready": rem <= 0.05})
+    s["placements"] = pl
+    return s
 
 
 # ---------- 底層動作 ----------
@@ -88,6 +98,15 @@ def _press(k, hold=KEY_HOLD):
     _keyboard.key_down(k)
     time.sleep(hold)
     _keyboard.key_up(k)
+
+
+def _release_move_keys():
+    """放開所有移動鍵,確保平A/放置技能施放時角色靜止、只按該技能鍵。"""
+    for k in ("left", "right", "up", "down"):
+        try:
+            _keyboard.key_up(k)
+        except Exception:
+            pass
 
 
 def _same_skills(skills):
@@ -262,7 +281,11 @@ def _patrol_run(points, attack_key, cast_mode):
       ① 平A攻擊(attack_key,長按2秒/按兩次)
       ② 若該點有設『放置技能』且冷卻已過 → 放一次(僅到點放、冷卻中略過)。"""
     pts = list(points)
-    place_last = {}                        # (x,y) → 上次放置技能的 monotonic
+    _place.clear()
+    for p in pts:                          # 預先登記有放置技能的點(初始就緒),供監控下次觸發
+        if p.get("skill"):
+            _place[(p["x"], p["y"])] = {"skill": p["skill"],
+                                        "cd": float(p.get("cd", 0) or 0), "last": None}
     visits = 0
     prev = None
     while not _stop.is_set():
@@ -276,15 +299,21 @@ def _patrol_run(points, attack_key, cast_mode):
         _goto_sync(tx, ty)
         if _stop.is_set():
             return
+        _release_move_keys()               # 到點靜止:先放開移動鍵,平A/放置技能時皆不移動
+        # ① 先平A:先攻擊可確保角色已落地站穩(避免還在下落時放置技能)
         _state["phase"] = "cast"
-        _cast_skill(attack_key, cast_mode)                 # 平A攻擊
-        sk, cd = pt.get("skill"), float(pt.get("cd", 0) or 0)
-        if sk:                                              # 放置技能:僅到點、冷卻已過才放
+        _cast_skill(attack_key, cast_mode)
+        # ② 再檢查放置技能:冷卻已過則放置(僅到點、只按該鍵、絕不移動)
+        sk = pt.get("skill")
+        if sk:
+            rec = _place.get((tx, ty))
             now = time.monotonic()
-            if now - place_last.get((tx, ty), -1e9) >= cd:
+            if rec and (rec["last"] is None or now - rec["last"] >= rec["cd"]):
                 _state["phase"] = "place"
+                _release_move_keys()
                 _press(sk, hold=0.1)
-                place_last[(tx, ty)] = now
+                rec["last"] = time.monotonic()
+        # ③ 才離開(下方施放後延遲 0.5s,可中斷)
         visits += 1
         _state["rounds"] = visits          # 語意=已造訪點數(隨機無「圈」概念)
         if _stop.wait(0.5):                # 施放後延遲再移動(可中斷)

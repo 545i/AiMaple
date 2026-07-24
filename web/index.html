@@ -149,6 +149,14 @@
   .dash-card { max-width:540px; width:100%; margin:0 auto; }
   .dash-h  { font-size:22px; font-weight:700; }
   .dash-sub{ font-size:13px; color:#8a8f99; margin:4px 0 16px; }
+  /* 儀表板分頁：出租 / 閒置 / 自動巡邏 / 遠端 */
+  .dtabs { display:flex; gap:5px; margin:14px 0 12px; }
+  .dtab { flex:1; text-align:center; padding:9px 3px; border-radius:9px; background:#1a1c24;
+          color:#9aa0ac; font-size:12.5px; font-weight:600; border:1px solid #2a2d38; cursor:pointer;
+          white-space:nowrap; }
+  .dtab.on { background:#2d6cdf; color:#fff; border-color:#2d6cdf; }
+  .dpane { display:none; }
+  .dpane.on { display:block; }
   .enter-btn { width:100%; margin-top:22px; padding:16px; border:none; border-radius:12px;
                background:#3a7; color:#fff; font-size:17px; font-weight:700; }
   .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
@@ -280,6 +288,14 @@
    <div class="dash-sub">出租中控與進入遠端（連接管理在遠端頁內）</div>
    <div class="mstat" id="dHw">硬體：載入中…</div>
 
+   <div class="dtabs">
+     <div class="dtab on" data-tab="rent">🏠 出租</div>
+     <div class="dtab" data-tab="idle">🤖 閒置</div>
+     <div class="dtab" data-tab="patrol">🗺 巡邏</div>
+     <div class="dtab" data-tab="remote">🎮 遠端</div>
+   </div>
+
+   <div class="dpane on" data-pane="rent">
    <div class="msec">出租管理（Cloudflare Tunnel）</div>
    <div class="mstat" id="rTunnel" style="user-select:text;-webkit-user-select:text">🌐 隧道：未啟動</div>
    <div class="mstat" id="rPass" style="user-select:text;-webkit-user-select:text">🔑 密碼：未產生</div>
@@ -305,7 +321,9 @@
    <div style="font-size:12px;color:#8a8f99;margin-top:4px">
      訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
      滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
+   </div><!-- /#dpane rent -->
 
+   <div class="dpane" data-pane="idle">
    <div class="msec">閒置掛機（隨機移動＋放置輪迴）</div>
    <div class="mrow"><label>時長</label>
      <input type="number" id="idleH" min="0" max="24" value="1" style="width:52px;background:#1d1e26;color:#eee;border:1px solid #3a3d48;border-radius:8px;padding:6px;font-size:14px"><span>時</span>
@@ -328,7 +346,9 @@
      <div id="idleRemain" style="font-size:13px;color:#7fe0b0;margin-top:6px;font-variant-numeric:tabular-nums"></div>
      <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
    </div>
+   </div><!-- /#dpane idle -->
 
+   <div class="dpane" data-pane="patrol">
    <div class="msec">目前方向（最後觸發的方向鍵＝角色面向）</div>
    <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
      <div id="faceArrow" style="font-size:40px;font-weight:800;color:#ffb020;width:56px;text-align:center;line-height:1">→</div>
@@ -385,10 +405,21 @@
    </div>
    <div id="patrolMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
 
-   <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:14px">🆘 解除卡死（放開所有按鍵）</button>
+   <div class="msec" style="margin-top:14px">巡邏監控（檢查放置技能是否正確觸發）</div>
+   <div id="patrolPhase" style="font-size:13px;color:#7fe0b0;margin:4px 0;font-variant-numeric:tabular-nums">狀態：--</div>
+   <div id="placeMon" style="font-size:13px;color:#cfd3db;display:flex;flex-direction:column;gap:3px"></div>
+   </div><!-- /#dpane patrol -->
+
+   <div class="dpane" data-pane="remote">
+   <div class="msec">遠端操作</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 10px">
+     進入遠端會連線 WebSocket、開啟即時畫面,可直接操控滑鼠鍵盤（連接管理在遠端頁內）。掛機／出租時通常不需進入。</div>
+   <button class="enter-btn" id="enterRemote" style="margin-top:0">▶ 進入遠端</button>
+   </div><!-- /#dpane remote -->
+
+   <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:16px">🆘 解除卡死（放開所有按鍵）</button>
    <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
 
-   <button class="enter-btn" id="enterRemote">▶ 進入遠端</button>
    <button class="logout-btn" id="logout">登出</button>
   </div>
  </div>
@@ -1015,6 +1046,38 @@ $("#patrolStopBtn").onclick = async ()=>{
   try{ await fetch(`/nav/stop?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(_){}
   $("#patrolMsg").textContent = "⏹ 已停止巡邏";
 };
+
+// ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
+document.querySelectorAll(".dtab").forEach(t=>{
+  t.onclick = ()=>{
+    const name = t.dataset.tab;
+    document.querySelectorAll(".dtab").forEach(x=>x.classList.toggle("on", x===t));
+    document.querySelectorAll(".dpane").forEach(p=>p.classList.toggle("on", p.dataset.pane===name));
+  };
+});
+
+// ---- 巡邏監控：階段(平A/放置技能)＋各放置技能點下次觸發倒數 ----
+const PHASE_TXT = {idle:"待機",starting:"啟動中",patrol:"巡邏中",settle:"定位",rope_up:"上繩",
+  fall:"下跳",fall_adjust:"下跳修正",move_x:"水平移動",goto:"前往點",cast:"平A攻擊",place:"放置技能",done:"完成"};
+async function placeTick(){
+  try{
+    const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+    $("#patrolPhase").textContent = st.running
+      ? `狀態：${PHASE_TXT[st.phase]||st.phase||"--"}　已造訪 ${st.rounds||0} 點`
+      : "狀態：未在巡邏";
+    const pl = st.placements || [], box = $("#placeMon");
+    if(!pl.length){ box.textContent = "（此地圖無放置技能點）"; return; }
+    box.innerHTML = pl.map(p=>{
+      const s = p.ready ? "🟢 就緒（下次到點即放）" : `🟠 ${p.remaining}s 後可放`;
+      return `<div>放置技能 <b>${labelFor(p.skill)}</b> @(${p.x},${p.y})　${s}　冷卻 ${p.cd}s</div>`;
+    }).join("");
+  }catch(_){}
+}
+setInterval(()=>{
+  if(!document.body.classList.contains("view-dash")) return;
+  const pane = document.querySelector('.dpane[data-pane="patrol"]');
+  if(pane && pane.classList.contains("on")) placeTick();
+}, 1000);
 
 // ===== 編輯模式 =====
 $("#editBtn").onclick = () => {
