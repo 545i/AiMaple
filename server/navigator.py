@@ -128,43 +128,51 @@ def _press(k, hold=KEY_HOLD):
     _keyboard.key_up(k)
 
 
+_atk_held = set()
+
+
+def _release_atk():
+    """放開所有按住中的移動攻擊鍵(繩索/下跳/二段跳/到點時,避免中斷垂直動作)。"""
+    for sk in list(_atk_held):
+        try:
+            _keyboard.key_up(sk)
+        except Exception:
+            pass
+    _atk_held.clear()
+
+
 def _release_move_keys():
-    """放開所有移動鍵,確保平A/放置技能施放時角色靜止、只按該技能鍵。"""
+    """放開所有移動鍵 + 按住的攻擊鍵,確保靜止/垂直動作時不干擾。"""
     for k in ("left", "right", "up", "down"):
         try:
             _keyboard.key_up(k)
         except Exception:
             pass
+    _release_atk()
 
 
-_last_atk = 0.0
-
-
-def _same_skills(skills, interval=0.35):
-    """移動時穿插施放技能(移動平A):限流每 interval 秒一次、用 press(key_down→短holds
-    →key_up),避免 tap 被遊戲漏讀、也避免每 0.04s 迴圈太頻繁。"""
-    global _last_atk
+def _same_skills(skills):
+    """移動走位時【按住】攻擊鍵(持續攻擊,支援按住連發的技能)。已按住則不重複 key_down;
+    繩索/下跳/二段跳/到點由 _release_atk 放開,避免中斷垂直動作。"""
     if not skills:
         return
-    now = time.monotonic()
-    if now - _last_atk < interval:
-        return
-    _last_atk = now
     for sk in skills:
-        try:
-            _keyboard.key_down(sk); time.sleep(0.02); _keyboard.key_up(sk)
-        except Exception:
-            pass
+        if sk not in _atk_held:
+            try:
+                _keyboard.key_down(sk)
+                _atk_held.add(sk)
+            except Exception:
+                pass
 
 
 def _double_jump(direction, skills=None):
-    """朝 direction 二段跳(X→interval→P),過程中同時按技能鍵。"""
+    """朝 direction 二段跳(X→interval→P)。跳躍前放開移動攻擊鍵,避免與 X/P 衝突。"""
+    _release_atk()
     _press(direction)                      # 轉向(press,確保面向)
     time.sleep(0.12)
     _keyboard.key_down("x"); time.sleep(KEY_HOLD); _keyboard.key_up("x")
     time.sleep(max(0.0, JUMP_INTERVAL - KEY_HOLD))
     _keyboard.key_down("p"); time.sleep(KEY_HOLD); _keyboard.key_up("p")
-    _same_skills(skills)                   # 移動中施放技能
     time.sleep(1.0)                        # 等落地
 
 
@@ -197,7 +205,8 @@ def _walk_to_x(direction, target_x, skills=None, timeout_s=2.5):
 
 
 def _fall_to_y(ty, skills=None):
-    """閉環下跳到目標 y:壓 down + 重複跳,讀黃點收斂,FALL_MAX 上限。"""
+    """閉環下跳到目標 y:壓 down + 重複跳,讀黃點收斂,FALL_MAX 上限。下跳期間放開攻擊鍵。"""
+    _release_atk()
     _keyboard.key_down("down")
     time.sleep(0.2)
     try:
@@ -210,7 +219,6 @@ def _fall_to_y(ty, skills=None):
                 if p[1] >= ty - Y_TOL:
                     break
             _keyboard.key_down("x"); time.sleep(0.08); _keyboard.key_up("x")
-            _same_skills(skills)
             time.sleep(0.45)
     finally:
         _keyboard.key_up("down")
@@ -218,7 +226,8 @@ def _fall_to_y(ty, skills=None):
 
 
 def _rope_up(skills=None):
-    """繩索 C 上升到第 4 層(不中斷)。"""
+    """繩索 C 上升到第 4 層(不中斷)。上繩前放開攻擊鍵。"""
+    _release_atk()
     _press("c")
     time.sleep(1.6)
 
@@ -454,6 +463,7 @@ def _run(tx, ty, skills):
                 _keyboard.key_up(k)
             except Exception:
                 pass
+        _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
 
 
@@ -580,6 +590,7 @@ def _patrol_wrap(points_fn, attack_key, cast_mode):
                 _keyboard.key_up(k)
             except Exception:
                 pass
+        _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
 
 
