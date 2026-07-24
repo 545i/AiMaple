@@ -154,11 +154,17 @@
   .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
                 border-radius:10px; background:#1d1e26; color:#b8bcc6; font-size:14px; }
   /* 遠端頁右上「≡ 儀表板」返回鈕(放漢堡左側,不擋左上狀態列) */
-  /* 小地圖預覽上的巡邏點圓圈(仿 auto-maple draw_location 容差圈) */
-  .patrol-dot { position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px;
-                border:2px solid #33ffdd; border-radius:50%; background:rgba(51,255,221,.22);
-                display:flex; align-items:center; justify-content:center; font-size:9px;
-                font-weight:700; color:#fff; text-shadow:0 0 2px #000; box-shadow:0 0 4px #000; }
+  /* 小地圖預覽上的巡邏點圓圈(仿 auto-maple draw_location 大範圍容差圈) */
+  .patrol-dot { position:absolute; width:22%; aspect-ratio:1; transform:translate(-50%,-50%);
+                border:2px solid #33ffdd; border-radius:50%; background:rgba(51,255,221,.10);
+                box-shadow:0 0 4px #000; pointer-events:none; box-sizing:border-box; }
+  .patrol-dot > span {   /* 中心橘點=站立位置(青圈=攻擊範圍) */
+                position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+                width:15px; height:15px; background:#ff9820; border:1px solid #fff;
+                border-radius:50%; display:flex; align-items:center; justify-content:center;
+                font-size:10px; font-weight:800; color:#000; box-shadow:0 0 3px #000; }
+  /* 巡邏路線連接線(SVG overlay) */
+  #mmOverlay svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
   #toDashTop { position:fixed; top:8px; right:64px; z-index:60; display:none;
                align-items:center; justify-content:center; height:40px; padding:0 14px;
                font-size:14px; color:#fff; background:rgba(40,40,50,.72);
@@ -837,10 +843,22 @@ async function mmTick(){
         try{
           const mm = await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json();
           renderMapStat(mm);
-          (mm.points||[]).forEach((p,i)=>{
+          const pts = mm.points || [];
+          // 巡邏路線連接線(依序號連,虛線)
+          if(pts.length >= 2){
+            const svg = document.createElementNS("http://www.w3.org/2000/svg","svg");
+            svg.setAttribute("viewBox","0 0 100 100"); svg.setAttribute("preserveAspectRatio","none");
+            const pl = document.createElementNS("http://www.w3.org/2000/svg","polyline");
+            pl.setAttribute("points", pts.map(p=>`${p[0]/s.w*100},${p[1]/s.h*100}`).join(" "));
+            pl.setAttribute("fill","none"); pl.setAttribute("stroke","#33ffdd");
+            pl.setAttribute("stroke-width","0.6"); pl.setAttribute("stroke-dasharray","2 1.5"); pl.setAttribute("opacity","0.8");
+            svg.appendChild(pl); ov.appendChild(svg);
+          }
+          pts.forEach((p,i)=>{
             const d=document.createElement("div"); d.className="patrol-dot";
             d.style.left=(p[0]/s.w*100)+"%"; d.style.top=(p[1]/s.h*100)+"%";
-            d.textContent=i+1; ov.appendChild(d);
+            const c=document.createElement("span"); c.textContent=i+1; d.appendChild(c);   // 橘點=站立位置
+            ov.appendChild(d);
           });
         }catch(_){}
       }
