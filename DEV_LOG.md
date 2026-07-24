@@ -1,11 +1,11 @@
 # maple 開發日誌與架構（供接續）
 
-手機遠端遊玩 + 自動巡邏掛機系統。**自動化違反遊戲 TOS，封號風險自負**。
+手機遠端遊玩 + 自動巡邏掛機系統。
 
 ## 架構
 - **後端** FastAPI（`server/`），token=`***REMOVED***`（MAPLE_TOKEN）。訪客短密碼限 4/←/→。
 - **輸入**：Arduino HID 鍵盤（`press`=key_down→hold~60ms→key_up，**不用 tap，遊戲會漏讀**）+ km.dll 滑鼠。
-- **畫面**：WGC 視窗捕獲 maplestory.exe（只讀屏、不碰遊戲記憶體/不注入 → GameGuard 難測；行為層仍像 bot）。
+- **畫面**：WGC 視窗捕獲 maplestory.exe（只讀屏、不碰遊戲記憶體、不注入）。
 - **重啟**：`restart-admin.bat`（UAC 靜默提權，載入最新碼）。改後端必重啟；改前端硬刷新。
 - 主要檔案：`main.py`(端點/lifespan)、`navigator.py`(導航/巡邏)、`pathgraph.py`(路徑圖)、`mapdata.py`(座標/平台/繩索/profile)、`minimap.py`(小地圖偵測)、`idle_mode.py`(隨機AFK)、`web/index.html`(中控頁,單檔)。
 
