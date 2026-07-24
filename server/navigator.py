@@ -245,18 +245,20 @@ def _goto_sync(tx, ty, skills=None, precise=False):
         return False
     _state["pos"] = list(p)
     dy = ty - p[1]
-    if dy < -Y_TOL:                        # 目標更高 → 繩索上
+    if dy < -Y_TOL:                        # 目標更高 → 【先水平對齊繩索(在目標 x 正下方),再上繩】
+        _state["phase"] = "pre_move_x"     # 實測:繩索固定位置,原地按C不在繩索下方無效
+        _move_to_x(tx, skills)             # 先走到目標 x(當前層),對齊繩索
         _state["phase"] = "rope_up"
-        _rope_up(skills)
-        p = _dot() or p
-        if p[1] > ty + Y_TOL:             # 繩索衝過頭 → 下跳修正
+        _rope_up(skills)                   # 上繩(升到頂層)
+        p = _settle() or p
+        if p and p[1] < ty - Y_TOL:        # 上繩過頭(頂層比目標高、y 更小)→ 下跳修正到目標層
             _state["phase"] = "fall_adjust"
             _fall_to_y(ty, skills)
     elif dy > Y_TOL:                       # 目標更低 → 下跳
         _state["phase"] = "fall"
         _fall_to_y(ty, skills)
     _state["phase"] = "move_x"
-    _move_to_x(tx, skills)
+    _move_to_x(tx, skills)                 # 最後水平(同層直接走 / 上下層後微調)
     if precise:                            # 精確到位:二段跳可能過衝 → 走路回正到 ±1px
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
