@@ -203,3 +203,80 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     for na, nb, cost, mode in conns:
         edges[na].append((nb, cost, mode))
     return nodes, edges
+
+
+def build_physics(points, platforms, jump=30, jump_up=11, y_tol=4):
+    """完整移動模型建圖(用實測落點):
+      * walk:同平台。
+      * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
+        (可略升<=jump_up、可大降;抛物線落點,實測同層 30px)。
+      * fall:掉落——a 的 x 正下方有平台(中間無夾層)→ 垂直落下。
+      * rope:大落差上升——a 上方有重疊平台且升幅>jump_up → 走到重疊區上繩到頂。
+    每種邊都對應一個可靠的按鍵動作。回 (nodes, edges)。"""
+    plats = [dict(p) for p in platforms]
+    nodes = [(int(x), int(y)) for x, y in points]
+    node_plat = {}
+    for n in nodes:
+        for i, pf in enumerate(plats):
+            if abs(pf["y"] - n[1]) <= y_tol and pf["xA"] - 1 <= n[0] <= pf["xB"] + 1:
+                node_plat[n] = i
+                break
+
+    def addn(n, pi):
+        if n not in nodes:
+            nodes.append(n)
+            node_plat[n] = pi
+
+    def blocked(cx, y1, y2):                             # cx 處 y1~y2 之間有夾層平台?
+        return any(min(y1, y2) < c["y"] < max(y1, y2) and c["xA"] - 1 <= cx <= c["xB"] + 1
+                   for c in plats)
+
+    conns = []
+    for i, a in enumerate(plats):
+        amid = (a["xA"] + a["xB"]) // 2
+        # 二段跳:從 a 端點/中點朝左右飛 jump,落到落點平台(略升 or 下降)
+        for jx in (a["xA"], a["xB"], amid):
+            for dr in (1, -1):
+                lx = jx + dr * jump
+                for j, b in enumerate(plats):
+                    if j == i or b["y"] < a["y"] - jump_up:   # 不能落到比 a 高太多的平台
+                        continue
+                    if b["xA"] - 3 <= lx <= b["xB"] + 3:
+                        nb = (max(b["xA"], min(b["xB"], lx)), b["y"])
+                        addn((jx, a["y"]), i); addn(nb, j)
+                        conns.append(((jx, a["y"]), nb, jump + abs(b["y"] - a["y"]) + 1, "jump"))
+        # 掉落:a 的 x 正下方有平台
+        for j, b in enumerate(plats):
+            if j == i or b["y"] <= a["y"]:
+                continue
+            ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+            if ox2 < ox1:
+                continue
+            cx = (ox1 + ox2) // 2
+            if blocked(cx, a["y"], b["y"]):
+                continue
+            addn((cx, a["y"]), i); addn((cx, b["y"]), j)
+            conns.append(((cx, a["y"]), (cx, b["y"]), abs(b["y"] - a["y"]) + 1, "fall"))
+        # 繩索:a 上方重疊平台且大上升(>jump_up)
+        for j, b in enumerate(plats):
+            if j == i or b["y"] >= a["y"] or a["y"] - b["y"] <= jump_up:
+                continue
+            ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+            if ox2 < ox1:
+                continue
+            cx = (ox1 + ox2) // 2
+            if blocked(cx, a["y"], b["y"]):
+                continue
+            addn((cx, a["y"]), i); addn((cx, b["y"]), j)
+            conns.append(((cx, a["y"]), (cx, b["y"]), (a["y"] - b["y"]) + 1, "rope"))
+    edges = {n: [] for n in nodes}
+    for a in nodes:
+        pa = node_plat.get(a)
+        if pa is None:
+            continue
+        for b in nodes:
+            if a != b and node_plat.get(b) == pa:
+                edges[a].append((b, abs(a[0] - b[0]) + 1, "walk"))
+    for na, nb, cost, mode in conns:
+        edges[na].append((nb, cost, mode))
+    return nodes, edges

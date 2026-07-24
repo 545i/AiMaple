@@ -11,6 +11,8 @@
 向量參數來自校準(docs/jump-vectors.md):二段跳水平 ~30px、繩索上第4層、
 下跳閉環。所有按鍵用 press(按住 60ms)避免 tap 漏讀。
 """
+import json
+import os
 import random
 import threading
 import time
@@ -56,6 +58,20 @@ def set_terrain_fn(fn):
     """注入地形來源 fn()→(points_dicts, platforms)。有平台時導航改用平台重疊圖規劃。"""
     global _terrain_fn
     _terrain_fn = fn
+
+
+# ---- 移動數據記錄(每段動作:起點/目標/落點),供參考與訓練移動模型 ----
+_MOVE_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nav_moves.jsonl")
+
+
+def _log_move(mode, act, start, target, end):
+    try:
+        with open(_MOVE_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": round(time.time(), 1), "mode": mode, "act": act,
+                                "start": start, "target": target, "end": end},
+                               ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def is_running():
@@ -325,7 +341,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         return False
     _state["pos"] = list(p)
     pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
-    nodes, edges = pathgraph.build_overlap(pts + [(int(tx), int(ty))], platforms)
+    nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms)
     start = pathgraph.nearest_node(nodes, p)
     path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
     if path is None:
@@ -339,16 +355,35 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             return False
         nx, ny = node
         _state["phase"] = "g_" + mt
+        p_start = _dot()
         if mt == "walk":
-            _move_to_x(nx, skills)                      # 水平走位:移動攻擊模式穿插平A
+            _move_to_x(nx, skills)                      # 同平台走位(移動攻擊穿插平A)
         elif mt == "fall":
-            _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 下跳本身不攻擊
-        elif mt == "jump":
-            _move_to_x(nx, skills); _settle()
-            if not _rope_to(nx, ny):       # 優先繩索上升(可靠);附近真的無繩索才二段跳
-                _jump_up(ny)               # 上升不攻擊
+            _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 走到掉落點→垂直落下
+        elif mt == "jump":                              # 物理二段跳:橫向~30px 落到落點平台
+            _settle()
+            pp = _dot() or (nx, ny)
+            dr = 1 if nx >= pp[0] else -1
+            cur = next((pf for pf in platforms if abs(pf["y"] - pp[1]) <= Y_TOL
+                        and pf["xA"] - 2 <= pp[0] <= pf["xB"] + 2), None)
+            tgt = next((pf for pf in platforms if abs(pf["y"] - ny) <= Y_TOL
+                        and pf["xA"] - 3 <= nx <= pf["xB"] + 3), None)
+            if cur and tgt:                             # 起跳點:使落點(起跳±30)落在目標平台內
+                if dr > 0:
+                    lo, hi = max(cur["xA"], tgt["xA"] - 30), min(cur["xB"], tgt["xB"] - 30)
+                else:
+                    lo, hi = max(cur["xA"], tgt["xA"] + 30), min(cur["xB"], tgt["xB"] + 30)
+                if lo <= hi:
+                    _walk_to((lo + hi) // 2)            # 起跳點取範圍中間→落到目標平台中部(避邊緣)
+                    _settle()
+            _double_jump("right" if dr > 0 else "left", skills)
+            _settle(); _move_to_x(nx, skills)           # 落點微調到目標 x
         elif mt == "rope":
-            _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 繩索不攻擊
+            _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 走到重疊區→上繩到頂
+        p_end = _dot()
+        _log_move(_state.get("mode", "move"), mt,
+                  list(p_start) if p_start else None, [nx, ny],
+                  list(p_end) if p_end else None)
     if precise:
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
