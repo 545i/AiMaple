@@ -141,9 +141,9 @@ def _move_trial(direction, hold):
             "ts": round(time.time(), 1)}
 
 
-def _jump_trial(interval, direction=None, hold=0.8):
-    """二段跳:X → interval 秒 → X。direction 給定時整段按住方向鍵(量飛距)。
-    interval=0 表示只按一次 X(單跳基準)。"""
+def _jump_trial(interval, direction=None, hold=0.8, skill_key="x"):
+    """二段跳:跳躍 X → interval 秒 → 二段技能鍵(skill_key;真正二段跳用 p)。
+    direction 給定時整段按住方向鍵。interval=0 表示只按一次 X(單跳基準)。"""
     p0 = _settle()
     if p0 is None:
         return None
@@ -155,10 +155,10 @@ def _jump_trial(interval, direction=None, hold=0.8):
         # 明確 key_down→按住→key_up:確保遊戲讀到每一次 X。tap 放開太快,短 interval
         # 下第二跳常被漏讀 → 二段跳量測時好時壞。interval 維持「按下到按下」的間隔。
         _kh = 0.06
-        _keyboard.key_down("x"); _sleep_precise(_kh); _keyboard.key_up("x")
+        _keyboard.key_down("x"); _sleep_precise(_kh); _keyboard.key_up("x")   # 跳躍 X
         if interval > 0:
             _sleep_precise(max(0.0, interval - _kh))   # 補足到 down-to-down = interval
-            _keyboard.key_down("x"); _sleep_precise(_kh); _keyboard.key_up("x")
+            _keyboard.key_down(skill_key); _sleep_precise(_kh); _keyboard.key_up(skill_key)  # 二段技能
         _trace_sample(t0, hold, trace)
     finally:
         if direction:
@@ -168,16 +168,16 @@ def _jump_trial(interval, direction=None, hold=0.8):
     if p1 is None:
         return None
     ys = [p[2] for p in trace]
-    return {"kind": "jump", "interval": round(interval, 3),
+    return {"kind": "jump", "interval": round(interval, 3), "skill": skill_key,
             "dir": direction or "", "dx": p1[0] - p0[0], "dy": p1[1] - p0[1],
             "peak_rise": p0[1] - min(ys),     # 最高點上升量(px,越大=跳越高)
             "from": list(p0), "to": list(p1), "trace": trace,
             "ts": round(time.time(), 1)}
 
 
-def _run_batch(kind, values, direction):
+def _run_batch(kind, values, direction, skill_key="x"):
     """背景執行一批 trial。move:values=hold 秒列表(每值右+左往返);
-    jump:values=interval 秒列表(方向依 direction/交替)。"""
+    jump:values=interval 秒列表(方向依 direction/交替),skill_key=二段技能鍵。"""
     try:
         n_per = 2 if kind == "move" or direction == "alt" else 1
         _state["total"] = len(values) * n_per
@@ -196,7 +196,7 @@ def _run_batch(kind, values, direction):
                 if _stop.is_set():
                     break
                 _state["phase"] = f"{kind} v={v} dir={d or '-'}"
-                r = _move_trial(d, v) if kind == "move" else _jump_trial(v, d)
+                r = _move_trial(d, v) if kind == "move" else _jump_trial(v, d, skill_key=skill_key)
                 if r is not None:
                     _save(r)
                 else:
@@ -212,7 +212,7 @@ def _run_batch(kind, values, direction):
         print(f"[calib] 批次結束 done={_state['done']}/{_state['total']}")
 
 
-def start(kind, values, direction=""):
+def start(kind, values, direction="", skill_key="x"):
     """啟動一批校準。回 (ok, msg)。"""
     global _thread
     with _op_lock:
@@ -235,9 +235,9 @@ def start(kind, values, direction=""):
         _stop.clear()
         _state.update({"running": True, "phase": "starting", "error": ""})
         _thread = threading.Thread(target=_run_batch,
-                                   args=(kind, values, direction), daemon=True)
+                                   args=(kind, values, direction, skill_key), daemon=True)
         _thread.start()
-        print(f"[calib] 啟動 {kind} values={values} dir={direction!r}")
+        print(f"[calib] 啟動 {kind} values={values} dir={direction!r} skill={skill_key!r}")
         return True, "ok"
 
 

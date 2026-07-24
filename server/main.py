@@ -509,7 +509,7 @@ async def calib_start(request: Request, token: str = Query("")):
         raise HTTPException(status_code=409, detail="閒置掛機進行中,請先關閉")
     body = await request.json()
     ok, msg = calib.start(body.get("kind", ""), body.get("values") or [],
-                          body.get("direction", ""))
+                          body.get("direction", ""), body.get("skill_key", "x"))
     if not ok:
         raise HTTPException(status_code=400, detail=msg)
     return JSONResponse(calib.status())
