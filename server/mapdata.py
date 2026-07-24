@@ -41,15 +41,17 @@ def _content_hash():
 
 
 def current_map_id():
-    """當前地圖 id = 小地圖尺寸 + 內容指紋(WxH_hash),自動區分不同地圖、免命名。
-    偵測不到小地圖或算不出指紋回 None。"""
+    """當前地圖 id = 小地圖尺寸 'WxH'(不受玩家干擾,穩定)。偵測不到回 None。
+
+    註:原本加內容指紋(hash)想自動區分多張地圖,但小地圖上其他玩家的彩色點會讓
+    hash 一直變(實測 8 次出現 5 種 id,雖只變 4/64 位),導致 layout 每次不同、
+    找不到。改採【單一地圖】策略:只用尺寸——換不同尺寸地圖會自動用新 layout;
+    換同尺寸地圖則由使用者在中控「清空座標 + 重新偵測」。_content_hash 函式保留,
+    未來若遮罩掉玩家/怪物點,可再啟用自動多圖識別。"""
     s = minimap.status()
     if not s.get("found") or not s.get("w") or not s.get("h"):
         return None
-    h = _content_hash()
-    if not h:
-        return None
-    return f"{s['w']}x{s['h']}_{h}"
+    return f"{s['w']}x{s['h']}"
 
 
 def _path(mid):
