@@ -293,16 +293,42 @@ def load_profile(name):
         return False, "找不到該設置"
     with open(path, encoding="utf-8") as f:
         prof = json.load(f)
-    with _lock:                              # 只在鎖內寫 points;set_attack 自帶鎖,避免巢狀死鎖
+
+    def _wh(m):                              # "330x168" → (330,168)
+        try:
+            a, b = str(m).split("x")
+            return int(a), int(b)
+        except Exception:
+            return None
+
+    src, cur = _wh(prof.get("map_id", "")), _wh(mid)
+    fx = fy = 1.0
+    if src and cur and src[0] and src[1]:    # 來源尺寸→當前尺寸縮放(小地圖偵測尺寸可能變,如165→330)
+        fx, fy = cur[0] / src[0], cur[1] / src[1]
+
+    def sxx(v):
+        return int(round(v * fx))
+
+    def syy(v):
+        return int(round(v * fy))
+
+    pts = []
+    for p in prof.get("points", []):
+        q = _norm(p); q["x"] = sxx(q["x"]); q["y"] = syy(q["y"]); pts.append(q)
+    plats = [{"y": syy(pf["y"]), "xA": sxx(pf["xA"]), "xB": sxx(pf["xB"])}
+             for pf in prof.get("platforms", [])]
+    rps = [{"x": sxx(r["x"])} for r in prof.get("ropes", [])]
+    with _lock:                              # 只在鎖內寫;set_attack 自帶鎖,避免巢狀死鎖
         d = load(mid)
-        d["points"] = [_norm(p) for p in prof.get("points", [])]
-        d["platforms"] = prof.get("platforms", [])
-        d["ropes"] = prof.get("ropes", [])
+        d["points"] = pts
+        d["platforms"] = plats
+        d["ropes"] = rps
         save(mid, d)
     att = prof.get("attack")
     if att:
         set_attack(att.get("key", "a"), att.get("mode", "hold2s"))
-    return True, prof.get("name", name)
+    tag = f"（已縮放×{fx:.2f}）" if abs(fx - 1) > 0.01 or abs(fy - 1) > 0.01 else ""
+    return True, prof.get("name", name) + tag
 
 
 def delete_profile(name):
