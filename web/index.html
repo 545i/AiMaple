@@ -1054,6 +1054,10 @@ const KBD_ROWS = [
       r.appendChild(k); });
     kbd.appendChild(r); });
 })();
+// #picker 原本在 #stage(position:fixed→自成 stacking context)內,儀表板視圖 #dashView(z110)
+// 會整個蓋住它 → 在儀表板點選鍵盤看似「沒反應沒彈窗」。移到 body 頂層脫離該 context,
+// 其 z-index:140 才會真正蓋在 #dashView 之上。
+document.body.appendChild($("#picker"));
 function openPicker(b){ editingBtn=b; pickerOnPick=null; $("#pickerClear").style.display="none";
   $("#pickerTitle").textContent=`設定「${labelFor(b.key)}」→ 點新按鍵`; $("#picker").classList.add("on"); }
 function openKeyPicker(title, cb, clearable){   // 平A/放置技能設定用:點虛擬鍵盤選鍵
