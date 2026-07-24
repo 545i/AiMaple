@@ -27,3 +27,4 @@ scratch_*
 auto.crt
 auto.key
 server/telegram.json
+layouts/

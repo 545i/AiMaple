@@ -34,6 +34,7 @@ import remote_access
 import tunnel
 import wgc
 import idle_mode
+import mapdata
 import minimap
 import calib
 
@@ -423,6 +424,12 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
                             detail="訪客(出租)進行中，請先撤銷密碼/停止出租再開閒置模式")
     if calib.is_running():
         raise HTTPException(status_code=409, detail="運動校準進行中，請先等它結束/停止")
+    # 沒設定該地圖座標 → 不可開掛機(自動導航需要巡邏點;每張地圖獨立,A 圖座標不用於 B 圖)
+    _mid = mapdata.current_map_id()
+    if not mapdata.has_layout(_mid):
+        raise HTTPException(status_code=409, detail=(
+            "此地圖尚未設定座標，請先在中控『地圖座標』記錄巡邏點再開掛機"
+            if _mid else "偵測不到小地圖，無法確認是哪張地圖（先開啟小地圖偵測預覽）"))
     # 開場即統一焦點守衛一次(鎖定 MapleStory + 切到前景)+ 啟動擷取,
     # 讓中控頁監視畫面(/monitor/frame)有內容、掛機一開始就對準遊戲。
     video_pipeline.guard_focus(GUARD_EXE)
@@ -430,6 +437,52 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
     idle_mode.start(max(0.0, min(86400.0, duration)))   # 上限 24 小時
     minimap.watch_start()   # 掛機期間背景監看小地圖(紫標 → Telegram 通知)
     return JSONResponse(idle_mode.status())
+
+
+# ===== 地圖座標管理(掛機自動導航的前置;每張地圖獨立,僅主人) =====
+@app.get("/map/status")
+def map_status(token: str = Query("")):
+    """當前地圖狀態:map_id(小地圖尺寸)、有無座標、巡邏點數與清單。"""
+    _check_owner(token)
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/record")
+def map_record(token: str = Query("")):
+    """把角色當前黃點位置記錄成一個巡邏點(容差去重)。"""
+    _check_owner(token)
+    mid = mapdata.current_map_id()
+    if not mid:
+        raise HTTPException(status_code=400, detail="偵測不到小地圖(先開啟小地圖偵測預覽)")
+    s = minimap.status()
+    d = s.get("dot")
+    if not d or s.get("dot_stale"):
+        raise HTTPException(status_code=400, detail="抓不到角色黃點,無法記錄")
+    ok, n = mapdata.add_point(mid, d["x"], d["y"])
+    return JSONResponse({"added": ok, **mapdata.status()})
+
+
+@app.post("/map/remove_last")
+def map_remove_last(token: str = Query("")):
+    _check_owner(token)
+    mapdata.remove_last(mapdata.current_map_id())
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/clear")
+def map_clear(token: str = Query("")):
+    _check_owner(token)
+    mapdata.clear(mapdata.current_map_id())
+    return JSONResponse(mapdata.status())
+
+
+@app.post("/map/name")
+def map_name(token: str = Query(""), name: str = Query("")):
+    _check_owner(token)
+    mid = mapdata.current_map_id()
+    if mid:
+        mapdata.set_name(mid, name)
+    return JSONResponse(mapdata.status())
 
 
 # ===== 中控頁監視畫面：最新單張 JPEG(主人專用,前端每秒抓一張 ≈1 秒延遲) =====

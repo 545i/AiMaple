@@ -322,6 +322,19 @@
      <div class="mbtn" id="mmRedetectBtn" style="margin-top:6px">🔄 重新偵測（換地圖後按）</div>
    </div>
 
+   <div class="msec">地圖座標（掛機導航用·每張地圖自動識別、獨立）</div>
+   <div class="mstat" id="mapStat" style="user-select:text">地圖：偵測中…</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="mapRecordBtn">📍 記錄目前位置</div>
+     <div class="mbtn" id="mapUndoBtn">↩ 刪除上一點</div>
+   </div>
+   <div class="mgrid2">
+     <div class="mbtn" id="mapNameBtn">✏ 命名（可選）</div>
+     <div class="mbtn" id="mapClearBtn">🗑 清空座標</div>
+   </div>
+   <div id="mapMsg" style="font-size:12px;color:#8a8f99;margin-top:4px">
+     移動角色到巡邏點 → 按「記錄目前位置」。至少 1 點才能開掛機（自動識別地圖，免命名）。</div>
+
    <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:14px">🆘 解除卡死（放開所有按鍵）</button>
    <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
 
@@ -524,7 +537,7 @@ function showView(name){
 }
 function loadDash(){
   fetchStatus(); refreshRemote(); refreshIdle();
-  refreshFace();                                        // 方向條:進儀表板即更新
+  refreshFace(); refreshMapStat();                     // 方向條 + 地圖座標狀態
   if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
 }
 async function enterRemote(){
@@ -833,6 +846,42 @@ $("#mmRedetectBtn").onclick = async ()=>{   // 解除鎖定,下一幀起重新�
     $("#mmInfo").textContent = "🔄 已解除鎖定，重新偵測中…";
     if(mmOn) mmTick();
   }catch(_){ $("#mmInfo").textContent = "操作失敗（連線？）"; }
+};
+
+// ===== 地圖座標(掛機導航前置):每張地圖自動識別、獨立記錄巡邏點 =====
+function renderMapStat(s){
+  if(!s || !s.map_id){
+    $("#mapStat").textContent = "地圖：偵測不到小地圖（先開啟上方小地圖偵測預覽）";
+    return;
+  }
+  const nm = s.name ? `「${s.name}」` : "(未命名)";
+  const ok = s.has_layout ? "✅ 可掛機" : "⚠ 尚未設定，至少記錄 1 點";
+  $("#mapStat").textContent = `地圖 ${nm}　巡邏點 ${s.count} 個　${ok}`;
+}
+async function refreshMapStat(){
+  try{ const s = await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json(); renderMapStat(s); }catch(_){}
+}
+async function mapAct(path){
+  try{
+    const r = await fetch(`${path}${path.includes("?")?"&":"?"}token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok){ $("#mapMsg").textContent = "⚠ " + (j.detail || "操作失敗"); return null; }
+    renderMapStat(j); return j;
+  }catch(_){ $("#mapMsg").textContent = "操作失敗（連線？）"; return null; }
+}
+$("#mapRecordBtn").onclick = async ()=>{
+  const j = await mapAct("/map/record");
+  if(j) $("#mapMsg").textContent = j.added ? `已記錄第 ${j.count} 個巡邏點` : "此位置已記錄過（容差內去重）";
+};
+$("#mapUndoBtn").onclick = async ()=>{ const j=await mapAct("/map/remove_last"); if(j) $("#mapMsg").textContent="已刪除上一點"; };
+$("#mapClearBtn").onclick = async ()=>{
+  if(!confirm("清空此地圖所有巡邏座標？")) return;
+  const j = await mapAct("/map/clear"); if(j) $("#mapMsg").textContent="已清空此地圖座標";
+};
+$("#mapNameBtn").onclick = async ()=>{
+  const name = prompt("為此地圖命名（可選，方便辨識）：", "");
+  if(name === null) return;
+  const j = await mapAct(`/map/name?name=${encodeURIComponent(name)}`); if(j) $("#mapMsg").textContent="已命名";
 };
 
 // ===== 編輯模式 =====
