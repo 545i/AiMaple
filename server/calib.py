@@ -152,10 +152,13 @@ def _jump_trial(interval, direction=None, hold=0.8):
     if direction:
         _keyboard.key_down(direction)
     try:
-        _keyboard.tap("x")
+        # 明確 key_down→按住→key_up:確保遊戲讀到每一次 X。tap 放開太快,短 interval
+        # 下第二跳常被漏讀 → 二段跳量測時好時壞。interval 維持「按下到按下」的間隔。
+        _kh = 0.06
+        _keyboard.key_down("x"); _sleep_precise(_kh); _keyboard.key_up("x")
         if interval > 0:
-            _sleep_precise(interval)
-            _keyboard.tap("x")
+            _sleep_precise(max(0.0, interval - _kh))   # 補足到 down-to-down = interval
+            _keyboard.key_down("x"); _sleep_precise(_kh); _keyboard.key_up("x")
         _trace_sample(t0, hold, trace)
     finally:
         if direction:
