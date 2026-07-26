@@ -538,24 +538,30 @@ def _feed_wgc(proc, w, h, fps, stop_event):
     clear/set 干擾。視窗尺寸改變 → 另開執行緒重啟管線(rawvideo 的 WxH 是固定的)。"""
     interval = 1.0 / max(1, int(fps))
     next_t = time.perf_counter()
-    while not stop_event.is_set() and proc.poll() is None:
-        f = wgc.latest(max_age=5.0)
-        if f is not None:
-            fh, fw = f.shape[0] & ~1, f.shape[1] & ~1
-            if fw != w or fh != h:
-                print(f"[Video] 視窗尺寸變更 {w}x{h} → {fw}x{fh},重啟管線")
-                threading.Thread(target=restart, daemon=True).start()
-                return
-            try:
-                proc.stdin.write(f[:h, :w].tobytes())
-            except Exception:
-                return                     # ffmpeg 已結束/管線斷
-        next_t += interval
-        d = next_t - time.perf_counter()
-        if d > 0:
-            time.sleep(d)
-        else:
-            next_t = time.perf_counter()   # 落後就重新對時,不追幀
+    # WGC 平時為省 CPU 只以低速取樣(見 wgc._IDLE_INTERVAL);推流需要全速,這裡開啟,
+    # 退出時務必關掉,否則沒人看畫面時仍在每秒複製數百 MB 影格、跟遊戲搶 CPU。
+    wgc.request_full_rate(True)
+    try:
+        while not stop_event.is_set() and proc.poll() is None:
+            f = wgc.latest(max_age=5.0)
+            if f is not None:
+                fh, fw = f.shape[0] & ~1, f.shape[1] & ~1
+                if fw != w or fh != h:
+                    print(f"[Video] 視窗尺寸變更 {w}x{h} → {fw}x{fh},重啟管線")
+                    threading.Thread(target=restart, daemon=True).start()
+                    return
+                try:
+                    proc.stdin.write(f[:h, :w].tobytes())
+                except Exception:
+                    return                 # ffmpeg 已結束/管線斷
+            next_t += interval
+            d = next_t - time.perf_counter()
+            if d > 0:
+                time.sleep(d)
+            else:
+                next_t = time.perf_counter()   # 落後就重新對時,不追幀
+    finally:
+        wgc.request_full_rate(False)
 
 
 def _try_start_wgc():

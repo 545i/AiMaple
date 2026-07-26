@@ -60,16 +60,78 @@ def set_terrain_fn(fn):
     _terrain_fn = fn
 
 
+# ---- 巡邏時限 ----
+# 刻意【不放在 patrol_start 的參數裡】:解符文完成後會再呼叫一次 patrol_start 接回巡邏,
+# 若期限跟著重算,每解一次符文就把掛機時間往後延,設定的時限等於失效。
+# 由 main 在「使用者按下開始巡邏」時設定一次,中途重啟巡邏不動它。
+_patrol_deadline = None                # monotonic 秒;None=無限
+
+
+def set_patrol_deadline(seconds):
+    """設定巡邏時限。seconds<=0 或 None → 無限。"""
+    global _patrol_deadline
+    _patrol_deadline = None if not seconds or seconds <= 0 \
+        else time.monotonic() + float(seconds)
+    return _patrol_deadline
+
+
+def patrol_remaining():
+    """剩餘秒數;無限回 None,已到期回 0。"""
+    if _patrol_deadline is None:
+        return None
+    return max(0.0, _patrol_deadline - time.monotonic())
+
+
+def _patrol_time_up():
+    return _patrol_deadline is not None and time.monotonic() >= _patrol_deadline
+
+
+_timer_thread = None
+_timer_gen = 0                         # 世代號:舊看門狗靠它自我退場
+
+
+def _patrol_timer(gen):
+    """看門狗:時限一到立刻停,不必等當前那一輪走位跑完(一輪可能十幾秒)。
+
+    gen 是必要的:patrol_start 會 `_stop.clear()`,若只靠 _stop 當退場條件,舊看門狗
+    會在下次啟動時復活 → 累積多條。而巡邏會被解符文流程反覆停止/接回,這條路徑很常走。"""
+    while gen == _timer_gen and not _stop.is_set():
+        rem = patrol_remaining()
+        if rem is None:                # 中途被改成無限
+            return
+        if rem <= 0:
+            if _state.get("running"):
+                _state["phase"] = "time_up"
+                _state["error"] = "巡邏時間到,已自動停止"
+                print("[nav] 巡邏時間到 → 停止(看門狗)")
+            _stop.set()                # 只設事件,不 join(避免跟巡邏執行緒互等)
+            return
+        if _stop.wait(min(rem, 1.0)):
+            return
+
+
 # ---- 移動數據記錄(每段動作:起點/目標/落點),供參考與訓練移動模型 ----
 _MOVE_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nav_moves.jsonl")
 
 
+_MOVE_LOG_MAX = 8 * 1024 * 1024        # 8MB 上限:超過就輪替成 .1(只留一代)
+_move_log_n = 0
+
+
 def _log_move(mode, act, start, target, end):
+    """追加一筆移動記錄。原本無上限成長(實測掛機累積到 1.3MB/12000 筆仍在長),
+    長期掛機會把磁碟慢慢吃掉,也讓後續分析要掃越來越大的檔。加上大小輪替。"""
+    global _move_log_n
     try:
         with open(_MOVE_LOG, "a", encoding="utf-8") as f:
             f.write(json.dumps({"t": round(time.time(), 1), "mode": mode, "act": act,
                                 "start": start, "target": target, "end": end},
                                ensure_ascii=False) + "\n")
+        _move_log_n += 1
+        if _move_log_n % 200 == 0:                 # 每 200 筆才 stat 一次,省 I/O
+            if os.path.getsize(_MOVE_LOG) > _MOVE_LOG_MAX:
+                os.replace(_MOVE_LOG, _MOVE_LOG + ".1")
+                print(f"[nav] 移動記錄超過 {_MOVE_LOG_MAX // 1048576}MB → 輪替")
     except Exception:
         pass
 
@@ -88,6 +150,8 @@ def status():
         pl.append({"x": x, "y": y, "skill": v["skill"], "cd": v["cd"],
                    "remaining": round(rem, 1), "ready": rem <= 0.05})
     s["placements"] = pl
+    rem = patrol_remaining()
+    s["patrol_remaining"] = None if rem is None else round(rem, 1)
     return s
 
 
@@ -533,6 +597,11 @@ def _patrol_run(points_fn, attack_key, cast_mode):
     visits = 0
     prev = None                            # 上一點座標 (x,y),用於不連號
     while not _stop.is_set():
+        if _patrol_time_up():              # 巡邏時限到 → 收工
+            _state["phase"] = "time_up"
+            _state["error"] = "巡邏時間到,已自動停止"
+            print("[nav] 巡邏時間到 → 停止")
+            return
         if _purple_present():              # 紫標兜底:巡邏中/重開時紫標仍在 → 暫停
             _state["phase"] = "purple_pause"
             _state["error"] = "偵測到紫標,已自動暫停巡邏"
@@ -658,6 +727,8 @@ def patrol_start(points_fn, attack_key="a", cast_mode="hold2s"):
             return False, "鍵盤未連線"
         if not (points_fn() or []):
             return False, "沒有巡邏點"
+        if _patrol_time_up():          # 時限已到就別再開(解符文後接回巡邏也走這裡)
+            return False, "巡邏時間已到"
         _stop.clear()
         _place.clear()
         _state.update({"running": True, "phase": "patrol", "mode": "patrol",
@@ -665,6 +736,12 @@ def patrol_start(points_fn, attack_key="a", cast_mode="hold2s"):
         _thread = threading.Thread(target=_patrol_wrap,
                                    args=(points_fn, attack_key, cast_mode), daemon=True)
         _thread.start()
+        global _timer_thread, _timer_gen
+        _timer_gen += 1                    # 讓先前殘留的看門狗退場
+        if _patrol_deadline is not None:
+            _timer_thread = threading.Thread(target=_patrol_timer,
+                                             args=(_timer_gen,), daemon=True)
+            _timer_thread.start()
         return True, "ok"
 
 

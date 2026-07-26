@@ -372,9 +372,32 @@
      <div class="mbtn" id="patrolStartBtn" style="background:#1e7e34">▶ 開始巡邏掛機</div>
      <div class="mbtn" id="patrolStopBtn" style="background:#c0392b">⏹ 停止巡邏</div>
    </div>
-   <div id="patrolMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
-   <div id="patrolPhase" style="font-size:13px;color:#7fe0b0;margin:6px 0 4px;font-variant-numeric:tabular-nums">狀態：--</div>
-   <div id="placeMon" style="font-size:13px;color:#cfd3db;display:flex;flex-direction:column;gap:3px"></div>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:13px;color:#cfd3db">
+     ⏱ 巡邏時限
+     <input type="number" id="patrolMins" min="0" max="1440" step="10" value="60"
+            style="width:72px;background:#1a1d26;color:#e6e8ee;border:1px solid #2a2d38;border-radius:5px;padding:3px 6px">
+     分鐘（0＝無限）
+   </label>
+
+   <!-- 符文自動解除：緊接在巡邏時限下方（只在巡邏進行中才會觸發，兩者相依） -->
+   <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="runeEnable"> 🔮 符文自動解除
+     <span style="font-size:11px;color:#8a8f99">（僅巡邏中生效）</span>
+   </label>
+   <div style="display:flex;gap:6px;margin-top:6px">
+     <div class="mbtn" id="runeDetectBtn" style="flex:1">🔎 測試辨識</div>
+     <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
+   </div>
+   <div id="runeMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+
+   <!-- 一眼可讀的狀態面板 -->
+   <div id="statusPanel" style="margin-top:10px;padding:8px 10px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
+     <div id="patrolPhase" style="font-size:15px;font-weight:700;color:#7fe0b0;font-variant-numeric:tabular-nums">狀態：--</div>
+     <div id="patrolClock" style="font-size:26px;font-weight:800;color:#e6e8ee;font-variant-numeric:tabular-nums;letter-spacing:1px;margin:2px 0 6px">--:--:--</div>
+     <div id="switchRow" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+     <div id="patrolMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
+   </div>
+   <div id="placeMon" style="font-size:13px;color:#cfd3db;display:flex;flex-direction:column;gap:3px;margin-top:6px"></div>
    <div style="border-top:1px solid #2a2d38;margin:12px 0 6px;padding-top:8px;font-size:12px;color:#8a8f99">⚙ 巡邏設定（設好即可收在下方，平時看上面狀態就好）</div>
 
    <div class="msec">目前方向（最後觸發的方向鍵＝角色面向）</div>
@@ -445,6 +468,9 @@
      <input type="checkbox" id="atkFallHold"> 下跳時保持攻擊
    </label>
    <div class="mbtn" id="atkSaveBtn" style="margin-top:6px">💾 儲存平A設定</div>
+
+   <!-- 註:符文自動解除的開關與測試鈕已移到頁面上方「巡邏時限」下方(兩者相依:
+        只在巡邏進行中才會觸發),此處不再重複放,避免 DOM 出現重複 id。 -->
 
    <div class="msec" style="margin-top:14px">記錄點放置技能（僅到點施放·各自冷卻）</div>
    <div id="ptList" style="display:flex;flex-direction:column;gap:5px"></div>
@@ -668,7 +694,7 @@ function showView(name){
 }
 function loadDash(){
   fetchStatus(); refreshRemote(); refreshIdle();
-  refreshFace(); refreshMapStat();                     // 方向條 + 地圖座標狀態
+  refreshFace(); refreshMapStat(); refreshRuneStatus(); refreshPatrolMins();
   if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
 }
 async function enterRemote(){
@@ -1289,13 +1315,27 @@ $("#atkSaveBtn").onclick = async ()=>{
   const mtxt = mode==="tap2"?"到點按兩次":(mode==="move"?"移動時按壓":"到點長按2秒");
   if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mtxt}`;
 };
-async function doPatrolStart(sel){
+// 巡邏時限:讀存檔值填進輸入框(伺服器重啟後也保留設定)
+async function refreshPatrolMins(){
   try{
-    const r = await fetch(`/nav/patrol?token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await (await fetch(`/nav/patrol_minutes?token=${encodeURIComponent(token)}`)).json();
+    if(Number.isInteger(j.minutes)) $("#patrolMins").value = j.minutes;
+  }catch(_){}
+}
+function fmtRemain(sec){
+  if(sec === null || sec === undefined) return "無限";
+  const s = Math.max(0, Math.round(sec));
+  return `${String(Math.floor(s/3600)).padStart(2,"0")}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+}
+async function doPatrolStart(sel){
+  const mins = Math.max(0, Math.min(1440, parseInt($("#patrolMins").value, 10) || 0));
+  try{
+    const r = await fetch(`/nav/patrol?minutes=${mins}&token=${encodeURIComponent(token)}`, { method:"POST" });
     const j = await r.json().catch(()=>({}));
-    const txt = r.ok ? "▶ 巡邏已啟動（隨機跨層走位＋到點平A/放置技能）" : ("⚠ " + (j.detail || "啟動失敗"));
+    const lim = mins ? `，時限 ${mins} 分鐘` : "，無限巡邏";
+    const txt = r.ok ? `▶ 巡邏已啟動（隨機跨層走位＋到點平A/放置技能）${lim}` : ("⚠ " + (j.detail || "啟動失敗"));
     document.querySelectorAll(sel).forEach(e=>e.textContent = txt);
-    toast(r.ok ? "▶ 巡邏已啟動" : (j.detail||"啟動失敗"), r.ok);
+    toast(r.ok ? `▶ 巡邏已啟動${lim}` : (j.detail||"啟動失敗"), r.ok);
   }catch(_){ document.querySelectorAll(sel).forEach(e=>e.textContent = "啟動失敗（連線？）"); toast("啟動失敗（連線？）", false); }
 }
 async function doPatrolStop(sel){
@@ -1306,6 +1346,40 @@ async function doPatrolStop(sel){
 $("#patrolStartBtn").onclick = ()=> doPatrolStart("#patrolMsg,#menuPatrolMsg");
 $("#patrolStopBtn").onclick  = ()=> doPatrolStop("#patrolMsg,#menuPatrolMsg");
 $("#menuPatrolStop").onclick  = ()=> doPatrolStop("#menuPatrolMsg,#patrolMsg");
+
+// ---- 符文自動解除：開關 + 辨識測試（校準用） ----
+const RUNE_ARROW = {up:"↑",down:"↓",left:"←",right:"→"};
+async function refreshRuneStatus(){
+  try{
+    const s = await (await fetch(`/rune/status?token=${encodeURIComponent(token)}`)).json();
+    $("#runeEnable").checked = !!s.enabled;
+  }catch(_){}
+}
+$("#runeEnable").onchange = async (e)=>{
+  const on = e.target.checked ? 1 : 0;
+  try{
+    await fetch(`/rune/enable?on=${on}&token=${encodeURIComponent(token)}`, { method:"POST" });
+    toast(on ? "🔮 符文自動解除：開（正在預熱辨識器）" : "符文自動解除：關");
+    placeTick();                       // 立刻更新徽章,不等下一次輪詢
+  }catch(_){ toast("設定失敗（連線？）", false); }
+};
+async function runeProbe(url, label){
+  // dataset.hint=0 → 暫時把這行讓給測試結果,別被每秒的狀態 tick 蓋掉
+  $("#runeMsg").dataset.hint = "0";
+  setTimeout(()=>{ $("#runeMsg").dataset.hint = "1"; }, 15000);
+  $("#runeMsg").textContent = label + "中…（首次要等辨識器啟動，約 6~11 秒）";
+  try{
+    const j = await (await fetch(url, { method:"POST" })).json();
+    if(j.err){ $("#runeMsg").textContent = "⚠ " + j.err; toast(j.err, false); return; }
+    const seq = (j.dirs||[]).map(d=>RUNE_ARROW[d]||"?").join(" ");
+    $("#runeMsg").textContent = `認出 ${j.n} 支：${seq||"（無）"}　耗時 ${j.ms}ms　裁切圖已存 rune_shot.png`;
+    toast(`${j.n} 支 ${seq}（${j.ms}ms）`, j.n===4);
+  }catch(_){ $("#runeMsg").textContent = label+"失敗（連線？）"; toast(label+"失敗", false); }
+}
+$("#runeDetectBtn").onclick = ()=>
+  runeProbe(`/rune/detect?token=${encodeURIComponent(token)}`, "辨識");
+$("#runeTestBtn").onclick = ()=>
+  runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
 
 // ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
 document.querySelectorAll(".dtab").forEach(t=>{
@@ -1318,13 +1392,57 @@ document.querySelectorAll(".dtab").forEach(t=>{
 
 // ---- 巡邏監控：階段(平A/放置技能)＋各放置技能點下次觸發倒數 ----
 const PHASE_TXT = {idle:"待機",starting:"啟動中",patrol:"巡邏中",settle:"定位",rope_up:"上繩",
-  fall:"下跳",fall_adjust:"下跳修正",move_x:"水平移動",goto:"前往點",cast:"平A攻擊",place:"放置技能",done:"完成"};
+  fall:"下跳",fall_adjust:"下跳修正",move_x:"水平移動",goto:"前往點",cast:"平A攻擊",place:"放置技能",
+  done:"完成",time_up:"時間到已停止",purple_pause:"紫標暫停"};
+// 開關徽章:一眼看出「開/關」以及「開了但目前不生效」
+function badge(label, on, note, warn){
+  const c = warn ? ["#3a2d16","#ffb020"] : (on ? ["#14331f","#7fe0b0"] : ["#26282f","#8a8f99"]);
+  const mark = on ? (warn ? "⚠" : "✓") : "✕";
+  return `<span style="font-size:11px;padding:2px 7px;border-radius:99px;`
+       + `background:${c[0]};color:${c[1]};border:1px solid ${c[1]}44;white-space:nowrap">`
+       + `${mark} ${label}${note ? "・" + note : ""}</span>`;
+}
 async function placeTick(){
   try{
     const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
-    $("#patrolPhase").textContent = st.running
-      ? `狀態：${PHASE_TXT[st.phase]||st.phase||"--"}　已造訪 ${st.rounds||0} 點`
-      : "狀態：未在巡邏";
+    // 三態:解符文中 / 巡航中 / 停止中。解符文期間 navigator 也在跑導航,
+    // 只看 st.running 會誤顯示成巡航中,所以用伺服器算好的 overall。
+    const S = {solving:["🔮 解除符文中","#c9a0ff"], patrol:["▶ 巡航中","#7fe0b0"],
+               stopped:["⏹ 停止中","#9aa0ad"]}[st.overall] || ["--","#9aa0ad"];
+    const el = $("#patrolPhase");
+    el.style.color = S[1];
+    const detail = st.overall === "stopped"
+      ? (st.phase === "time_up" ? "・巡邏時間到" : (st.error ? "・" + st.error : ""))
+      : `・${PHASE_TXT[st.phase]||st.phase||"--"}・已造訪 ${st.rounds||0} 點`;
+    el.textContent = S[0] + detail;
+    // 大字倒數:無限用 ∞,停止中就不顯示時間避免誤讀
+    const clk = $("#patrolClock");
+    if(st.overall === "stopped"){ clk.textContent = "--:--:--"; clk.style.color = "#5a5f6b"; }
+    else if(st.patrol_remaining === null || st.patrol_remaining === undefined){
+      clk.textContent = "∞ 無限巡邏"; clk.style.color = "#e6e8ee";
+    }else{
+      clk.textContent = fmtRemain(st.patrol_remaining);
+      clk.style.color = st.patrol_remaining < 300 ? "#ffb020" : "#e6e8ee";  // 剩 5 分鐘轉黃
+    }
+    // 所有開關的一覽:開了但目前不生效的用黃色警示,避免「以為開了就會動」
+    const runeIneffective = st.rune_enabled && st.overall === "stopped";
+    $("#switchRow").innerHTML = [
+      badge("巡邏", st.overall !== "stopped"),
+      badge("符文自動解除", !!st.rune_enabled,
+            runeIneffective ? "需巡邏中" : "", runeIneffective),
+      badge("跳躍攻擊", !!st.jump_atk),
+      badge("下墜攻擊", !!st.fall_atk),
+      badge(`平A ${st.attack_key ? labelFor(st.attack_key) : "--"}`, !!st.attack_key,
+            st.attack_mode || ""),
+    ].join("");
+    // 符文列的說明(測試結果顯示期間讓位)
+    const rm = $("#runeMsg");
+    if(rm && rm.dataset.hint !== "0"){
+      rm.textContent = st.rune_enabled
+        ? (runeIneffective ? "⚠ 已開啟，但只在巡邏進行中才會自動解除（目前未巡邏）"
+                           : "✓ 巡邏中遇到符文會自動前往解除")
+        : "未開啟：紫標只會通知＋暫停巡邏";
+    }
     const pl = st.placements || [], box = $("#placeMon");
     if(!pl.length){ box.textContent = "（此地圖無放置技能點）"; return; }
     box.innerHTML = pl.map(p=>{

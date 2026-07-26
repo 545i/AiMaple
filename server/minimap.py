@@ -59,33 +59,17 @@ def set_event_hook(fn):
 # 背景監看:掛機時前端可能沒開預覽,由此執行緒定期跑 detect_once 觸發紫標通知
 _watch_stop_ev = threading.Event()
 _watch_thread = None
+_watch_gen = 0                    # 世代號:舊執行緒靠它自我退場(見 _watch_loop)
 
 
 # ---------- 取得遊戲視窗影格 ----------
 def _grab_window():
-    """maplestory.exe 視窗的 BGR 影格；拿不到回 None。"""
-    import video_pipeline
-    import wgc
-    if not video_pipeline.force_window_target(GUARD_EXE):
-        return None                       # 遊戲沒開:不偵測、不退回桌面
-    hwnd = video_pipeline.state["hwnd"]
-    if wgc.ensure(hwnd):
-        f = wgc.latest(max_age=1.0)
-        if f is None:                     # 剛啟動:等第一格
-            for _ in range(10):
-                time.sleep(0.1)
-                f = wgc.latest(max_age=1.0)
-                if f is not None:
-                    break
-        if f is not None:
-            return cv2.cvtColor(f, cv2.COLOR_BGRA2BGR)
-    bbox = video_pipeline.window_abs_bbox(hwnd)   # 備援:螢幕區域裁切
-    if not bbox:
-        return None
-    import mss
-    with mss.mss() as sct:
-        img = np.asarray(sct.grab(bbox))
-    return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+    """maplestory.exe 視窗的【原始全解析度】BGR 影格;拿不到回 None。
+    統一走 frames 這個單一來源(WGC → mss 備援只在那裡實作一份)。
+    符文辨識(rune)也是呼叫這個函式,與巡邏共用同一份影格。"""
+    import frames
+    f, _is_window = frames.get()
+    return f
 
 
 # ---------- 角色黃點 ----------
@@ -319,19 +303,22 @@ def detect_once():
             _hist_dot.append(dot is not None and not stale)
             if _maybe_lock(bbox):
                 _locked_size = (w, h)
-        # 紫色菱形:出現的瞬間(前一幀無→這一幀有)發 Telegram,冷卻內不重發
+        # 紫色菱形:出現的瞬間(前一幀無→這一幀有)發 Telegram,冷卻內不重發。
+        # 【事件回調不受通知冷卻節流】原本 hook 跟 telegram 綁在同一個 if 裡,等於
+        # 「解符文的能力被通知冷卻(預設 120s)綁架」—— 冷卻內出現的符文完全不會觸發解除,
+        # 而巡邏兜底看到紫標就停,結果是開著巡邏原地不動。通知要節流,事件不該節流。
         purple = []
         if bbox:
             x, y, bw, bh = bbox
             purple = _purple_marks(frame[y:y + bh, x:x + bw])
             now = time.monotonic()
-            if purple and not _purple_prev \
-                    and now - _purple_notify_ts >= PURPLE_NOTIFY_COOLDOWN:
-                _purple_notify_ts = now
-                pos = ", ".join(f"({px},{py})" for px, py in purple)
-                notify.telegram(f"🟣 小地圖出現紫色標記 x{len(purple)} 位置 {pos}"
-                                f"（小地圖 {bw}x{bh}）")
-                if _event_hook:                  # 紫標出現 → 通知外部(暫停巡邏)
+            if purple and not _purple_prev:      # 上升沿
+                if now - _purple_notify_ts >= PURPLE_NOTIFY_COOLDOWN:
+                    _purple_notify_ts = now
+                    pos = ", ".join(f"({px},{py})" for px, py in purple)
+                    notify.telegram(f"🟣 小地圖出現紫色標記 x{len(purple)} 位置 {pos}"
+                                    f"（小地圖 {bw}x{bh}）")
+                if _event_hook:                  # 紫標出現 → 通知外部(解符文/暫停巡邏)
                     try:
                         _event_hook("purple", purple)
                     except Exception as _e:
@@ -350,29 +337,36 @@ def detect_once():
 
 
 # ---------- 背景監看(掛機時前端未開預覽也要能發紫標通知) ----------
-def _watch_loop(interval):
-    while not _watch_stop_ev.wait(interval):
+def _watch_loop(interval, gen):
+    """gen = 這條執行緒的世代號。世代不再是最新的就自己退場 ——
+    共用一個 Event 當停止旗標時,stop 後緊接 start 會把旗標清掉,舊執行緒會因此復活,
+    變成兩條同時在跑完整小地圖偵測(閒置模式反覆開關就會累積)。世代號讓舊的必定退場。"""
+    while gen == _watch_gen and not _watch_stop_ev.wait(interval):
         try:
             detect_once()
         except Exception as e:
             print(f"[minimap] 監看偵測錯誤: {e}")
+    print(f"[minimap] 背景監看執行緒退場(gen={gen})")
 
 
 def watch_start(interval=2.0):
     """啟動背景監看執行緒(每 interval 秒偵測一次;已在跑則不動作)。"""
-    global _watch_thread
+    global _watch_thread, _watch_gen
     if _watch_thread is not None and _watch_thread.is_alive():
         return
+    _watch_gen += 1                      # 新世代:先前殘留的執行緒看到就會退場
     _watch_stop_ev.clear()
-    _watch_thread = threading.Thread(target=_watch_loop, args=(interval,), daemon=True)
+    _watch_thread = threading.Thread(target=_watch_loop,
+                                     args=(interval, _watch_gen), daemon=True)
     _watch_thread.start()
-    print("[minimap] 背景監看啟動(紫標 Telegram 通知)")
+    print(f"[minimap] 背景監看啟動(紫標 Telegram 通知, gen={_watch_gen})")
 
 
 def watch_stop():
-    global _watch_thread
+    global _watch_thread, _watch_gen
     if _watch_thread is None:
         return
+    _watch_gen += 1                      # 讓現有執行緒的世代失效,不只靠 Event
     _watch_stop_ev.set()
     _watch_thread = None
     print("[minimap] 背景監看停止")

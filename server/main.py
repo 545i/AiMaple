@@ -38,6 +38,7 @@ import mapdata
 import navigator
 import minimap
 import calib
+import rune
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
@@ -139,8 +140,17 @@ async def lifespan(app):
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_terrain_fn(lambda: (mapdata.points(mapdata.current_map_id()),
                                       mapdata.platforms(mapdata.current_map_id())))
-    # 紫標(特殊NPC/玩家進圖)出現 → 即時暫停巡邏(危險規避);Telegram 通知照舊
-    minimap.set_event_hook(lambda kind, data: navigator.pause_purple() if kind == "purple" else None)
+    # 紫標(=符文 rune)出現 → 開了自動解除就去解,否則沿用「暫停巡邏」(危險規避)。
+    # Telegram 通知照舊(在 minimap 內)。
+    rune.set_hooks(navigator=navigator, keyboard=keyboard,
+                   focus_fn=lambda: video_pipeline.guard_focus(GUARD_EXE),
+                   resume_fn=_start_patrol_current)
+
+    def _on_minimap_event(kind, data):
+        if kind == "purple":
+            if not rune.trigger_solve(data):      # 沒接手 → 回 False → 暫停巡邏
+                navigator.pause_purple()
+    minimap.set_event_hook(_on_minimap_event)
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -165,6 +175,7 @@ async def lifespan(app):
     video_pipeline.stop()
     screen.stop()
     tunnel.stop()
+    rune.shutdown()
     wgc.stop()
 
 
@@ -598,27 +609,66 @@ def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)
     return JSONResponse(navigator.status())
 
 
+def _start_patrol_current():
+    """依當前地圖啟動巡邏(nav_patrol 與 rune 解完續巡邏共用)。回 (ok,msg)。
+    傳函式而非快照:巡邏每輪重讀最新點 → 運行中改放置技能/冷卻即時生效(不必停巡邏)。"""
+    mid = mapdata.current_map_id()
+    if not mapdata.has_layout(mid):
+        return False, "此地圖尚未設定座標"
+    # 場上已經有符文就先去解:紫標 hook 是邊緣觸發、又被 Telegram 通知冷卻節流,
+    # 「開巡邏前符文就在」不會觸發它,而巡邏兜底看到紫標就停 → 開了巡邏卻原地不動。
+    # 解完 rune 會自己呼叫這個函式接回巡邏(只有解成功才會,不會遞迴)。
+    if rune.solve_if_present():
+        return True, "偵測到符文,先去解除,解完自動續巡邏"
+    att = mapdata.get_attack()
+    navigator.set_jump_hold_atk(att.get("jump_atk", False))
+    navigator.set_fall_hold_atk(att.get("fall_atk", False))
+    # 這裡刻意【不】呼叫 screen.ensure_started():那是 MJPEG 預覽的 JPEG 編碼管線,
+    # 巡邏用不到(導航讀的是 wgc 共用影格)。開著等於沒人看還每秒編 30 張 JPEG 搶 CPU。
+    # 中控頁的 /monitor/frame 會自己惰性啟動它。
+    video_pipeline.guard_focus(GUARD_EXE)
+    return navigator.patrol_start(lambda: mapdata.points(mid), att["key"], att["mode"])
+
+
+@app.get("/nav/patrol_minutes")
+def nav_patrol_minutes_get(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse({"minutes": mapdata.get_patrol_minutes()})
+
+
+@app.post("/nav/patrol_minutes")
+def nav_patrol_minutes_set(token: str = Query(""), minutes: int = Query(...)):
+    """設定巡邏時限(分鐘),0=無限。存檔,下次開巡邏沿用。"""
+    _check_owner(token)
+    return JSONResponse({"minutes": mapdata.set_patrol_minutes(minutes)})
+
+
 @app.post("/nav/patrol")
-def nav_patrol(token: str = Query("")):
+def nav_patrol(token: str = Query(""), minutes: int = Query(-1)):
     """啟動自動巡邏掛機:巡邏點【隨機不連號】走位 + 到點平A + 放置技能(含冷卻)。
     平A鍵/施放方式取自中控『平A設定』;放置技能取自各點設定。
+    minutes:巡邏時限,0=無限,-1(預設)=沿用存檔設定;有給值時同時存檔。
     需先設定座標(has_layout);與訪客/校準/閒置互斥。"""
     _check_owner(token)
     if remote_access.info()["active"]:
         raise HTTPException(status_code=409, detail="訪客(出租)進行中,不可巡邏")
     if calib.is_running() or idle_mode.is_running():
         raise HTTPException(status_code=409, detail="校準/閒置模式進行中,請先停止")
+    # 先存時限再檢查地圖:否則地圖偵測不到(map_id 空)時直接 409,使用者輸入的分鐘數
+    # 會被一起吞掉,下次還得重設一次。
+    mins = mapdata.set_patrol_minutes(minutes) if minutes >= 0 \
+        else mapdata.get_patrol_minutes()
     mid = mapdata.current_map_id()
+    if not mid:
+        raise HTTPException(status_code=409,
+                            detail="偵測不到小地圖(請確認遊戲畫面/小地圖沒被收起)")
     if not mapdata.has_layout(mid):
         raise HTTPException(status_code=409,
                             detail="此地圖尚未設定座標,請先在中控記錄巡邏點")
-    att = mapdata.get_attack()
-    navigator.set_jump_hold_atk(att.get("jump_atk", False))
-    navigator.set_fall_hold_atk(att.get("fall_atk", False))
-    screen.ensure_started()
-    video_pipeline.guard_focus(GUARD_EXE)
-    # 傳函式而非快照:巡邏每輪重讀最新點 → 運行中改放置技能/冷卻即時生效(不必停巡邏)
-    ok, msg = navigator.patrol_start(lambda: mapdata.points(mid), att["key"], att["mode"])
+    # 時限只在【使用者按下開始巡邏】時設定一次。解符文完成後會再呼叫 _start_patrol_current
+    # 接回巡邏,那條路徑刻意不重設期限,否則每解一次符文就把掛機時間往後延。
+    navigator.set_patrol_deadline(mins * 60)
+    ok, msg = _start_patrol_current()
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     return JSONResponse(navigator.status())
@@ -627,14 +677,100 @@ def nav_patrol(token: str = Query("")):
 @app.get("/nav/status")
 def nav_status(token: str = Query("")):
     _check_owner(token)
-    return JSONResponse(navigator.status())
+    s = navigator.status()
+    # 併入單一狀態供中控頁顯示:解符文期間 navigator 也在跑導航,只看 nav.running
+    # 會誤顯示成「巡邏中」。
+    s["overall"] = rune.overall_state()
+    s["rune_enabled"] = rune.status()["enabled"]
+    # 各開關現值一併回傳,讓中控頁的狀態面板不必再多打幾支 API 才能顯示徽章
+    att = mapdata.get_attack()
+    s["attack_key"] = att.get("key", "")
+    s["attack_mode"] = att.get("mode", "")
+    s["jump_atk"] = bool(att.get("jump_atk", False))
+    s["fall_atk"] = bool(att.get("fall_atk", False))
+    return JSONResponse(s)
 
 
 @app.post("/nav/stop")
 def nav_stop(token: str = Query("")):
+    """使用者手動停止 → 連時限一起清掉(倒數不該繼續跑)。
+    注意不能把清除放進 navigator.stop():解符文流程一開始就會呼叫它,清掉的話
+    解完接回巡邏會變成無限巡邏,設定的時限等於失效。"""
     _check_owner(token)
     navigator.stop()
+    navigator.set_patrol_deadline(None)
     return JSONResponse(navigator.status())
+
+
+# ===== 符文(rune)自動解除:常駐 claude CLI 辨識箭頭方向 =====
+@app.get("/rune/status")
+def rune_status(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse(rune.status())
+
+
+@app.post("/rune/enable")
+def rune_enable(token: str = Query(""), on: int = Query(...)):
+    """開/關符文自動解除。關閉時紫標維持原本『暫停巡邏 + Telegram 通知』行為。"""
+    _check_owner(token)
+    rune.set_enabled(bool(on))
+    return JSONResponse(rune.status())
+
+
+@app.post("/rune/warmup")
+def rune_warmup(token: str = Query("")):
+    """預熱 claude worker(第一次 ~6s,之後每次辨識降到 2.5~4.8s)。"""
+    _check_owner(token)
+    ok, msg = rune.worker_warmup()
+    return JSONResponse({"ok": ok, "msg": msg, "worker": rune.status()["worker"]})
+
+
+@app.post("/rune/detect")
+def rune_detect(token: str = Query("")):
+    """乾跑辨識當前畫面(不碰角色)+ 存 server/rune_shot.png,供校準裁切框。"""
+    _check_owner(token)
+    return JSONResponse(rune.detect_now())
+
+
+@app.get("/rune/probe")
+def rune_probe(token: str = Query("")):
+    """只讀不動:角色點與紫標的小地圖座標、距離、紫標是否被角色蓋住。"""
+    _check_owner(token)
+    return JSONResponse(rune.probe())
+
+
+@app.post("/rune/solve")
+def rune_solve(token: str = Query(""), resume: int = Query(0)):
+    """手動觸發完整解除流程(導航→開謎題→辨識→按方向→驗證)。背景執行,用 /rune/status 看進度。
+    resume=1 才在解完後接回巡邏;測試時預設 0,角色留在原地。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中")
+    return JSONResponse(rune.solve_now(bool(resume)))
+
+
+@app.post("/rune/calib")
+def rune_calib(token: str = Query(""), dxs: str = Query("0,3,6,9,12,15"),
+               cooldown: float = Query(15.0)):
+    """量測符文互動半徑:逐一走到紫標旁 dx 格按啟動鍵,看謎題開不開(不按方向鍵)。
+    每格之間等 cooldown 秒讓謎題自然關閉。耗時約 len(dxs) x (走路+cooldown)。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中")
+    try:
+        vals = tuple(int(v) for v in dxs.split(",") if v.strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="dxs 格式錯誤,例:0,3,6,9")
+    return JSONResponse(rune.calibrate(vals, cooldown))
+
+
+@app.post("/rune/test")
+def rune_test(token: str = Query(""), solve: int = Query(0)):
+    """測試:角色須自己站在符文上 → 焦點 + 按啟動鍵 → 辨識。solve=1 才真的按方向鍵。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中")
+    return JSONResponse(rune.test_activate(bool(solve)))
 
 
 # ===== 中控頁監視畫面：最新單張 JPEG(主人專用,前端每秒抓一張 ≈1 秒延遲) =====

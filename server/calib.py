@@ -54,8 +54,14 @@ def status():
     return s
 
 
+_RESULTS_KEEP = 200                   # 記憶體只留這麼多筆(顯示只用最後 30 筆;
+                                      # 完整紀錄在 calib_data.jsonl,不必全放記憶體)
+
+
 def _save(rec):
     _session_results.append(rec)
+    if len(_session_results) > _RESULTS_KEEP:
+        del _session_results[:-_RESULTS_KEEP]      # 原本只增不減,長時間校準會一直長
     _state["last"] = rec
     try:
         with open(_DATA_PATH, "a", encoding="utf-8") as f:

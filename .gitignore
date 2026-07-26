@@ -27,5 +27,18 @@ scratch_*
 auto.crt
 auto.key
 server/telegram.json
+
+# 執行期產物：使用者資料與記錄，不進版控
+# 註：.gitignore 不支援行尾註解，整行都會被當成 pattern，註解必須獨立成行
+# 各地圖巡邏點/平台座標
 layouts/
-rune_model_rnn_filtered_cannied/
+# 具名地圖設置（「北方」等）
+profiles/
+# 移動記錄，會滾到 8MB 後輪替成 .1
+server/nav_moves.jsonl*
+# 運動校準原始數據
+server/calib_data.jsonl
+# 符文除錯圖（舊版路徑；現已改存 %TEMP%\maple_rune）
+server/rune_shot.png
+# 某次工具產生的 0 位元殘留
+*.conf.lock

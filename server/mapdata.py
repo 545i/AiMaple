@@ -204,6 +204,30 @@ def set_attack(key, mode, jump_atk=False, fall_atk=False):
         return a
 
 
+# ---- 巡邏計時全域設定:分鐘數(0=無限) ----
+_PATROL_PATH = os.path.join(_DIR, "_patrol.json")
+PATROL_DEFAULT_MIN = 60                # 預設 1 小時
+
+
+def get_patrol_minutes():
+    """巡邏時限(分鐘),0=無限。讀不到或格式壞掉回預設值。"""
+    try:
+        with open(_PATROL_PATH, encoding="utf-8") as f:
+            v = int(json.load(f).get("minutes", PATROL_DEFAULT_MIN))
+        return max(0, min(24 * 60, v))
+    except Exception:
+        return PATROL_DEFAULT_MIN
+
+
+def set_patrol_minutes(minutes):
+    with _lock:
+        v = max(0, min(24 * 60, int(minutes)))
+        os.makedirs(_DIR, exist_ok=True)
+        with open(_PATROL_PATH, "w", encoding="utf-8") as f:
+            json.dump({"minutes": v}, f, ensure_ascii=False)
+        return v
+
+
 def remove_last(mid):
     """移除最後一個記錄的點(設定時手滑用)。回目前點數。"""
     with _lock:

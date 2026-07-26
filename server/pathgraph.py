@@ -205,11 +205,17 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     return nodes, edges
 
 
-def build_physics(points, platforms, jump=30, jump_up=11, y_tol=4):
+def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
         (可略升<=jump_up、可大降;抛物線落點,實測同層 30px)。
+        jump_up 原本是 11,由 nav_moves.jsonl 7892 筆實測修正為 8:
+          上升  8 格 404/404 成功(100%)
+          上升 11 格   1/8  成功(12.5%)  ← 11 其實跳不上去
+          上升 15/23 格 全失敗
+        設 11 會讓「差 11 格的兩層」被規劃成二段跳而一路失敗(實測有地圖 y=51→y=40
+        正好差 11,導航反覆嘗試都上不去,得靠繩索)。
       * fall:掉落——a 的 x 正下方有平台(中間無夾層)→ 垂直落下。
       * rope:大落差上升——a 上方有重疊平台且升幅>jump_up → 走到重疊區上繩到頂。
     每種邊都對應一個可靠的按鍵動作。回 (nodes, edges)。"""
