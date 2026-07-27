@@ -912,9 +912,20 @@ def _pop_virtual_platform(base):
         _navigator.set_terrain_fn(base)
 
 
-def _goto(tx, ty):
-    """導航到 (tx,ty) 並等它跑完。回是否成功啟動並抵達(navigator 自己的容差)。"""
-    ok, msg = _navigator.move_to(int(tx), int(ty))
+def _goto(tx, ty, precise=True):
+    """導航到 (tx,ty) 並等它跑完。回是否成功啟動並抵達。
+
+    【一律用精確模式】navigator 的預設容差 X_TOL=3 會讓落點在離符文 3~9 格之間浮動,
+    而可用環只有 5~7 格(RADIUS_MIN..MAX) —— 誤差範圍比環還寬,落在環外是常態。
+    這裡的代價【不是】謎題窗:窗是按下 ACTIVATE_KEY 才開始計時的,走位全程在窗外。
+    真正的代價是落在環外的兩種後果:
+      太遠 → 按啟動鍵沒反應,整輪白費,還吃掉一次符文冷卻(重試要等 RETRY_WAIT)
+      太近 → 角色蓋住紫標,「紫標消失」的驗證失效,會把失敗誤判成解除成功
+    兩者都得再跑一次完整導航補救(3~7 秒)。精確模式多花約 1 秒把 x 收斂到 ±1,
+    換掉的是這些。
+
+    輪詢 50ms 而非 200ms:單純少掉等待端每次平均 100ms 的空轉,status() 幾乎零成本。"""
+    ok, msg = _navigator.move_to(int(tx), int(ty), precise=precise)
     if not ok:
         _last["err"] = f"導航失敗: {msg}"
         return False
@@ -922,7 +933,7 @@ def _goto(tx, ty):
     while time.monotonic() - t0 < ARRIVE_TIMEOUT:
         if not _navigator.status().get("running"):
             break
-        time.sleep(0.2)
+        time.sleep(0.05)
     return bool(_navigator.status().get("arrived"))
 
 
@@ -1222,7 +1233,10 @@ def calibrate(dxs=(0, 3, 6, 9, 12, 15), cooldown=15.0):
     rows = []
     for dx in dxs:
         row = {"dx": dx, "side": side}
-        ok, msg = _navigator.move_to(int(px + side * dx), int(py))
+        # 精確走位:非精確模式落點誤差 ±3,而這裡量的就是「距離 dx 能不能開」——
+        # 讓導航誤差混進待測量本身,夾出來的上下界會比真值鬆。real_dist 記的是實際
+        # 距離,事後仍可對照,但走準了才不必事後修正。
+        ok, msg = _navigator.move_to(int(px + side * dx), int(py), precise=True)
         if not ok:
             row["err"] = f"導航失敗: {msg}"
             rows.append(row)

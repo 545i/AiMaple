@@ -562,7 +562,7 @@ def _goto_sync(tx, ty, skills=None, precise=False):
     return arrived
 
 
-def _run(tx, ty, skills):
+def _run(tx, ty, skills, precise=False):
     try:
         _state.update({"phase": "settle", "steps": 0, "error": ""})
         if _focus_fn:
@@ -570,7 +570,7 @@ def _run(tx, ty, skills):
                 _focus_fn()
             except Exception:
                 pass
-        _goto_sync(tx, ty, skills)
+        _goto_sync(tx, ty, skills, precise=precise)
         _state["phase"] = "done"
     except Exception as e:
         _state["error"] = f"{e!r}"
@@ -745,8 +745,16 @@ def _patrol_wrap(points_fn, attack_key, cast_mode):
         _state["running"] = False
 
 
-def move_to(tx, ty, skills=None):
-    """啟動背景導航到 (tx,ty)。skills=移動時同時按的技能鍵列表。回 (ok,msg)。"""
+def move_to(tx, ty, skills=None, precise=False):
+    """啟動背景導航到 (tx,ty)。skills=移動時同時按的技能鍵列表。回 (ok,msg)。
+
+    precise=True:到位後再走路回正到 ±PRECISE_X_TOL(1px)。
+
+    【什麼時候該開】呼叫端對落點的要求比 X_TOL(3) 還嚴的時候。最典型的是符文:
+    它要角色停在離紫標 5~7 格的環內(環寬 3 格),而非精確模式的落點會在 3~9 格
+    之間浮動 —— 誤差範圍比環還寬,落在環外是常態。太近會蓋住紫標(驗證失效)、
+    太遠按不到啟動鍵(整輪白費並吃掉符文冷卻),兩種都得再跑一次完整導航補救,
+    每次 3~7 秒。先花 ~1 秒走準,比事後補救便宜得多。"""
     global _thread
     with _op_lock:
         if _state["running"]:
@@ -756,7 +764,8 @@ def move_to(tx, ty, skills=None):
         _stop.clear()
         _state.update({"running": True, "phase": "starting", "target": [tx, ty],
                        "arrived": False, "error": ""})
-        _thread = threading.Thread(target=_run, args=(int(tx), int(ty), skills or []),
+        _thread = threading.Thread(target=_run,
+                                   args=(int(tx), int(ty), skills or [], bool(precise)),
                                    daemon=True)
         _thread.start()
         return True, "ok"
