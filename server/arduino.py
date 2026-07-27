@@ -100,11 +100,22 @@ class ArduinoKeyboard:
         except Exception:
             return 0, 0
 
-    def _write_cmd(self, cmd):
+    def _write_cmd(self, cmd, want_reply=False):
+        """送一筆指令。want_reply=True 時回傳板子的回應字串(給測試訊號用)。
+
+        平時刻意【不】回傳:走射後不理最快,回應只讀掉避免緩衝累積。但「測試訊號」
+        需要確認板子真的回了 OK,否則只能證明「我們寫進序列埠」而不是「韌體收到並執行」。"""
         if not self.connected or self._ser is None:
-            return
+            return "" if want_reply else None
         try:
             self._ser.write((cmd + "\n").encode())
+            if want_reply:
+                old = self._ser.timeout
+                self._ser.timeout = 0.6        # 韌體處理 + 回覆的餘裕
+                try:
+                    return self._ser.readline().decode(errors="replace").strip()
+                finally:
+                    self._ser.timeout = old
             if ARDUINO_WAIT_ACK:
                 self._ser.readline()           # 等 OK/ERR（較可靠、較慢）
             elif self._ser.in_waiting:
@@ -112,6 +123,32 @@ class ArduinoKeyboard:
         except Exception as e:
             print(f"[Arduino] 送出錯誤: {e}")
             self.connected = False
+            return "" if want_reply else None
+
+    def probe(self, cmd, timeout=2.0):
+        """同步送一筆指令並取回板子回應(測試訊號用)。回應字串;失敗回 ''。
+
+        【必須走同一條佇列】序列埠只由 worker 執行緒讀寫,從 HTTP 執行緒直接讀會與
+        worker 搶同一個 readline,兩邊都可能拿到對方的回應。把「要回應」這件事包成
+        佇列項目交給 worker 執行,順序與獨占性都由既有設計保證。"""
+        if not self.connected:
+            return ""
+        done = threading.Event()
+        box = {}
+        self._q.put(("PROBE", cmd, box, done))
+        return box.get("reply", "") if done.wait(timeout) else ""
+
+    def _dispatch_special(self, item):
+        """處理非字串的佇列項目(目前只有 PROBE)。處理掉回 True,否則回 False。
+        抽成函式是因為佇列有兩個取出點(主迴圈與 MMOVE 合併迴圈),兩邊都要能認得。"""
+        if isinstance(item, tuple) and item and item[0] == "PROBE":
+            _tag, cmd, box, done = item
+            try:
+                box["reply"] = self._write_cmd(cmd, want_reply=True) or ""
+            finally:
+                done.set()          # 一定要 set,否則呼叫端等到逾時才回
+            return True
+        return False
 
     def _run(self):
         """單一 worker：從佇列取指令、依序送出。
@@ -124,6 +161,8 @@ class ArduinoKeyboard:
             cmd = self._q.get()
             if cmd is None:
                 break
+            if self._dispatch_special(cmd):
+                continue
             if isinstance(cmd, str) and cmd.startswith("MMOVE:"):
                 dx, dy = self._parse_mmove(cmd)
                 trailing = None      # 合併時撞到的非 MMOVE 指令(合併送完後接著送)
@@ -136,6 +175,12 @@ class ArduinoKeyboard:
                     if nxt is None:
                         closing = True
                         break
+                    if not isinstance(nxt, str):
+                        # PROBE 這類非字串項目:當成「非 MMOVE」中斷合併,交給下面的
+                        # trailing 派發。少了這個判斷,下一行的 nxt.startswith 會對
+                        # tuple 拋 AttributeError,worker 執行緒直接死 → 鍵盤全失效。
+                        trailing = nxt
+                        break
                     if nxt.startswith("MMOVE:"):
                         ndx, ndy = self._parse_mmove(nxt)
                         dx += ndx; dy += ndy
@@ -143,7 +188,7 @@ class ArduinoKeyboard:
                         trailing = nxt
                         break
                 self._write_cmd(f"MMOVE:{dx},{dy}")
-                if trailing is not None:
+                if trailing is not None and not self._dispatch_special(trailing):
                     self._write_cmd(trailing)
                 if closing:
                     break

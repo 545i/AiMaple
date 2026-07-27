@@ -17,9 +17,11 @@ import numpy as np
 import cv2
 
 import minimap
+import paths
 
-_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "..", "layouts"))
+# 走 paths:打包後這裡要落在 exe 旁的素材夾。若沿用 ../layouts 會指到 PyInstaller
+# 的暫存解壓目錄,使用者設好的巡邏點關掉程式就消失,而且不會有任何錯誤訊息。
+_DIR = paths.data_dir("layouts")
 _lock = threading.Lock()
 
 
@@ -81,13 +83,21 @@ def has_layout(mid):
     return bool(mid) and len(load(mid).get("points", [])) > 0
 
 
+def _face(v):
+    """放置方向正規化:'left' / 'right' / ''(不限)。認不出來的一律當不限。"""
+    v = str(v or "").strip().lower()
+    return v if v in ("left", "right") else ""
+
+
 def _norm(p):
-    """點格式正規化。相容舊 [x,y] → {x,y,skill:'',cd:0,precise:False};新 dict 補齊欄位。"""
+    """點格式正規化。相容舊 [x,y] 與缺欄位的舊 dict(face 缺=不限,行為與舊版相同)。"""
     if isinstance(p, dict):
         return {"x": int(p["x"]), "y": int(p["y"]),
                 "skill": str(p.get("skill", "") or ""), "cd": float(p.get("cd", 0) or 0),
-                "precise": bool(p.get("precise", False)), "skip": bool(p.get("skip", False))}
-    return {"x": int(p[0]), "y": int(p[1]), "skill": "", "cd": 0.0, "precise": False, "skip": False}
+                "precise": bool(p.get("precise", False)), "skip": bool(p.get("skip", False)),
+                "face": _face(p.get("face"))}
+    return {"x": int(p[0]), "y": int(p[1]), "skill": "", "cd": 0.0, "precise": False,
+            "skip": False, "face": ""}
 
 
 def add_point(mid, x, y, tol=3):
@@ -103,9 +113,10 @@ def add_point(mid, x, y, tol=3):
         return True, len(d["points"])
 
 
-def set_point_skill(mid, index, skill, cd, precise=False, skip=False):
+def set_point_skill(mid, index, skill, cd, precise=False, skip=False, face=""):
     """設第 index 個巡邏點的『放置技能』鍵、冷卻秒數與精確到位模式。
     precise=True 時導航會用脈衝走路精調到 ±1px 才施放(定點召喚/圖騰用)。
+    face='left'/'right' 時,施放前會再按一次該方向鍵確保面向正確;''=不限(不轉向)。
     空鍵=取消該點放置技能。回目前點數。"""
     with _lock:
         d = load(mid)
@@ -118,6 +129,7 @@ def set_point_skill(mid, index, skill, cd, precise=False, skip=False):
                 p["cd"] = 0.0
             p["precise"] = bool(precise)
             p["skip"] = bool(skip)
+            p["face"] = _face(face)
             d["points"][index] = p
             save(mid, d)
         return len(d["points"])
@@ -254,8 +266,7 @@ def set_name(mid, name):
 
 
 # ---- 具名設置(profile):保存/讀取一整套「記錄點(含放置技能/精確)+平A」 ----
-_PROF_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                          "..", "profiles"))
+_PROF_DIR = paths.data_dir("profiles")
 
 
 def _safe_name(name):

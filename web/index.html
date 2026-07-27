@@ -389,6 +389,12 @@
      <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
    </div>
    <div id="runeMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <div class="mbtn" id="capBtn" style="margin-top:6px">💊 膠囊預覽：關</div>
+   <div id="capBox" style="display:none;margin-top:6px">
+     <img id="capImg" alt="膠囊預覽"
+          style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+     <div id="capInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+   </div>
 
    <!-- 一眼可讀的狀態面板 -->
    <div id="statusPanel" style="margin-top:10px;padding:8px 10px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
@@ -484,6 +490,24 @@
      進入遠端會連線 WebSocket、開啟即時畫面,可直接操控滑鼠鍵盤（連接管理在遠端頁內）。掛機／出租時通常不需進入。</div>
    <button class="enter-btn" id="enterRemote" style="margin-top:0">▶ 進入遠端</button>
    </div><!-- /#dpane remote -->
+
+   <!-- Arduino 韌體維護:寫入代碼 + 測試訊號。與分頁無關(硬體層),故放在共用區。 -->
+   <div class="msec" style="margin-top:16px">Arduino 韌體</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 8px">
+     韌體原始碼與編譯結果都內建在程式裡，不需另外準備檔案。寫入時鍵盤會短暫中斷（板子會重開機）。</div>
+   <div id="fwInfo" style="font-size:12px;color:#8a8f99;margin-bottom:6px">--</div>
+   <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+     <select id="fwPort" class="mfield" style="flex:1"></select>
+     <div class="mbtn" id="fwRefresh" style="flex:0 0 auto">🔄</div>
+   </div>
+   <div style="display:flex;gap:6px">
+     <div class="mbtn" id="fwTestBtn" style="flex:1">📡 測試訊號</div>
+     <div class="mbtn" id="fwFlashBtn" style="flex:1;background:#5a4320;border-color:#c08a2b">⬇ 寫入 Arduino 代碼</div>
+   </div>
+   <div id="fwMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <pre id="fwLog" style="display:none;max-height:180px;overflow:auto;background:#0f1116;
+        border:1px solid #2a2d38;border-radius:8px;padding:8px;font-size:11px;
+        color:#9aa0ac;white-space:pre-wrap;margin-top:6px"></pre>
 
    <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:16px">🆘 解除卡死（放開所有按鍵）</button>
    <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
@@ -691,11 +715,17 @@ function showView(name){
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
   if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
   if(name !== "dash" && faceTimer){ clearInterval(faceTimer); faceTimer = null; }  // 停方向輪詢
+  if(name !== "dash" && typeof stopCapPreview === "function") stopCapPreview();  // 離開儀表板停膠囊預覽
+  if(name !== "dash" && typeof watchDetect === "function") watchDetect(0);  // 撤銷背景偵測需求
 }
 function loadDash(){
   fetchStatus(); refreshRemote(); refreshIdle();
-  refreshFace(); refreshMapStat(); refreshRuneStatus(); refreshPatrolMins();
+  // refreshSettings 取代 refreshMapStat:後者只更新「地圖/點數」那一行,巡邏點清單、
+  // 地形、平A 都不填 —— 平A 尤其不能不填,表單維持預設值時按儲存會覆寫掉真正的設定。
+  refreshFace(); refreshSettings(); refreshRuneStatus(); refreshPatrolMins();
+  fwStatus();
   if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
+  if(patrolPaneOn()) watchDetect(1);
 }
 async function enterRemote(){
   showView("remote");
@@ -867,6 +897,60 @@ async function releaseStuck(btn){
 $("#releaseBtn").onclick  = e => releaseStuck(e.currentTarget);
 $("#releaseBtn2").onclick = e => releaseStuck(e.currentTarget);
 
+// ===== Arduino 韌體:寫入代碼 + 測試訊號 =====
+// 測試訊號預設按小鍵盤 5(N5):遊戲裡通常沒綁,在記事本看得到字元,一眼確認 HID 通了。
+// 判斷成功的依據是「板子回了幾次 OK」而非「送出幾次」—— 後者只證明寫進了序列埠。
+async function fwStatus(){
+  try{
+    const j = await (await fetch(`/arduino/status?token=${encodeURIComponent(token)}`)).json();
+    const fw = j.firmware || {};
+    $("#fwInfo").innerHTML =
+      `內建韌體：${fw.hex_exists ? `✅ ${(fw.hex_bytes/1024).toFixed(1)} KB` : "❌ 缺少"}`
+      + (fw.title ? `<br><span style="color:#6f7480">${fw.title}</span>` : "")
+      + `<br>連線：${j.connected ? `✅ ${j.port}` : "❌ 未連線"}`
+      + (j.can_flash ? "" : `<br><span style="color:#ffb020">⚠ ${j.why}</span>`);
+    const sel = $("#fwPort"); const keep = sel.value;
+    sel.innerHTML = (j.ports||[]).map(p=>
+      `<option value="${p.port}">${p.port}　${p.desc}</option>`).join("")
+      || `<option value="">（找不到序列埠）</option>`;
+    if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
+    else if(j.guess) sel.value = j.guess;
+  }catch(_){ $("#fwInfo").textContent = "讀取狀態失敗（連線？）"; }
+}
+$("#fwRefresh").onclick = fwStatus;
+$("#fwTestBtn").onclick = async (e)=>{
+  const el = e.currentTarget; el.classList.add("on");
+  $("#fwMsg").textContent = "送出測試訊號中…";
+  try{
+    const j = await (await fetch(`/arduino/test?key=n5&times=3&token=${encodeURIComponent(token)}`,
+                                 { method:"POST" })).json();
+    $("#fwMsg").textContent = (j.ok ? "✅ " : "⚠ ") + j.msg
+      + `　回應：${(j.replies||[]).join(" / ") || "（無）"}`;
+    toast(j.msg, !!j.ok);
+  }catch(_){ $("#fwMsg").textContent = "測試失敗（連線？）"; }
+  el.classList.remove("on");
+};
+$("#fwFlashBtn").onclick = async (e)=>{
+  const port = $("#fwPort").value || "";
+  if(!confirm(`要把內建韌體寫入 ${port||"（自動偵測）"} 嗎？
+
+寫入期間鍵盤會中斷約 5~10 秒（板子重開機），完成後會自動重新連線。`)) return;
+  const el = e.currentTarget; el.classList.add("on");
+  $("#fwMsg").textContent = "寫入中…（板子會重開機並換 COM 埠，請勿拔線）";
+  $("#fwLog").style.display = "none";
+  try{
+    const j = await (await fetch(`/arduino/flash?port=${encodeURIComponent(port)}&token=${encodeURIComponent(token)}`,
+                                 { method:"POST" })).json();
+    $("#fwMsg").textContent = (j.ok ? "✅ " : "❌ ") + j.msg
+      + (j.boot_port ? `　bootloader:${j.boot_port}` : "")
+      + (j.reconnected ? `　已重新連線 ${j.port_after}` : "　⚠ 尚未重新連線");
+    if(j.output){ $("#fwLog").style.display = "block"; $("#fwLog").textContent = j.output; }
+    toast(j.msg, !!j.ok);
+    fwStatus();
+  }catch(_){ $("#fwMsg").textContent = "寫入失敗（連線？）"; }
+  el.classList.remove("on");
+};
+
 // ===== 閒置(掛機)模式(儀表板/中控頁)：伺服器端隨機時序自動輸入,僅主人、與出租互斥 =====
 // 開啟時同步顯示「監視畫面」——每秒抓一張 MapleStory 視窗 JPEG(約 1 秒延遲,
 // 省頻寬、穩定流暢),達到掛機監控效果。
@@ -984,12 +1068,10 @@ async function mmTick(){
       ov.innerHTML = "";
       if(s.found && s.w && s.h){
         try{
-          const mm = await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json();
-          renderMapStat(mm);
-          if(mm.count !== lastPtCount){ lastPtCount = mm.count; renderPoints(mm); }
-          fillAttack(mm);
-          const tsig = (mm.platforms||[]).length+'/'+(mm.ropes||[]).length;
-          if(tsig !== lastTerrSig){ lastTerrSig = tsig; renderTerrain(mm); }
+          // 設定面板的渲染【不在這裡】(見 applyMapStatus/refreshSettings)。
+          // 預覽只負責畫圖層,疊加需要小地圖尺寸(s.w/s.h)才能把座標換成百分比。
+          const mm = mapCache
+            || await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json();
           // 地形疊加:平台=水平線(藍)、繩索=垂直虛線(黃)
           const terr = mm.platforms || [], rps = mm.ropes || [];
           if(terr.length || rps.length){
@@ -1074,28 +1156,71 @@ $("#mmRedetectBtn").onclick = async ()=>{   // 解除鎖定,下一幀起重新�
   }catch(_){ $("#mmInfo").textContent = "操作失敗（連線？）"; }
 };
 
+// ===== 設定顯示與背景偵測:兩者都【不依賴小地圖預覽】=====
+// 巡邏點、地形、平A、放置技能都存在伺服器 profile 裡,巡邏一直在用,所以顯示不該
+// 依賴預覽開著。這些渲染原本包在 mmTick() 的 `if(s.found)` 內,結果是「預覽關掉就
+// 看起來沒設定」;更糟的是平A表單維持 HTML 預設值(hold2s/未勾),而存檔其實是
+// move/兩者都開 —— 這時按「儲存平A設定」會靜默把設定改掉。
+//
+// 偵測則改由 /minimap/watch 宣告需求:進巡邏分頁就請伺服器每 2 秒自己偵測,
+// 這樣「開始巡航」(需要 current_map_id)與設定顯示都不必先開預覽。
+let mapCache = null, watchTick = 0;
+function applyMapStatus(mm){
+  if(!mm) return;
+  mapCache = mm;
+  renderMapStat(mm);
+  if(mm.count !== lastPtCount){ lastPtCount = mm.count; renderPoints(mm); }
+  fillAttack(mm);
+  const tsig = (mm.platforms||[]).length+'/'+(mm.ropes||[]).length;
+  if(tsig !== lastTerrSig){ lastTerrSig = tsig; renderTerrain(mm); }
+}
+async function refreshSettings(){
+  try{
+    applyMapStatus(await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json());
+  }catch(_){ /* 連線瞬斷就下次動作再拉,不要清掉已顯示的設定 */ }
+}
+// 背景偵測需求:on=1 續約(伺服器 30s 後自動失效,瀏覽器關掉不會留下殘留執行緒)
+async function watchDetect(on){
+  try{ await fetch(`/minimap/watch?on=${on?1:0}&token=${encodeURIComponent(token)}`,
+                   { method:"POST" }); }catch(_){}
+}
+function patrolPaneOn(){
+  const p = document.querySelector('.dpane[data-pane="patrol"]');
+  return !!(p && p.classList.contains("on") &&
+            document.body.classList.contains("view-dash"));
+}
+
 // ===== 地圖座標(掛機導航前置):每張地圖自動識別、獨立記錄巡邏點 =====
 function renderMapStat(s){
   if(!s || !s.map_id){
-    $("#mapStat").textContent = "地圖：偵測不到小地圖（先開啟上方小地圖偵測預覽）";
+    // 偵測已不依賴預覽(進巡邏分頁就會請伺服器背景偵測),所以真正的原因只有這兩個
+    $("#mapStat").textContent = "地圖：偵測不到小地圖（遊戲視窗最小化了嗎？小地圖有展開嗎？）";
     return;
   }
   const nm = s.name ? `「${s.name}」` : "(未命名)";
   const ok = s.has_layout ? "✅ 可掛機" : "⚠ 尚未設定，至少記錄 1 點";
   $("#mapStat").textContent = `地圖 ${nm}　巡邏點 ${s.count} 個　${ok}`;
 }
-async function refreshMapStat(){
-  try{ const s = await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json(); renderMapStat(s); }catch(_){}
-}
 async function mapAct(path){
   try{
     const r = await fetch(`${path}${path.includes("?")?"&":"?"}token=${encodeURIComponent(token)}`, { method:"POST" });
     const j = await r.json().catch(()=>({}));
     if(!r.ok){ $("#mapMsg").textContent = "⚠ " + (j.detail || "操作失敗"); toast(j.detail||"操作失敗", false); return null; }
-    renderMapStat(j); toast("✓ 已套用設定"); return j;
+    // 這些端點都回完整地圖狀態 → 整面套用,不會出現「點數更新了但地形/平A 還是舊的」
+    applyMapStatus(j); toast("✓ 已套用設定"); return j;
   }catch(_){ $("#mapMsg").textContent = "操作失敗（連線？）"; toast("操作失敗（連線？）", false); return null; }
 }
+// 標記類動作【刻意】要求開著小地圖預覽:記錄巡邏點/平台端點/繩索都是把「角色現在
+// 站的位置」寫進設定,標錯了要事後靠座標數字去查很難。要求預覽開著,使用者按下去之前
+// 就能在圖上確認洋紅十字的位置對不對。唯讀顯示與自動化(巡航)不受此限。
+function requirePreview(msgId){
+  if(mmOn) return true;
+  $(msgId).textContent = "請先開啟上方「🗺 小地圖偵測預覽」—— 標記位置前要能看到角色在哪";
+  toast("標記位置需先開啟小地圖預覽", false);
+  return false;
+}
 $("#mapRecordBtn").onclick = async ()=>{
+  if(!requirePreview("#mapMsg")) return;
   const j = await mapAct("/map/record");
   if(j) $("#mapMsg").textContent = j.added ? `已記錄第 ${j.count} 個巡邏點` : "此位置已記錄過（容差內去重）";
 };
@@ -1115,13 +1240,15 @@ async function readDot(){
   }catch(_){ return null; }
 }
 $("#platMarkA").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
   const d = await readDot();
-  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（開小地圖預覽、站定）"; return; }
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（角色站定，確認預覽上有洋紅十字）"; return; }
   platA = d; $("#platInfo").textContent = `A端 (${d.x},${d.y})${platB?`　B端 (${platB.x},${platB.y})`:'　→ 走到右端再記B端'}`;
 };
 $("#platMarkB").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
   const d = await readDot();
-  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（開小地圖預覽、站定）"; return; }
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（角色站定，確認預覽上有洋紅十字）"; return; }
   platB = d; $("#platInfo").textContent = `${platA?`A端 (${platA.x},${platA.y})　`:'（尚未記A端）　'}B端 (${d.x},${d.y})`;
 };
 $("#platAddBtn").onclick = async ()=>{
@@ -1131,6 +1258,7 @@ $("#platAddBtn").onclick = async ()=>{
   if(j){ $("#platInfo").textContent = `已新增平台 層${y} [${Math.min(platA.x,platB.x)}–${Math.max(platA.x,platB.x)}]`; platA=platB=null; lastTerrSig=""; renderTerrain(j); }
 };
 $("#ropeAddBtn").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
   const d = await readDot();
   if(!d){ $("#platInfo").textContent = "讀不到角色黃點（站到繩索上）"; return; }
   const j = await mapAct(`/map/rope/add?x=${d.x}`);
@@ -1183,7 +1311,15 @@ function renderProfList(profs){
       try{
         const r = await fetch(`/map/profile/load?name=${encodeURIComponent(p.name)}&token=${encodeURIComponent(token)}`, { method:"POST" });
         const j = await r.json().catch(()=>({}));
-        if(r.ok){ $("#mapMsg").textContent = `已載入設置「${j.loaded}」`; renderMapStat(j); renderPoints(j); atkFilled=false; fillAttack(j); box.style.display="none"; }
+        if(r.ok){
+          $("#mapMsg").textContent = `已載入設置「${j.loaded}」`;
+          // 載入會換掉整組設定 → 整面重套(含地形,原本漏了它)。三個閂鎖都要清,
+          // 否則 fillAttack 因 atkFilled 不再填、renderPoints/renderTerrain 因
+          // 數量沒變而跳過重繪。
+          atkFilled = false; lastPtCount = -1; lastTerrSig = "";
+          applyMapStatus(j);
+          box.style.display = "none";
+        }
         else $("#mapMsg").textContent = "⚠ " + (j.detail || "載入失敗");
       }catch(_){ $("#mapMsg").textContent = "載入失敗（連線？）"; }
     };
@@ -1222,6 +1358,16 @@ $("#atkKeyBtn").onclick = ()=> openKeyPicker("選平A攻擊鍵 → 點鍵盤上�
   atkKeyVal = tok;
   $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(tok)}（點我選）`;
 });
+// 放置方向循環:不限 → 左 → 右 → 不限。三態用一顆按鈕,列已經很擠。
+const FACE_CYCLE = { "": "left", "left": "right", "right": "" };
+const FACE_TXT = { "": "↔不限向", "left": "⬅朝左放", "right": "➡朝右放" };
+function paintFace(btn, row){
+  btn.textContent = FACE_TXT[row.dataset.face || ""];
+  btn.classList.toggle("on", !!row.dataset.face);
+  btn.title = row.dataset.face
+    ? "施放前會再按一次該方向鍵確保面向（會走一小步）"
+    : "不轉向，面向取決於走位方向";
+}
 function renderPoints(s){                         // 放置技能:已設定行 +「＋新增」選記錄點
   const box = $("#ptList"); if(!box) return;
   const pts = (s && s.points) || [];
@@ -1236,6 +1382,7 @@ function renderPoints(s){                         // 放置技能:已設定行 +
   configured.forEach(p=>{
     const row = document.createElement("div"); row.className = "ptrow";
     row.dataset.skill = p.skill; row.dataset.precise = p.precise ? "1" : ""; row.dataset.skip = p.skip ? "1" : "";
+    row.dataset.face = p.face || "";
     row.innerHTML =
       `<span class="ptidx">${p.i+1}</span>`+
       `<span class="ptxy">(${p.x},${p.y})</span>`+
@@ -1243,6 +1390,7 @@ function renderPoints(s){                         // 放置技能:已設定行 +
       `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s" value="${p.cd||''}">`+
       `<button class="ptprec"></button>`+
       `<button class="ptskip"></button>`+
+      `<button class="ptface"></button>`+
       `<button class="ptsave">存</button>`+
       `<button class="ptdel">刪</button>`;
     const skBtn = row.querySelector(".ptskill");
@@ -1251,13 +1399,15 @@ function renderPoints(s){                         // 放置技能:已設定行 +
     const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
     const skipBtn = row.querySelector(".ptskip");
     const paintSkip = ()=>{ skipBtn.textContent = row.dataset.skip?"⏭冷卻略過":"🔁每輪"; skipBtn.classList.toggle("on", !!row.dataset.skip); };
-    paint(); paintPrec(); paintSkip();
+    const faceBtn = row.querySelector(".ptface");
+    paint(); paintPrec(); paintSkip(); paintFace(faceBtn, row);
+    faceBtn.onclick = ()=>{ row.dataset.face = FACE_CYCLE[row.dataset.face || ""]; paintFace(faceBtn, row); };
     skBtn.onclick = ()=> openKeyPicker(`第 ${p.i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
     precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
     skipBtn.onclick = ()=>{ row.dataset.skip = row.dataset.skip?"":"1"; paintSkip(); };
     row.querySelector(".ptsave").onclick = async ()=>{
       const cd = row.querySelector(".ptcd").value || 0;
-      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}`);
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}&face=${row.dataset.face||''}`);
       if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確":"範圍"} / ${row.dataset.skip?"冷卻略過":"每輪"}（已存）`; renderPoints(j); }
     };
     row.querySelector(".ptdel").onclick = async ()=>{
@@ -1275,7 +1425,7 @@ function showAddRow(pts, box, addBtn){
   const avail = pts.map((p,i)=>({...p, i})).filter(p=>!p.skill);   // 未設定的記錄點(已設定不可選)
   if(!avail.length){ $("#mapMsg").textContent = "所有記錄點都已設定放置技能"; return; }
   addBtn.style.display = "none";
-  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = ""; row.dataset.precise = ""; row.dataset.skip = "";
+  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = ""; row.dataset.precise = ""; row.dataset.skip = ""; row.dataset.face = "";
   row.innerHTML =
     `<select class="ptpick">`+
       avail.map(p=>`<option value="${p.i}">${p.i+1} (${p.x},${p.y})</option>`).join("")+
@@ -1284,6 +1434,7 @@ function showAddRow(pts, box, addBtn){
     `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s">`+
     `<button class="ptprec"></button>`+
     `<button class="ptskip"></button>`+
+    `<button class="ptface"></button>`+
     `<button class="ptsave">存</button>`+
     `<button class="ptdel">取消</button>`;
   const skBtn = row.querySelector(".ptskill");
@@ -1292,7 +1443,9 @@ function showAddRow(pts, box, addBtn){
   const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
   const skipBtn = row.querySelector(".ptskip");
   const paintSkip = ()=>{ skipBtn.textContent = row.dataset.skip?"⏭冷卻略過":"🔁每輪"; skipBtn.classList.toggle("on", !!row.dataset.skip); };
-  paint(); paintPrec(); paintSkip();
+  const faceBtn = row.querySelector(".ptface");
+  paint(); paintPrec(); paintSkip(); paintFace(faceBtn, row);
+  faceBtn.onclick = ()=>{ row.dataset.face = FACE_CYCLE[row.dataset.face || ""]; paintFace(faceBtn, row); };
   skBtn.onclick = ()=> openKeyPicker("放置技能 → 點鍵盤選鍵", tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
   precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
   skipBtn.onclick = ()=>{ row.dataset.skip = row.dataset.skip?"":"1"; paintSkip(); };
@@ -1300,7 +1453,7 @@ function showAddRow(pts, box, addBtn){
     if(!row.dataset.skill){ $("#mapMsg").textContent = "請先點「＋技能鍵」選一個鍵"; return; }
     const idx = row.querySelector(".ptpick").value;
     const cd = row.querySelector(".ptcd").value || 0;
-    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}`);
+    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}&face=${row.dataset.face||''}`);
     if(j){ $("#mapMsg").textContent = `第 ${Number(idx)+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確":"範圍"} / ${row.dataset.skip?"冷卻略過":"每輪"}（已存）`; renderPoints(j); }
   };
   row.querySelector(".ptdel").onclick = ()=> renderPoints({points:pts});   // 取消:重繪回列表
@@ -1367,13 +1520,14 @@ async function runeProbe(url, label){
   // dataset.hint=0 → 暫時把這行讓給測試結果,別被每秒的狀態 tick 蓋掉
   $("#runeMsg").dataset.hint = "0";
   setTimeout(()=>{ $("#runeMsg").dataset.hint = "1"; }, 15000);
-  $("#runeMsg").textContent = label + "中…（首次要等辨識器啟動，約 6~11 秒）";
+  $("#runeMsg").textContent = label + "中…（1 線 CV 約數十毫秒；退到 2 線 claude 要 6~11 秒）";
   try{
     const j = await (await fetch(url, { method:"POST" })).json();
     if(j.err){ $("#runeMsg").textContent = "⚠ " + j.err; toast(j.err, false); return; }
     const seq = (j.dirs||[]).map(d=>RUNE_ARROW[d]||"?").join(" ");
-    $("#runeMsg").textContent = `認出 ${j.n} 支：${seq||"（無）"}　耗時 ${j.ms}ms　裁切圖已存 rune_shot.png`;
-    toast(`${j.n} 支 ${seq}（${j.ms}ms）`, j.n===4);
+    const ln = j.line === "cv" ? "1 線 CV" : (j.line === "claude" ? "2 線 claude" : j.line || "—");
+    $("#runeMsg").textContent = `認出 ${j.n} 支：${seq||"（無）"}　${ln}　耗時 ${j.ms}ms`;
+    toast(`${j.n} 支 ${seq}（${ln} ${j.ms}ms）`, j.n===4);
   }catch(_){ $("#runeMsg").textContent = label+"失敗（連線？）"; toast(label+"失敗", false); }
 }
 $("#runeDetectBtn").onclick = ()=>
@@ -1381,12 +1535,43 @@ $("#runeDetectBtn").onclick = ()=>
 $("#runeTestBtn").onclick = ()=>
   runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
 
+// ---- 膠囊預覽：1 線(CV)的定位與判向即時檢查 ----
+// 每秒抓一張 /rune/capsule（伺服器端定位＋標註）。橘框＝膠囊，直線＝四等分，
+// 下方色帶＝每格判到的方向。沒開謎題時伺服器回整幀縮圖＋no capsule，方便診斷。
+let capOn = false, capTimer = null;
+function capTick(){
+  const im = $("#capImg");
+  im.onerror = ()=>{ $("#capInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
+  im.onload  = ()=>{ $("#capInfo").textContent = "橘框＝膠囊　直線＝四等分　下方＝1 線判到的方向"; };
+  im.src = `/rune/capsule?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+}
+function stopCapPreview(){
+  if(capTimer){ clearInterval(capTimer); capTimer = null; }
+  capOn = false;
+  $("#capBox").style.display = "none";
+  $("#capImg").removeAttribute("src");
+  $("#capBtn").classList.remove("on");
+  $("#capBtn").textContent = "💊 膠囊預覽：關";
+}
+$("#capBtn").onclick = ()=>{
+  if(capOn){ stopCapPreview(); return; }
+  capOn = true;
+  $("#capBox").style.display = "block";
+  $("#capBtn").classList.add("on");
+  $("#capBtn").textContent = "💊 膠囊預覽：開（每秒更新）";
+  capTick();
+  capTimer = setInterval(capTick, 1000);
+};
+
 // ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
 document.querySelectorAll(".dtab").forEach(t=>{
   t.onclick = ()=>{
     const name = t.dataset.tab;
     document.querySelectorAll(".dtab").forEach(x=>x.classList.toggle("on", x===t));
     document.querySelectorAll(".dpane").forEach(p=>p.classList.toggle("on", p.dataset.pane===name));
+    // 進巡邏分頁:立刻拉一次設定,並請伺服器開始背景偵測(不必開預覽);離開就撤銷。
+    if(name === "patrol"){ refreshSettings(); watchDetect(1); }
+    else { watchDetect(0); }
   };
 });
 
@@ -1447,14 +1632,20 @@ async function placeTick(){
     if(!pl.length){ box.textContent = "（此地圖無放置技能點）"; return; }
     box.innerHTML = pl.map(p=>{
       const s = p.ready ? "🟢 就緒（下次到點即放）" : `🟠 ${p.remaining}s 後可放`;
-      return `<div>放置技能 <b>${labelFor(p.skill)}</b> @(${p.x},${p.y})　${s}　冷卻 ${p.cd}s</div>`;
+      const fc = p.face === "left" ? "　⬅朝左" : (p.face === "right" ? "　➡朝右" : "");
+      return `<div>放置技能 <b>${labelFor(p.skill)}</b> @(${p.x},${p.y})${fc}　${s}　冷卻 ${p.cd}s</div>`;
     }).join("");
   }catch(_){}
 }
 setInterval(()=>{
   if(!document.body.classList.contains("view-dash")) return;
   const pane = document.querySelector('.dpane[data-pane="patrol"]');
-  if(pane && pane.classList.contains("on")) placeTick();
+  if(pane && pane.classList.contains("on")){
+    placeTick();
+    // 背景偵測續約:伺服器端 30s 過期,所以每 10 秒續一次。搭在既有的 1 秒輪詢上,
+    // 不另開計時器;瀏覽器關掉就不再續約,伺服器那條偵測執行緒會自己退場。
+    if((watchTick = (watchTick + 1) % 10) === 1) watchDetect(1);
+  }
 }, 1000);
 
 // ===== 編輯模式 =====

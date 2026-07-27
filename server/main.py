@@ -9,6 +9,7 @@
 
 安全性：所有端點需帶 ?token=，且務必只透過 Tailscale/VPN 連線，勿裸奔公網。
 """
+import cpu_tune          # 必須在 numpy/cv2 之前:限制執行緒數的環境變數要在它們載入前設好
 import asyncio
 import hmac
 import ipaddress
@@ -39,9 +40,13 @@ import navigator
 import minimap
 import calib
 import rune
+import revive
+import firmware
+import paths
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-WEB = os.path.normpath(os.path.join(BASE, "..", "web"))
+# 走 paths 而非自己拼 ../web:打包成 exe 後 web/ 在 exe 內部(sys._MEIPASS),
+# 不在 exe 旁邊,自己拼相對路徑會找不到頁面。
+WEB = paths.web_dir()
 
 
 def _disable_console_quickedit():
@@ -124,6 +129,8 @@ async def _rental_guard_loop():
 @asynccontextmanager
 async def lifespan(app):
     global mouse
+    for _line in cpu_tune.apply():      # 降低對遊戲的 CPU 干擾(見 cpu_tune 說明)
+        print(f"[cpu] {_line}")
     _check_token_strength()
     if REMOTE_MODE:
         _print_remote_banner()
@@ -151,6 +158,9 @@ async def lifespan(app):
             if not rune.trigger_solve(data):      # 沒接手 → 回 False → 暫停巡邏
                 navigator.pause_purple()
     minimap.set_event_hook(_on_minimap_event)
+    # 死亡自動復活:巡邏每輪檢查有沒有跳出「確定要在當前地圖中復活嗎?」對話框
+    revive.set_hooks(focus_fn=lambda: video_pipeline.guard_focus(GUARD_EXE))
+    navigator.set_round_hook(revive.check)
     if not mouse.start():
         # 沒有 KMBox：優先降級到 Arduino HID 滑鼠(仍是硬體訊號，反作弊安全)；
         # 連 Arduino 都沒有時才退到軟體滑鼠(SendInput，可能被反作弊偵測)。
@@ -162,6 +172,7 @@ async def lifespan(app):
             mouse = SoftMouse()
         mouse.start()
     video_pipeline.set_mouse(mouse)   # 供「切視窗時的標題列啟用點擊」使用
+    revive.set_hooks(mouse=mouse)     # 要在降級決定完之後才注入(可能是 KMBox/Arduino/軟體)
     # 影像主力為 WebRTC(MediaMTX+ffmpeg)，由 /video/start 啟動 ffmpeg。
     yield
     guard.cancel()
@@ -449,7 +460,7 @@ def idle_start(token: str = Query(""), duration: float = Query(0)):
     video_pipeline.guard_focus(GUARD_EXE)
     screen.ensure_started()
     idle_mode.start(max(0.0, min(86400.0, duration)))   # 上限 24 小時
-    minimap.watch_start()   # 掛機期間背景監看小地圖(紫標 → Telegram 通知)
+    minimap.watch_acquire("idle")   # 掛機期間背景監看小地圖(紫標 → Telegram 通知)
     return JSONResponse(idle_mode.status())
 
 
@@ -545,13 +556,15 @@ def map_attack(token: str = Query(""), key: str = Query("a"), mode: str = Query(
 @app.post("/map/point_skill")
 def map_point_skill(token: str = Query(""), index: int = Query(...),
                     skill: str = Query(""), cd: float = Query(0.0),
-                    precise: bool = Query(False), skip: bool = Query(False)):
-    """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(空鍵=取消)。僅到點施放、冷卻中略過。"""
+                    precise: bool = Query(False), skip: bool = Query(False),
+                    face: str = Query("")):
+    """設第 index 個巡邏點的『放置技能』鍵與冷卻秒數(空鍵=取消)。僅到點施放、冷卻中略過。
+    face='left'/'right':施放前再按一次該方向鍵確保面向;''=不限。"""
     _check_owner(token)
     mid = mapdata.current_map_id()
     if not mid:
         raise HTTPException(status_code=400, detail="偵測不到小地圖")
-    mapdata.set_point_skill(mid, index, skill, cd, precise, skip)
+    mapdata.set_point_skill(mid, index, skill, cd, precise, skip, face)
     return JSONResponse(mapdata.status())
 
 
@@ -732,6 +745,68 @@ def rune_detect(token: str = Query("")):
     return JSONResponse(rune.detect_now())
 
 
+@app.get("/rune/dataset")
+def rune_dataset(token: str = Query("")):
+    """自動標註資料集現況(筆數、各線路來源分佈)。"""
+    _check_owner(token)
+    return JSONResponse(rune.dataset_status())
+
+
+@app.post("/rune/dataset/eval")
+def rune_dataset_eval(token: str = Query("")):
+    """拿資料集重跑 1 線,量它在真實案例上的正確率。
+    2 線救回來的樣本正是 1 線最該補強的地方,所以這個數字才是調參的依據。"""
+    _check_owner(token)
+    return JSONResponse(rune.dataset_eval())
+
+
+@app.get("/rune/capsule")
+def rune_capsule(token: str = Query(""), scale: int = Query(3)):
+    """1 線(CV)的膠囊預覽 JPEG:框出膠囊、四等分線、每格判到的方向。
+    沒開謎題時回整幀縮圖 + no capsule 字樣(不回 503,否則前端分不出
+    「沒開謎題」與「定位壞了」)。前端可定時輪詢當即時預覽。"""
+    _check_owner(token)
+    jpg = rune.capsule_preview_jpeg(scale=max(1, min(6, scale)))
+    if jpg is None:
+        raise HTTPException(status_code=503,
+                            detail="拿不到 MapleStory 視窗影格(遊戲開著嗎?)")
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+# ===== 死亡自動復活 =====
+@app.get("/revive/status")
+def revive_status(token: str = Query("")):
+    _check_owner(token)
+    return JSONResponse(revive.status())
+
+
+@app.post("/revive/enable")
+def revive_enable(token: str = Query(""), on: int = Query(...)):
+    _check_owner(token)
+    revive.set_enabled(bool(on))
+    return JSONResponse(revive.status())
+
+
+@app.post("/revive/now")
+def revive_now(token: str = Query("")):
+    """手動觸發一次復活檢查(偵測到就【真的點擊】)。供測試用;正式運作是巡邏每輪自動呼叫。
+    需連續 CONFIRM_HITS 次偵測到才會點,所以第一次呼叫通常只累積次數。"""
+    _check_owner(token)
+    if remote_access.info()["active"]:
+        raise HTTPException(status_code=409, detail="訪客(出租)進行中")
+    handled = revive.check()
+    return JSONResponse({"handled": handled, **revive.status()})
+
+
+@app.post("/revive/detect")
+def revive_detect(token: str = Query("")):
+    """乾跑偵測「確定要在當前地圖中復活嗎?」對話框,不點滑鼠。
+    會存 revive_shot.png(找到時把確認鈕框起來),供校準顏色/尺寸門檻。"""
+    _check_owner(token)
+    return JSONResponse(revive.detect())
+
+
 @app.get("/rune/probe")
 def rune_probe(token: str = Query("")):
     """只讀不動:角色點與紫標的小地圖座標、距離、紫標是否被角色蓋住。"""
@@ -831,6 +906,25 @@ def minimap_status(token: str = Query("")):
     return JSONResponse(minimap.status())
 
 
+@app.post("/minimap/watch")
+def minimap_watch(token: str = Query(""), on: int = Query(1), ttl: float = Query(30.0)):
+    """中控頁宣告「我需要背景偵測」(開著巡邏分頁時)。
+
+    這是「偵測不依賴預覽」的關鍵:小地圖偵測原本只由預覽輪詢或巡邏迴圈驅動,兩者都沒跑
+    時伺服器就不知道現在在哪張地圖 —— 中控頁的巡邏點/地形/平A 全部顯示不出來,而且
+    「開始巡航」也會因為 current_map_id() 拿不到地圖而失敗。改由前端在進入巡邏分頁時
+    宣告需求,伺服器就每 2 秒自己偵測一次,狀態端點只讀快取、不必阻塞去抓幀。
+
+    ttl:必須有 —— 瀏覽器直接關掉不會有人來撤銷,沒有存活時間就會留一條每 2 秒抓幀的
+    執行緒永遠跑。前端定期續約即可。"""
+    _check_owner(token)
+    if on:
+        minimap.watch_acquire("ui", ttl=max(5.0, min(300.0, ttl)))
+    else:
+        minimap.watch_release("ui")
+    return JSONResponse(minimap.watch_status())
+
+
 @app.post("/minimap/redetect")
 def minimap_redetect(token: str = Query("")):
     """手動解除小地圖鎖定,下一幀重新偵測(換地圖/誤鎖時用)。"""
@@ -873,8 +967,56 @@ def calib_stop(token: str = Query("")):
 def idle_stop(token: str = Query("")):
     _check_owner(token)
     idle_mode.stop()
-    minimap.watch_stop()
+    minimap.watch_release("idle")   # 只撤掉掛機這一方;中控頁若還開著巡邏分頁,偵測要繼續
     return JSONResponse(idle_mode.status())
+
+
+# ===== Arduino 韌體:寫入代碼 + 測試訊號 =====
+@app.get("/arduino/status")
+def arduino_status(token: str = Query("")):
+    """序列埠清單、猜到的板子、內嵌韌體資訊、能不能燒錄。"""
+    _check_owner(token)
+    ok, why = firmware.available()
+    return JSONResponse({
+        "connected": bool(getattr(keyboard, "connected", False)),
+        "port": getattr(keyboard, "port", ""),
+        "ports": firmware.list_ports(),
+        "guess": firmware.guess_port(),
+        "firmware": firmware.firmware_info(),
+        "can_flash": ok, "why": why,
+        "test_keys": sorted(firmware.TEST_TOKENS),
+    })
+
+
+@app.post("/arduino/flash")
+def arduino_flash(token: str = Query(""), port: str = Query("")):
+    """把 exe 內嵌的韌體 .hex 燒進板子。
+
+    燒錄期間必須放掉主程式對序列埠的佔用(1200 baud touch 開不了被佔用的埠),
+    所以會先 keyboard.close();燒完再 start() 接回來。這段時間鍵盤輸入會中斷,
+    屬預期 —— 燒錄本身就會讓板子重開機。"""
+    _check_owner(token)
+    r = firmware.flash(port=port.strip(), release_fn=keyboard.close)
+    time.sleep(1.5)                  # 等板子燒完重新列舉成應用程式位址
+    try:
+        keyboard.start()             # 重新連線(埠號可能變了,start 會自動偵測)
+        r["reconnected"] = bool(keyboard.connected)
+        r["port_after"] = getattr(keyboard, "port", "")
+    except Exception as e:
+        r["reconnected"] = False
+        r["reconnect_error"] = repr(e)
+    return JSONResponse(r)
+
+
+@app.post("/arduino/test")
+def arduino_test(token: str = Query(""), key: str = Query("n5"),
+                 times: int = Query(3)):
+    """送測試訊號並回報板子是否回 OK。
+
+    預設用小鍵盤 5(N5):遊戲裡通常沒綁,而且在記事本裡看得到字元,一眼確認 HID 通了。
+    回 OK 的次數才是「韌體收到並執行」的證據 —— 只看「送出成功」只證明寫進了序列埠。"""
+    _check_owner(token)
+    return JSONResponse(firmware.test_signal(keyboard, token=key, times=times))
 
 
 # ===== 解除卡死：一次放開所有鍵盤鍵與滑鼠鍵(程式被強殺後韌體仍按著某鍵時用) =====

@@ -20,9 +20,9 @@ import threading
 import time
 
 import minimap
+import paths
 
-_DATA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "calib_data.jsonl")
+_DATA_PATH = os.path.join(paths.data_dir("logs"), "calib_data.jsonl")
 
 _keyboard = None
 _focus_fn = None

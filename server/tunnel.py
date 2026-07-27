@@ -15,9 +15,9 @@ import os
 import re
 import subprocess
 import threading
+import paths
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-CLOUDFLARED = os.path.normpath(os.path.join(BASE, "..", "bin", "cloudflared.exe"))
+CLOUDFLARED = paths.bin_path("cloudflared.exe")
 _URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 
 _proc = None

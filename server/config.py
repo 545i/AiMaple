@@ -62,7 +62,9 @@ IDLE_KEY_GAP_MAX = float(_env("MAPLE_IDLE_KEYGAP_MAX", "0.25"))
 def _tg_file():
     try:
         import json
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "telegram.json")
+        import paths
+        # 使用者設定 → 素材夾(打包後 exe 內部是唯讀的暫存解壓目錄)
+        p = os.path.join(paths.ASSETS, "telegram.json")
         with open(p, encoding="utf-8") as f:
             return json.load(f)
     except Exception:

@@ -341,9 +341,21 @@ def _watch_loop(interval, gen):
     """gen = 這條執行緒的世代號。世代不再是最新的就自己退場 ——
     共用一個 Event 當停止旗標時,stop 後緊接 start 會把旗標清掉,舊執行緒會因此復活,
     變成兩條同時在跑完整小地圖偵測(閒置模式反覆開關就會累積)。世代號讓舊的必定退場。"""
+    global _watch_ticks, _watch_thread
     while gen == _watch_gen and not _watch_stop_ev.wait(interval):
+        if not _watch_wanted():          # 需求方都走了(或前端沒續約)→ 自己退場
+            print("[minimap] 已無監看需求方,執行緒退場")
+            # 【必須清掉 _watch_thread】否則有競態:這條執行緒正在結束、但 is_alive()
+            # 仍為 True 時若來了新的 watch_acquire,watch_start 會以為「已在跑」直接
+            # 返回 → 有需求方卻沒有任何人在偵測,而且不會有任何錯誤訊息。
+            # 只有自己還是最新世代才清,免得誤清掉別人剛建立的執行緒。
+            with _watch_reason_lock:
+                if gen == _watch_gen:
+                    _watch_thread = None
+            break
         try:
             detect_once()
+            _watch_ticks += 1
         except Exception as e:
             print(f"[minimap] 監看偵測錯誤: {e}")
     print(f"[minimap] 背景監看執行緒退場(gen={gen})")
@@ -370,6 +382,53 @@ def watch_stop():
     _watch_stop_ev.set()
     _watch_thread = None
     print("[minimap] 背景監看停止")
+
+
+# ---------- 背景監看的「需求方」管理 ----------
+# 為什麼要引用計數:背景偵測有多個需求方(閒置掛機、中控頁開著巡邏分頁…),
+# 直接呼叫 watch_start/watch_stop 的話,任何一方停掉就會把還需要它的另一方也關掉。
+# 改成每個需求方各自 acquire/release,集合空了才真正停。
+#
+# ttl:中控頁那一方必須帶存活時間 —— 瀏覽器直接關掉或斷線時不會有人來 release,
+# 沒有 ttl 就會留下一條每 2 秒抓幀的執行緒永遠跑下去。前端定期續約即可。
+_watch_reasons = {}                      # reason -> 到期時間(monotonic);None=不過期
+_watch_reason_lock = threading.Lock()
+_watch_ticks = 0                         # 背景偵測次數,供中控/診斷確認它真的在跑
+
+
+def watch_acquire(reason, ttl=None):
+    """宣告「我需要背景偵測」。ttl 秒後自動失效(None=直到明確 release)。"""
+    with _watch_reason_lock:
+        _watch_reasons[reason] = None if ttl is None else time.monotonic() + ttl
+    watch_start()
+
+
+def watch_release(reason):
+    """撤銷需求。沒有其他需求方時才真正停掉背景偵測。"""
+    with _watch_reason_lock:
+        _watch_reasons.pop(reason, None)
+        left = list(_watch_reasons)
+    if not left:
+        watch_stop()
+    return left
+
+
+def _watch_wanted():
+    """還有沒有有效的需求方(順手清掉過期的)。"""
+    now = time.monotonic()
+    with _watch_reason_lock:
+        for r, exp in list(_watch_reasons.items()):
+            if exp is not None and exp <= now:
+                del _watch_reasons[r]
+                print(f"[minimap] 監看需求 '{r}' 已過期(前端沒續約)")
+        return bool(_watch_reasons)
+
+
+def watch_status():
+    _watch_wanted()
+    with _watch_reason_lock:
+        return {"running": _watch_thread is not None and _watch_thread.is_alive(),
+                "reasons": sorted(_watch_reasons), "ticks": _watch_ticks}
 
 
 def debug_jpeg(view="annot", quality=80):

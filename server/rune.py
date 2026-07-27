@@ -15,6 +15,7 @@
 import json
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -24,8 +25,8 @@ import time
 
 import cv2
 import numpy as np
+import paths
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
 # worker 的工作目錄必須是「空目錄」:cwd 指到專案內時 claude 會載入 .claude/、CLAUDE.md、
 # git 狀態等專案 context,實測讓單次辨識從 ~3s 膨脹到 >10s。裁切圖也放這裡。
 _WORKDIR = os.path.join(tempfile.gettempdir(), "maple_rune")
@@ -35,6 +36,14 @@ _RAW = os.path.join(_WORKDIR, "rune_raw.png")     # 原始整幀(校準定位參
 # 真的按下方向鍵的那一張,連同判讀結果留存。失敗後要查「是判讀錯還是按鍵沒生效」
 # 只能靠這張;_SHOT 會被後續重試覆蓋掉。
 _PRESSED = os.path.join(_WORKDIR, "rune_pressed.png")
+# 自動標註資料集:每次「按下 4 個方向後紫標消失」就等於那組答案被遊戲本身驗證為正確,
+# 那張圖 + 那組方向就是一筆完美標註樣本。累積夠多之後可以訓練本地偵測器
+# (~10~30ms、離線、無 API 變異),取代或作為 claude 的快速回退。
+# 存在專案內而非 %TEMP%:這是有價值的資料,不該被系統清掉。
+# 可寫資料 → 素材夾。放 _HERE 的話打包後會落在 PyInstaller 的暫存解壓目錄,
+# 自動標註的樣本關掉程式就全部消失(而且不會有任何錯誤訊息)。
+_DATASET = paths.data_dir("rune_dataset")
+DATASET_MAX = 2000                     # 上限,避免無限長大(舊的不刪,只停止新增)
 
 # ---------- 可調參數(部分已由真符文實測校準) ----------
 # 搜尋箭頭的範圍(佔畫面比例),也是自動定位失敗時的固定裁切框。
@@ -60,8 +69,13 @@ _PAD = 24                              # 定位後往外擴的邊界。實測留
 
 ACTIVATE_KEY = "b"                     # 站在符文上開啟謎題的鍵(已實測確認)
 ACTIVATE_WAIT = 0.55                   # 按下後等謎題畫面渲染出來
-ARROW_HOLD = 0.05                      # 每個方向鍵按住時間
-ARROW_GAP = 0.07                       # 方向鍵之間間隔
+# 按鍵時序:CV 判向只要幾毫秒,辨識完立刻連按四鍵的節奏不像人在操作。以下區間對齊
+# 人類實測值 —— 看懂畫面後的反應/決策約 150~250ms;已知內容的連續輸入約 80~120ms。
+# 每次都取區間內的隨機值:固定值本身就不自然,四鍵間隔一模一樣尤其明顯。
+# 成本可忽略:最壞情況 0.25 + 4x(0.07+0.12) ≈ 1.0s,謎題窗有 10~14s。
+THINK = (0.15, 0.25)                   # 辨識完到按下第一個方向鍵之間的停頓
+ARROW_HOLD = (0.04, 0.07)              # 每個方向鍵按住時間
+ARROW_GAP = (0.08, 0.12)               # 方向鍵之間間隔
 ARRIVE_TIMEOUT = 25.0                  # 走到紫標座標的逾時
 # 角色與紫標的可用距離「環」(小地圖 px),由 /rune/calib 實測得出:
 #   內圈 4:再近角色就蓋住紫標。注意 dx=0 時謎題照樣開得了,但紫標從小地圖消失,
@@ -92,9 +106,34 @@ MAX_ATTEMPTS = 3                       # 整體重試次數(含重新導航)。�
                                        # 觸發,紫標一直在不會再觸發,不自己重試就等於放棄。
 ATTEMPT_GAP = 8.0                      # 整體重試之間的間隔
 
-# ---------- claude CLI worker ----------
-MODEL = "sonnet"                       # 實測與 haiku 同速(瓶頸在往返不在模型),但 haiku
-                                       # 判真符文 4 支只對 1 支 → 用 sonnet 換準確度不花時間
+# ---------- 辨識線路 ----------
+# 1 線 純 CV(rune_cv):定位膠囊金色描邊 → 四等分 → 逐支判向。完整幀約 6ms。
+#        20 張真實符文圖實測 全對 19/20、單支 79/80。離線、無變異、無額度。
+# 2 線 claude CLI:1 線讀不到時才走(沒開謎題、膠囊被擋、畫面尺寸不同…)。
+# MAPLE_RUNE_LINE = auto(預設,1→2) | cv(只走 1 線) | claude(只走 2 線)
+LINE = os.environ.get("MAPLE_RUNE_LINE", "auto")
+
+# 1 線可以重試:它只花數毫秒,而【每次重試都是新的一幀】—— 箭頭顏色在循環動畫、
+# 怪物與技能特效在移動,上一幀被擋住的箭頭下一幀可能就乾淨了。重試 5 次的總成本
+# (含抓幀)遠低於 1 秒,相對 10~14 秒的謎題窗可以忽略。
+CV_TRIES = 5
+CV_GAP = 0.12                          # 每次重試間隔:要換到不同的動畫相位才有意義
+# 【怎麼判定 1 線失敗】不是「有沒有回 4 個方向」,而是要【兩幀答案一致】才採用。
+# 理由:符文謎題的方向在整個窗內不會變,只有顏色在循環;所以兩幀一致是很強的證據。
+# 反過來說,單幀「很有把握但judge錯」的情況(實測 r19 第 4 支)就會因為拿不到一致票
+# 而被擋下,交給 2 線 —— 誤判的代價是按錯鍵白燒冷卻,寧可退線也不要賭。
+CV_AGREE = 2
+
+# ---------- 2 線後端 ----------
+# 曾經試過本地 VLM(Qwen2-VL-2B / Qwen2.5-VL-3B,獨立 venv 常駐子行程),已移除。
+# 用 20 張真實符文圖(80 支箭頭、人工判讀真值)實測的結論:
+#   * 一次問四支:全對 1/20。提示詞裡的 JSON 範例會被逐字照抄,連沒有箭頭的截圖也照回。
+#   * 膠囊定位 + 四等分切圖 + 逐格問(最佳配置):全對 3/20、單支 54/80。
+#   * 根因是模型分不出水平鏡像 —— 80 格裡一次都沒輸出過 "left",把圖水平鏡射後
+#     88% 的答案原封不動。這是 VLM 的已知弱點,提示詞與放大倍率都改不掉。
+# 真實符文約半數箭頭是水平的,所以本地 VLM 在此任務上不可用,不值得留著 5GB 環境。
+MODEL = "sonnet"                       # claude 後端用。實測與 haiku 同速(瓶頸在往返不在
+                                       # 模型),但 haiku 判真符文 4 支只對 1 支 → 用 sonnet
 ASK_TIMEOUT = 13.0                    # 單次辨識逾時。原本 9s,但 CLI 速度會隨 API 負載變動:
                                        # 調參時量到 3.6~5.5s,後來實測變成 5.9~11s,9s 幾乎每輪
                                        # 都逾時 → 每次逾時又殺掉 worker、下輪冷啟更慢,整條流程
@@ -302,7 +341,11 @@ def _parse_dirs(text):
     return [w.lower() for w in _DIR_RE.findall(text)][:4]
 
 
-_worker = _Worker()
+_claude_worker = _Worker()
+
+
+def _w():
+    return _claude_worker
 
 # ---------- 對外狀態 / 掛鉤 ----------
 _enabled = False
@@ -311,7 +354,19 @@ _keyboard = None
 _focus_fn = None
 _resume_fn = None
 _busy = threading.Lock()
-_last = {"ts": 0.0, "dirs": [], "err": "", "ms": 0, "solved": None, "approach": None}
+_last = {"ts": 0.0, "dirs": [], "err": "", "ms": 0, "solved": None,
+         "approach": None, "line": ""}
+# 失敗原因統計:「成功率低」要能拆解才知道該修哪裡 —— 換模型只治「看錯」,
+# 治不了逾時與符文冷卻。ms 分布用來判斷 ASK_TIMEOUT 是否還太緊。
+# cv_miss / by_line 用來看 1 線接手了多少、還有多少落到 2 線。
+_stats = {"rounds": 0, "solved": 0, "timeout": 0, "no_arrows": 0,
+          "wrong": 0, "cli_error": 0, "cv_miss": 0, "ms_list": [],
+          "by_line": {}}
+_detect_frame = None                   # 最近一次辨識用的整幀,供 save_sample 取用
+
+
+def _stat(key):
+    _stats[key] = _stats.get(key, 0) + 1
 
 
 def set_hooks(navigator=None, keyboard=None, focus_fn=None, resume_fn=None):
@@ -337,10 +392,26 @@ def set_enabled(on):
 
 def status():
     return {"enabled": _enabled, "busy": _busy.locked(),
-            "worker": "ready" if _worker.alive() else "stopped",
-            "warm": _worker.warm(),
+            "worker": "ready" if _w().alive() else "stopped",
+            "warm": _w().warm(), "line": LINE,
             "model": MODEL, "radius": [RADIUS_MIN, RADIUS_MAX],
-            "approach_dx": APPROACH_DX, "last": dict(_last)}
+            "approach_dx": APPROACH_DX, "last": dict(_last),
+            "stats": _stats_summary()}
+
+
+def _stats_summary():
+    """辨識輪次的成敗拆解。分母是【輪次】不是符文顆數:一顆符文可能重試多輪。"""
+    ms = _stats["ms_list"]
+    s = {k: v for k, v in _stats.items() if k != "ms_list"}
+    if ms:
+        srt = sorted(ms)
+        s["ms_avg"] = int(sum(ms) / len(ms))
+        s["ms_p50"] = srt[len(srt) // 2]
+        s["ms_max"] = srt[-1]
+        s["ms_over_timeout"] = sum(1 for v in ms if v >= ASK_TIMEOUT * 1000)
+    if _stats["rounds"]:
+        s["solve_rate"] = round(_stats["solved"] / _stats["rounds"], 3)
+    return s
 
 
 def overall_state():
@@ -375,17 +446,21 @@ def _warm_image():
 
 
 def worker_warmup(fresh=True):
-    """真正預熱:(可選)重開行程 + 跑一次完整往返(不只 spawn)。
+    """預熱 2 線(claude)worker:(可選)重開行程 + 跑一次完整往返(不只 spawn)。
     只 spawn 的話第一次實際辨識仍要付 6~10s 冷啟,會直接吃掉整個謎題窗。
     fresh=True 會先關掉舊 session:同一 session 塞過遊戲截圖後會越問越慢,所以每次要解
-    符文之前都開新的。這 ~5s 成本發生在「走去符文」的路上,不佔謎題窗。回 (ok,msg)。"""
+    符文之前都開新的。這 ~5s 成本發生在「走去符文」的路上,不佔謎題窗。回 (ok,msg)。
+
+    只走 1 線時直接略過 —— 1 線是純 CV,沒有冷啟成本,沒必要為用不到的後端付 5 秒。"""
+    if LINE == "cv":
+        return True, "只走 1 線(CV),無需預熱"
     t0 = time.perf_counter()
     if fresh:
-        _worker.stop()
-    ok, msg = _worker.start()
+        _w().stop()
+    ok, msg = _w().start()
     if not ok:
         return False, msg
-    dirs, err = _worker.ask(_warm_image())
+    dirs, err = _w().ask(_warm_image())
     ms = int((time.perf_counter() - t0) * 1000)
     if err:
         return False, f"預熱往返失敗({ms}ms): {err}"
@@ -394,7 +469,7 @@ def worker_warmup(fresh=True):
 
 
 def shutdown():
-    _worker.stop()
+    _w().stop()
 
 
 # ---------- 小地圖讀值 ----------
@@ -475,72 +550,308 @@ def _locate_arrows(frame):
             max(0, rx0 + x0 - _PAD), min(w, rx0 + x1 + _PAD))
 
 
-def _grab_crop(tries=5, gap=0.18):
-    """抓遊戲畫面 → 裁出箭頭列 → 存 PNG。回 (path, (w,h), err)。全程毫秒級。
+def _grab_frame(tries=5, gap=0.18):
+    """抓遊戲畫面。回 (frame, 有沒有看到箭頭, err)。
 
-    【裁切一律用固定框,不用 CV 定位的框】。曾經讓 `_locate_arrows` 決定裁切範圍,
-    結果是純負債:三次成功全部是定位失敗、走固定框完成的;唯一一次定位「成功」,
-    裁出來的框裡一支箭頭都沒有(鎖到角色特效與右側兩條綠色血條 —— 同一水平線、
-    同樣高飽和),模型回 0 支、白燒一次符文冷卻。箭頭顏色會循環動畫、又常被角色/
-    怪物/血條干擾,靠顏色定位本來就不可靠,而固定框到目前為止每次都讀得對。
-
-    `_locate_arrows` 只留著當【時機閘門】:偵測到疑似箭頭就立刻抓,沒偵測到也不放棄,
-    輪詢完照樣用固定框送出(它會漏抓真箭頭,不能拿來當否決條件)。"""
+    `_locate_arrows` 只當【時機閘門】:偵測到疑似箭頭就立刻抓,沒偵測到也不放棄,
+    輪詢完照樣往下送(它會漏抓真箭頭,不能拿來當否決條件)。"""
     import minimap
     frame = None
     seen = False
     for i in range(max(1, tries)):
         frame = minimap._grab_window()
         if frame is None:
-            return "", (0, 0), "抓不到遊戲畫面(遊戲沒開?)"
+            return None, False, "抓不到遊戲畫面(遊戲沒開?)"
         if _locate_arrows(frame) is not None:
             seen = True                     # 箭頭已渲染出來,不用再等
             break
         if i < tries - 1:
             time.sleep(gap)
-    h, w = frame.shape[:2]
     cv2.imwrite(_RAW, frame)                # 留原始幀供日後校準
+    _last["arrows_seen"] = seen             # 只是時機參考,不影響是否送圖
+    return frame, seen, ""
+
+
+def _write_crop(frame):
+    """2 線(claude)用:裁出固定框存 PNG。回 (path, err)。
+
+    【裁切一律用固定框,不用 CV 定位的框】。曾經讓 `_locate_arrows` 決定裁切範圍,
+    結果是純負債:唯一一次定位「成功」,裁出來的框裡一支箭頭都沒有(鎖到角色特效與
+    右側兩條綠色血條 —— 同一水平線、同樣高飽和),模型回 0 支、白燒一次符文冷卻。
+    (註:1 線的 `rune_cv` 改抓【膠囊金色描邊】而不是箭頭,那才是可靠的錨點。)"""
+    h, w = frame.shape[:2]
     y0, y1 = int(h * FALLBACK_CROP[0]), int(h * FALLBACK_CROP[1])
     x0, x1 = int(w * FALLBACK_CROP[2]), int(w * FALLBACK_CROP[3])
     crop = frame[y0:y1, x0:x1]
     if crop.size == 0:
-        return "", (w, h), "裁切區域為空"
+        return "", "裁切區域為空"
     if FALLBACK_UPSCALE > 1:
         crop = cv2.resize(crop, None, fx=FALLBACK_UPSCALE, fy=FALLBACK_UPSCALE,
                           interpolation=cv2.INTER_CUBIC)
     cv2.imwrite(_SHOT, crop)
-    _last["arrows_seen"] = seen             # 只是時機參考,不影響是否送圖
-    return _SHOT, (w, h), ""
+    return _SHOT, ""
+
+
+def _cv_read(first_frame):
+    """1 線:最多讀 CV_TRIES 幀,要【兩幀答案一致】才採用。
+    回 (dirs, err, 已試次數, 產生該答案的那一幀)。
+
+    最後那個回傳值不能省:重試會換幀,答案可能來自第 3 幀,但存進資料集的若是第 1 幀,
+    就會出現「圖上箭頭被擋住、標籤卻是別幀讀到的」錯標樣本 —— 資料集最該避免的就是這個。
+
+    每次重試都抓新的一幀 —— 箭頭顏色在循環動畫、怪物與技能特效在移動,上一幀被擋住
+    的箭頭下一幀可能就乾淨了。全部 5 次(含抓幀)遠低於 1 秒。
+
+    【怎麼判定失敗】分三種,都會記進 _stats 好事後拆解:
+      no_capsule  找不到膠囊 —— 多半是謎題還沒渲染出來,重試最有價值
+      not_capsule 找到膠囊但四格面積驗證沒過 —— 有東西擋住箭頭
+      disagree    讀得到但幾幀之間對不起來 —— 分割不穩,不該賭,交給 2 線
+    """
+    import minimap
+    import rune_cv
+    seen = {}                       # dirs(tuple) -> 出現次數
+    reasons = []
+    frame = first_frame
+    for i in range(CV_TRIES):
+        try:
+            d, err = rune_cv.read_dirs(frame)
+        except Exception as e:
+            d, err = [], f"CV 例外: {e!r}"
+        if len(d) == 4 and all(d):
+            key = tuple(d)
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] >= CV_AGREE:
+                return list(key), "", i + 1, frame
+        else:
+            reasons.append("no_capsule" if "找不到" in err else
+                           "not_capsule" if "不像" in err else "unread")
+        if i < CV_TRIES - 1:
+            time.sleep(CV_GAP)
+            f2 = minimap._grab_window()
+            if f2 is not None:
+                frame = f2
+    if seen:
+        best = max(seen.items(), key=lambda kv: kv[1])
+        _stat("cv_disagree")
+        return [], (f"1 線 {CV_TRIES} 幀未取得一致答案(最多票 {list(best[0])} "
+                    f"×{best[1]})"), CV_TRIES, None
+    _stat("cv_" + (reasons[-1] if reasons else "unread"))
+    return [], f"1 線讀不到({reasons[-1] if reasons else 'unread'})", CV_TRIES, None
 
 
 def _detect():
-    """裁圖 → claude 判向。回 (dirs, err, 毫秒)。"""
+    """抓幀 → 1 線 CV(最多 5 幀、要兩幀一致),失敗才退 2 線 claude。回 (dirs, err, 毫秒)。
+
+    【為什麼現在可以「失敗後銜接」】先前的設計是啟動時擇一,理由是延遲會疊加 ——
+    第一個後端逾時 13s 之後再跑第二個,10~14 秒的謎題窗早就關了。現在 1 線是純 CV,
+    完整幀約 6ms,疊加成本可以忽略,所以改成 1 線先跑、讀不到才交給 2 線。"""
+    global _detect_frame
     t0 = time.perf_counter()
-    path, _size, err = _grab_crop()
+    frame, _seen, err = _grab_frame()
+    _detect_frame = frame          # 留給 save_sample:解除成功後才知道這張值不值得存。
+                                   # 【不要塞進 _last】—— _last 會被 status() 直接
+                                   # 序列化成 JSON,numpy 影格會讓整個端點爆掉。
     if err:
         return [], err, int((time.perf_counter() - t0) * 1000)
-    dirs, err = _worker.ask(path)
+
+    line, cv_err = "", ""
+    dirs = []
+    if LINE in ("auto", "cv"):
+        dirs, cv_err, tried, hit_frame = _cv_read(frame)
+        _last["cv_tries"] = tried
+        if dirs:
+            line = "cv"
+            _detect_frame = hit_frame   # 存進資料集的必須是產生這個答案的那一幀
+        else:
+            _stat("cv_miss")
+            if LINE == "cv":
+                ms = int((time.perf_counter() - t0) * 1000)
+                _last.update({"ts": time.time(), "dirs": [], "err": cv_err,
+                              "ms": ms, "line": "cv"})
+                return [], cv_err or "1 線讀不到", ms
+
+    if not dirs and LINE in ("auto", "claude"):
+        path, werr = _write_crop(frame)
+        if werr:
+            return [], werr, int((time.perf_counter() - t0) * 1000)
+        dirs, err = _w().ask(path)
+        line = "claude"
+        if cv_err:
+            err = f"{err}(1 線先失敗: {cv_err})" if err else err
+
     ms = int((time.perf_counter() - t0) * 1000)
-    _last.update({"ts": time.time(), "dirs": dirs, "err": err, "ms": ms})
+    _last.update({"ts": time.time(), "dirs": dirs, "err": err, "ms": ms,
+                  "line": line})
+    _stats["by_line"][line] = _stats["by_line"].get(line, 0) + 1
     return dirs, err, ms
+
+
+def save_sample(frame, dirs, line, verified="purple_gone"):
+    """把一筆【已被遊戲驗證正確】的樣本存進資料集。回存檔路徑或 ""。
+
+    只在「按完 4 個方向後紫標消失」時呼叫 —— 那等於遊戲本身認證了這組答案。
+    【不要改成一有答案就存】:2 線的答案不是真值(實測 claude 會回 unknown、也會看錯),
+    而且 2 線只在 1 線失敗時才跑,那些正是最容易判錯的困難樣本。用未驗證的答案當標籤
+    等於把錯標餵進資料集,之後拿它調 CV 參數會被帶偏。
+    """
+    if frame is None or len(dirs) != 4:
+        return ""
+    try:
+        os.makedirs(_DATASET, exist_ok=True)
+        idx = os.path.join(_DATASET, "index.jsonl")
+        n = sum(1 for _ in open(idx, encoding="utf-8")) if os.path.exists(idx) else 0
+        if n >= DATASET_MAX:
+            return ""
+        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
+        png = os.path.join(_DATASET, f"{stamp}.png")
+        # 只存【搜尋帶】那一段,不存整幀:膠囊與所有已知干擾源(公告橫幅、平台草皮)都在
+        # 這一帶裡,調參需要的資訊一個不少,但檔案剩三分之一。整幀 PNG 約 1.2MB,
+        # 存滿 DATASET_MAX 會膨脹到 ~2.3GB,不值得。
+        import rune_cv
+        by0, by1 = rune_cv.search_band(frame.shape[0])
+        crop = frame[by0:by1]
+        cv2.imwrite(png, crop)
+        try:
+            import mapdata
+            map_id = mapdata.current_map_id()
+        except Exception:
+            map_id = None
+        rec = {"file": os.path.basename(png), "dirs": dirs, "line": line,
+               "verified": verified, "ts": time.time(), "map": map_id,
+               "frame": [frame.shape[1], frame.shape[0]], "band_y0": by0}
+        try:
+            rec["capsule"] = rune_cv.find_capsule(crop)   # 座標相對存下來的裁切圖
+        except Exception:
+            rec["capsule"] = None
+        with open(idx, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        print(f"[rune] 已存標註樣本 {rec['file']} {dirs} (第 {n + 1} 筆,來自 {line})")
+        return png
+    except Exception as e:
+        print(f"[rune] 存樣本失敗: {e!r}")
+        return ""
+
+
+def dataset_status():
+    """資料集現況:幾筆、來源線路分佈、標籤是怎麼驗證的。
+    正確率不放這裡 —— 那要重跑 1 線,是 dataset_eval() 的事,別讓一個查狀態的呼叫
+    默默去跑整批推論。"""
+    idx = os.path.join(_DATASET, "index.jsonl")
+    recs = []
+    if os.path.exists(idx):
+        for line in open(idx, encoding="utf-8"):
+            line = line.strip()
+            if line:
+                try:
+                    recs.append(json.loads(line))
+                except Exception:
+                    pass
+    by_line, by_verify = {}, {}
+    pos = [r for r in recs if not r.get("negative")]
+    neg = [r for r in recs if r.get("negative")]
+    for r in pos:
+        k = r.get("line", "?")
+        by_line[k] = by_line.get(k, 0) + 1
+        v = r.get("verified", "?")
+        by_verify[v] = by_verify.get(v, 0) + 1
+    # 正負樣本分開報:混在一起看會以為「空白畫面也被當成樣本」。
+    # 負樣本是【畫面上沒有謎題】的幀,過關條件是 1 線什麼都不要回報 —— 它防的是
+    # 誤判(拿背景雜訊當箭頭去按方向鍵、白燒符文冷卻),跟正樣本一樣重要,
+    # 但不該混進「認出幾支箭頭」的分母。
+    return {"n": len(pos), "negatives": len(neg), "dir": _DATASET,
+            "max": DATASET_MAX, "by_line": by_line, "by_verified": by_verify,
+            "negative_notes": [r.get("note", "") for r in neg]}
+
+
+def dataset_eval():
+    """拿資料集重跑 1 線,量它在【真實失敗案例】上的正確率。
+    這才是資料集的用途:2 線救回來的樣本,正是 1 線最該補強的地方。"""
+    import rune_cv
+    idx = os.path.join(_DATASET, "index.jsonl")
+    if not os.path.exists(idx):
+        return {"n": 0, "exact": 0, "arrows": 0, "total": 0, "rows": []}
+    exact = arrows = total = 0
+    neg_n = neg_ok = 0
+    rows = []
+    for line in open(idx, encoding="utf-8"):
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        p = os.path.join(_DATASET, r["file"])
+        img = rune_cv.imread(p) if os.path.exists(p) else None
+        if img is None:
+            continue
+        got, err = rune_cv.read_dirs(img)
+        truth = r["dirs"]
+        if r.get("negative"):
+            # 負樣本沒有箭頭:過關條件是「什麼都不要回報」。誤判一次的代價是按錯鍵
+            # 白燒符文冷卻,所以它跟正樣本一樣重要,但不能混進單支正確率的分母。
+            neg_n += 1
+            ok = len(got) == 0
+            neg_ok += ok
+            rows.append({"file": r["file"], "negative": True, "pass": bool(ok),
+                         "cv": got, "err": err, "note": r.get("note", "")})
+            continue
+        hit = sum(1 for a, b in zip(got, truth) if a == b) if len(got) == 4 else 0
+        exact += (got == truth)
+        arrows += hit
+        total += 4
+        rows.append({"file": r["file"], "truth": truth, "cv": got,
+                     "hit": hit, "err": err, "line": r.get("line"),
+                     "verified": r.get("verified")})
+    return {"n": len(rows) - neg_n, "exact": exact, "arrows": arrows,
+            "total": total, "neg_n": neg_n, "neg_pass": neg_ok, "rows": rows}
+
+
+def capsule_preview_jpeg(scale=3):
+    """1 線的膠囊預覽 JPEG:框出膠囊、畫四等分線、標出每格判到的方向。
+    只抓一幀就回,不做時機輪詢(預覽是給人看的,不能每次卡 5 次 x 0.18s)。回 bytes 或 None。"""
+    import minimap
+    import rune_cv
+    frame = minimap._grab_window()
+    if frame is None:
+        return None
+    return rune_cv.preview_jpeg(frame, scale=scale)
 
 
 def detect_now():
     """乾跑:辨識當前畫面,不碰角色。供中控頁校準裁切框與判讀。"""
     dirs, err, ms = _detect()
     return {"ok": not err and len(dirs) == 4, "dirs": dirs, "n": len(dirs),
-            "err": err, "ms": ms, "shot": _SHOT}
+            "err": err, "ms": ms, "shot": _SHOT, "line": _last.get("line", "")}
 
 
 # ---------- 解謎流程 ----------
-def _tap(key):
+def _jitter(rng):
+    """取區間內的隨機值。傳入單一數值時原樣回傳(舊設定相容)。"""
+    if isinstance(rng, (tuple, list)):
+        return random.uniform(rng[0], rng[1])
+    return rng
+
+
+def _tap(key, hold=None):
     """按一下。用 try/finally 保證放開 —— 中間若拋例外(睡眠被打斷、序列埠瞬斷)
     鍵會一直按住,遊戲裡就是角色不停走/不停攻擊,外顯就像「整個卡住」。"""
     _keyboard.key_down(key)
     try:
-        time.sleep(ARROW_HOLD)
+        time.sleep(_jitter(ARROW_HOLD if hold is None else hold))
     finally:
         _keyboard.key_up(key)
+
+
+def _press_dirs(dirs):
+    """依序輸入 4 個方向,節奏對齊人類操作(先停頓思考,再逐鍵間隔)。回實際耗時秒數。
+
+    抽成共用函式是因為主解謎流程與 /rune/test 各有一份按鍵迴圈,分開寫遲早會改到
+    一邊漏一邊,兩條路徑的節奏就會不一致。"""
+    t0 = time.perf_counter()
+    time.sleep(_jitter(THINK))          # 看懂 → 決定要按什麼
+    for i, d in enumerate(dirs):
+        _tap(d)
+        if i < len(dirs) - 1:           # 最後一鍵之後不必再等
+            time.sleep(_jitter(ARROW_GAP))
+    return time.perf_counter() - t0
 
 
 def _platform_of(x, y, y_tol=SAME_LEVEL_DY):
@@ -628,7 +939,7 @@ def _attempt(px, py):
 def _attempt_inner(px, py):
     """預熱 →(必要時)導航 → 開謎題 → 辨識 → 按方向 → 驗證。回是否解除成功。
     失敗一律回 False 並把原因寫進 _last["err"],由外層決定要不要重試。"""
-    if not _worker.warm():                  # 已經熱著就別再跑一次暖身往返(API 慢時要 6~11s)
+    if not _w().warm():                  # 已經熱著就別再跑一次暖身往返(API 慢時要 6~11s)
         worker_warmup()                     # 冷的才預熱:成本藏在下面的走路時間裡
     if _focus_fn:
         _focus_fn()
@@ -719,34 +1030,47 @@ def _attempt_inner(px, py):
             # 只確保 worker 活著(逾時會殺掉它),【不再整個重開 + 暖身往返】——
             # 那是過度設計:session 膨脹已由 ask() 內的 RESTART_AFTER 處理,而每輪多跑
             # 一次暖身在 API 變慢時要 6~11s,純粹燒掉時間讓整條流程看起來卡住。
-            _worker.start()
+            _w().start()
         if _focus_fn:
             _focus_fn()
         _tap(ACTIVATE_KEY)                  # 開啟謎題 → 10~14 秒窗開始計時
         time.sleep(ACTIVATE_WAIT)
         dirs, err, ms = _detect()
+        _stat("rounds")
+        if ms:
+            _stats["ms_list"] = (_stats["ms_list"] + [ms])[-50:]
         print(f"[rune] 第{rnd + 1}輪 辨識 {ms}ms → {dirs} {err}")
         if len(dirs) != 4:
             _last["err"] = err or f"只認出 {len(dirs)} 支箭頭"
+            _stat("timeout" if "逾時" in err else
+                  "cli_error" if "CLI 錯誤" in err or "無法解析" in err else "no_arrows")
             continue
-        try:                                # 留存這張供事後查證(判讀錯 vs 按鍵沒生效)
-            shutil.copyfile(_SHOT, _PRESSED)
-            _last["pressed_shot"] = _PRESSED
+        try:    # 留存真的按下去的那張供事後查證(判讀錯 vs 按鍵沒生效)。
+                # 直接寫 _detect_frame,不要 copy _SHOT —— _SHOT 只有 2 線跑過才會更新,
+                # 1 線答題時它可能是上一輪甚至上次執行留下的舊圖,複製過去等於存了一張
+                # 無關的圖還標成「按下去的那張」,對它的用途反而是誤導。
+            if _detect_frame is not None:
+                cv2.imwrite(_PRESSED, _detect_frame)
+                _last["pressed_shot"] = _PRESSED
         except Exception:
             pass
-        for d in dirs:                      # 依序輸入
-            _tap(d)
-            time.sleep(ARROW_GAP)
+        _last["press_ms"] = int(_press_dirs(dirs) * 1000)
         # 驗證用輪詢而非只看一次:解除後小地圖上的紫標不是立刻消失,單看 1.2s 那一瞬間
         # 可能誤判成失敗,接著又白白吃一次符文冷卻。
         t0 = time.monotonic()
         while time.monotonic() - t0 < VERIFY_WAIT:
             if _purple_gone():
                 _last["err"] = ""
+                _stat("solved")
                 print("[rune] 解除成功")
+                # 紫標消失 = 遊戲驗證這組答案正確 → 存成標註樣本。
+                # 2 線救回來的樣本特別有價值:那正是 1 線判不出來的困難案例。
+                _last["sample"] = save_sample(_detect_frame, dirs,
+                                              _last.get("line", ""))
                 return True
             time.sleep(0.4)
         _last["err"] = "按完方向後紫標仍在"
+        _stat("wrong")                      # 有按下 4 鍵但沒解掉 = 真的看錯
     return False
 
 
@@ -941,9 +1265,7 @@ def test_activate(solve=False):
     dirs, err, ms = _detect()
     pressed = False
     if solve and len(dirs) == 4:
-        for d in dirs:
-            _tap(d)
-            time.sleep(ARROW_GAP)
+        _press_dirs(dirs)
         pressed = True
         time.sleep(VERIFY_WAIT)
     return {"ok": not err and len(dirs) == 4, "dirs": dirs, "n": len(dirs),

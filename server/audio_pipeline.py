@@ -17,6 +17,7 @@ import subprocess
 import threading
 
 from config import AUDIO_ENABLED, AUDIO_BITRATE_K
+import paths
 
 try:
     import soundcard as sc
@@ -29,8 +30,10 @@ RATE = 48000
 CHANNELS = 2
 BLOCK = 1024               # ~21ms/塊
 
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_FFMPEG = os.path.join(_ROOT, "bin", "ffmpeg", "bin", "ffmpeg.exe")
+_ROOT = paths.ASSETS          # 同 video_pipeline
+# ffmpeg 走 paths:打包後它在 exe 旁的素材夾,不在 exe 內部
+# (138MB 的執行檔塞進 onefile 會讓每次啟動都解壓它)。
+_FFMPEG = paths.bin_path("ffmpeg", "bin", "ffmpeg.exe")
 _RTSP = "rtsp://localhost:8554/audio"
 
 _proc = None

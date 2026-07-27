@@ -19,6 +19,7 @@ import time
 
 import minimap
 import pathgraph
+import paths
 
 _keyboard = None
 _focus_fn = None
@@ -58,6 +59,16 @@ def set_terrain_fn(fn):
     """注入地形來源 fn()→(points_dicts, platforms)。有平台時導航改用平台重疊圖規劃。"""
     global _terrain_fn
     _terrain_fn = fn
+
+
+_round_hook = None
+
+
+def set_round_hook(fn):
+    """巡邏每輪開頭呼叫 fn();回 True 代表「本輪有事要處理,先別走位」。
+    用 hook 而非直接 import,是為了不讓 navigator 認識復活/符文這些上層功能。"""
+    global _round_hook
+    _round_hook = fn
 
 
 # ---- 巡邏時限 ----
@@ -111,7 +122,7 @@ def _patrol_timer(gen):
 
 
 # ---- 移動數據記錄(每段動作:起點/目標/落點),供參考與訓練移動模型 ----
-_MOVE_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nav_moves.jsonl")
+_MOVE_LOG = os.path.join(paths.data_dir("logs"), "nav_moves.jsonl")
 
 
 _MOVE_LOG_MAX = 8 * 1024 * 1024        # 8MB 上限:超過就輪替成 .1(只留一代)
@@ -148,6 +159,7 @@ def status():
         last = v.get("last")
         rem = 0.0 if last is None else max(0.0, v["cd"] - (now - last))
         pl.append({"x": x, "y": y, "skill": v["skill"], "cd": v["cd"],
+                   "face": v.get("face", ""),
                    "remaining": round(rem, 1), "ready": rem <= 0.05})
     s["placements"] = pl
     rem = patrol_remaining()
@@ -215,6 +227,29 @@ def _release_atk():
         except Exception:
             pass
     _atk_held.clear()
+
+
+FACE_HOLD = 0.06          # 轉向按住時間。與中控頁 /face 相同 —— 實測純 tap(放開太快)
+                          # 遊戲會漏讀導致轉向失敗,60ms 才穩。
+FACE_SETTLE = 0.12        # 轉向後到施放之間的緩衝(讓轉身動作結束)
+
+
+def _face_for_place(face):
+    """放置技能施放前先確保面向。face='left'/'right';空值=不限,完全不動作。
+
+    【為什麼需要】召喚/圖騰類技能會朝角色面向放置,而角色的面向取決於走位過程中
+    最後按的方向鍵 —— 從左邊走到點就朝右、從右邊走到點就朝左,同一個點每輪面向可能
+    不同,放出來的位置就飄。指定方向後每次施放前重按一次該方向鍵,面向才可重現。
+
+    【副作用要知道】遊戲沒有「只轉向不移動」的輸入,按方向鍵一定會走一小步
+    (60ms ≈ 幾個像素)。已勾「精確到位」的點要留意這個位移;不需要固定面向就選不限。"""
+    if face not in ("left", "right"):
+        return
+    # 【不做「已經朝這邊就跳過」的最佳化】keyboard.last_dir 只反映「本程式最後按過的
+    # 方向」,使用者手動操作、被怪物擊退、或上一輪的殘留都可能讓它與實際面向不一致。
+    # 無條件重按一次的代價只是幾個像素,比放錯位置便宜。
+    _press(face, hold=FACE_HOLD)
+    time.sleep(FACE_SETTLE)
 
 
 def _release_move_keys():
@@ -575,6 +610,7 @@ def _refresh_places(pts):
             key = (p["x"], p["y"])
             old = _place.get(key)
             new[key] = {"skill": sk, "cd": float(p.get("cd", 0) or 0),
+                        "face": p.get("face", ""),
                         "last": old["last"] if (old and old["skill"] == sk) else None}
     _place.clear()
     _place.update(new)
@@ -602,6 +638,15 @@ def _patrol_run(points_fn, attack_key, cast_mode):
             _state["error"] = "巡邏時間到,已自動停止"
             print("[nav] 巡邏時間到 → 停止")
             return
+        if _round_hook is not None:         # 死亡復活等每輪檢查;回 True 代表本輪別走位
+            try:
+                if _round_hook():
+                    _state["phase"] = "hook_wait"
+                    if _stop.wait(1.0):
+                        return
+                    continue
+            except Exception as e:
+                print(f"[nav] 每輪 hook 錯誤: {e!r}")
         if _purple_present():              # 紫標兜底:巡邏中/重開時紫標仍在 → 暫停
             _state["phase"] = "purple_pause"
             _state["error"] = "偵測到紫標,已自動暫停巡邏"
@@ -665,6 +710,7 @@ def _patrol_run(points_fn, attack_key, cast_mode):
                 _release_move_keys()
                 if _stop.wait(0.45):       # 後搖緩衝(可中斷)
                     return
+                _face_for_place(pt.get("face"))
                 _state["phase"] = "place"
                 _press(sk, hold=0.12)
                 if _stop.wait(0.2):        # 放置後稍等,確保技能發動再離開

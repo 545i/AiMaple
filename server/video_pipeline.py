@@ -17,6 +17,7 @@ import time
 from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M,
                     VIDEO_INTRA_REFRESH, VIDEO_VBV_FRAMES)
 import wgc
+import paths
 
 # 讓本程序 DPI-aware，GetWindowRect 才會回傳正確的實體像素座標（超寬/縮放螢幕才不會偏）
 try:
@@ -37,8 +38,10 @@ except Exception:
     pass
 
 # maple 根目錄與 ffmpeg 絕對路徑
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_FFMPEG = os.path.join(_ROOT, "bin", "ffmpeg", "bin", "ffmpeg.exe")
+_ROOT = paths.ASSETS          # 子行程的工作目錄:素材夾(mediamtx.yml 等相對路徑基準)
+# ffmpeg 走 paths:打包後它在 exe 旁的素材夾,不在 exe 內部
+# (138MB 的執行檔塞進 onefile 會讓每次啟動都解壓它)。
+_FFMPEG = paths.bin_path("ffmpeg", "bin", "ffmpeg.exe")
 _RTSP = f"rtsp://localhost:8554/{MEDIAMTX_PATH}"
 
 # 目前設定（source: "desktop" 全螢幕 / "window" 指定視窗）
