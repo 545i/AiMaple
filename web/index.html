@@ -1537,12 +1537,14 @@ $("#runeTestBtn").onclick = ()=>
 
 // ---- 膠囊預覽：1 線(CV)的定位與判向即時檢查 ----
 // 每秒抓一張 /rune/capsule（伺服器端定位＋標註）。橘框＝膠囊，直線＝四等分，
-// 下方色帶＝每格判到的方向。沒開謎題時伺服器回整幀縮圖＋no capsule，方便診斷。
+// 下方色帶＝每格判到的方向。頂部兩行是【原始影格座標】，用來二次確認到底切在哪。
+// 沒開謎題時伺服器回整幀縮圖＋畫出搜尋範圍框，看得出是沒找到還是膠囊落在範圍外。
 let capOn = false, capTimer = null;
 function capTick(){
   const im = $("#capImg");
   im.onerror = ()=>{ $("#capInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
-  im.onload  = ()=>{ $("#capInfo").textContent = "橘框＝膠囊　直線＝四等分　下方＝1 線判到的方向"; };
+  im.onload  = ()=>{ $("#capInfo").textContent =
+    "頂部：綠 capsule＝實際切出的框、橘 search＝允許範圍（皆為原始影格座標）　橘框＝膠囊　直線＝四等分　下方＝1 線判到的方向"; };
   im.src = `/rune/capsule?token=${encodeURIComponent(token)}&_=${Date.now()}`;
 }
 function stopCapPreview(){

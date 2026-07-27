@@ -332,55 +332,86 @@ def read_dirs(frame_bgr, strict=True):
 
 
 _ARROW_GLYPH = {"up": "^", "down": "v", "left": "<", "right": ">"}
+_FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
+def _put_fit(img, text, org, color, max_w, base=0.45):
+    """把文字塞進 max_w 寬:量得太寬就逐級縮字。預覽的 scale 可以是 1~6,
+    固定字級在 scale=1 時會整段溢出畫面外,那條資訊等於沒有。"""
+    fs = base
+    while fs > 0.28:
+        (tw, _), _ = cv2.getTextSize(text, _FONT, fs, 1)
+        if tw <= max_w - 8:
+            break
+        fs -= 0.04
+    cv2.putText(img, text, org, _FONT, fs, color, 1, cv2.LINE_AA)
 
 
 def preview(frame_bgr, scale=3):
     """回一張標註後的膠囊預覽圖(BGR),供中控頁確認定位與判讀是否正確。
 
-    找不到膠囊時回整幀縮圖 + 提示 —— 回 None 的話前端只會看到破圖,
-    分不出「沒開謎題」與「定位壞了」。"""
+    圖上一律標出【原始影格座標】(頂部兩行:capsule 實際切在哪、search 允許切在哪)。
+    只給放大後的裁切圖是不夠的 —— 畫面上看起來對的膠囊,可能是在錯的位置抓到的
+    同色雜訊,不把座標寫出來就無從二次確認。
+
+    找不到膠囊時回整幀縮圖 + 搜尋範圍框 —— 回 None 的話前端只會看到破圖,
+    分不出「沒開謎題」與「定位壞了」;畫出搜尋框才看得出是「該找的地方沒找到」
+    還是「膠囊根本落在搜尋範圍外」。"""
+    fh, fw = frame_bgr.shape[:2]
+    by0, by1 = search_band(fh)
+    bx0, bx1 = search_x(fw)
+    search_txt = f"search X {bx0}-{bx1}  Y {by0}-{by1}   frame {fw}x{fh}"
+
     box = find_capsule(frame_bgr)
     if box is None:
-        h, w = frame_bgr.shape[:2]
-        k = 480 / max(1, w)
-        small = cv2.resize(frame_bgr, (int(w * k), int(h * k)))
-        cv2.putText(small, "no capsule", (8, 24), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7, (60, 60, 240), 2)
-        return small
+        k = 480 / max(1, fw)
+        small = cv2.resize(frame_bgr, (int(fw * k), int(fh * k)))
+        cv2.rectangle(small, (int(bx0 * k), int(by0 * k)),
+                      (int(bx1 * k), int(by1 * k)), (0, 200, 255), 1)
+        TOP = 20
+        vis = np.zeros((TOP + small.shape[0], small.shape[1], 3), np.uint8)
+        vis[TOP:] = small
+        _put_fit(vis, search_txt, (6, 14), (0, 200, 255), vis.shape[1])
+        cv2.putText(vis, "no capsule", (8, TOP + 24), _FONT, 0.7, (60, 60, 240), 2)
+        return vis
 
     pad = 6
     x0 = max(0, box[0] - pad)
     y0 = max(0, box[1] - pad)
-    cap = frame_bgr[y0:min(frame_bgr.shape[0], box[3] + pad),
-                    x0:min(frame_bgr.shape[1], box[2] + pad)]
+    cap = frame_bgr[y0:min(fh, box[3] + pad), x0:min(fw, box[2] + pad)]
     img = cv2.resize(cap, (cap.shape[1] * scale, cap.shape[0] * scale),
                      interpolation=cv2.INTER_NEAREST)
-    # 標籤另開一條下方色帶,不疊在影像上 —— 疊上去會被膠囊下緣切掉,而且蓋住箭頭
-    BAND = 34
-    vis = np.zeros((img.shape[0] + BAND, img.shape[1], 3), np.uint8)
-    vis[:img.shape[0]] = img
+    # 座標帶在上、方向帶在下,都不疊在影像上 —— 疊上去會被膠囊邊緣切掉,而且蓋住箭頭
+    TOP, BAND = 36, 34
+    vis = np.zeros((TOP + img.shape[0] + BAND, img.shape[1], 3), np.uint8)
+    vis[TOP:TOP + img.shape[0]] = img
+    # 第 1 行是實際切出來的框,第 2 行是允許的範圍。兩行並排才看得出膠囊有沒有
+    # 頂到搜尋邊界(貼邊 = 再偏一點就會整個抓不到,是收窄過頭的前兆)。
+    cw, ch = box[2] - box[0] + 1, box[3] - box[1] + 1
+    _put_fit(vis, f"capsule X {box[0]}-{box[2]}  Y {box[1]}-{box[3]}   {cw}x{ch}",
+             (6, 14), (80, 240, 120), vis.shape[1])
+    _put_fit(vis, search_txt, (6, 30), (0, 200, 255), vis.shape[1])
     # 預覽同時顯示嚴格判定的結果與寬鬆讀到的內容:被驗證擋下時仍畫出方向,
     # 才看得出來「擋掉的是誤判還是誤殺」。
     strict_dirs, verdict = read_dirs(frame_bgr, strict=True)
     dirs, _ = read_dirs(frame_bgr, strict=False)
     if verdict:
-        cv2.putText(vis, verdict[:46], (6, 18), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, (60, 60, 240), 2)
-    cv2.rectangle(vis, (pad * scale, (box[1] - y0) * scale),
-                  ((box[2] - x0) * scale, (box[3] - y0) * scale), (0, 200, 255), 2)
+        cv2.putText(vis, verdict[:46], (6, TOP + 18), _FONT, 0.5, (60, 60, 240), 2)
+    cv2.rectangle(vis, (pad * scale, TOP + (box[1] - y0) * scale),
+                  ((box[2] - x0) * scale, TOP + (box[3] - y0) * scale), (0, 200, 255), 2)
     sw = (box[2] - box[0]) / 4
     for k in range(4):
         sx = int((box[0] - x0 + k * sw) * scale)
         ex = int((box[0] - x0 + (k + 1) * sw) * scale)
         if k:
-            cv2.line(vis, (sx, (box[1] - y0) * scale), (sx, (box[3] - y0) * scale),
-                     (0, 200, 255), 1)
+            cv2.line(vis, (sx, TOP + (box[1] - y0) * scale),
+                     (sx, TOP + (box[3] - y0) * scale), (0, 200, 255), 1)
         d = dirs[k] if k < len(dirs) else None
         # 綠=採用;黃=讀到但被驗證擋下(疑似誤判);紅=讀不出來
         col = (80, 240, 120) if strict_dirs else ((60, 200, 240) if d else (60, 60, 240))
         cv2.putText(vis, _ARROW_GLYPH.get(d, "?"),
-                    (sx + (ex - sx) // 2 - 9, img.shape[0] + BAND - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, col, 2)
+                    (sx + (ex - sx) // 2 - 9, TOP + img.shape[0] + BAND - 8),
+                    _FONT, 0.9, col, 2)
     return vis
 
 
