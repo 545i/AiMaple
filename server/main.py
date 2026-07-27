@@ -43,6 +43,7 @@ import rune
 import revive
 import firmware
 import paths
+import exp
 
 # 走 paths 而非自己拼 ../web:打包成 exe 後 web/ 在 exe 內部(sys._MEIPASS),
 # 不在 exe 旁邊,自己拼相對路徑會找不到頁面。
@@ -931,6 +932,22 @@ def minimap_redetect(token: str = Query("")):
     _check_owner(token)
     minimap.redetect()
     return JSONResponse(minimap.status())
+
+
+# ===== EXP 進度 =====
+@app.get("/exp/status")
+def exp_status(token: str = Query("")):
+    """讀畫面最下方經驗條上的文字 → {ok, exp, pct, text, err, gained, rate}。
+    每次呼叫抓一幀現讀(實測 0.9ms),不做背景輪詢。"""
+    _check_owner(token)
+    return JSONResponse(exp.status())
+
+
+@app.post("/exp/reset")
+def exp_reset(token: str = Query("")):
+    """把「本次累計」的基準點歸零到目前經驗值。"""
+    _check_owner(token)
+    return JSONResponse(exp.reset())
 
 
 # ===== 運動校準(掛機模式·軌跡學習):量測輸入→位移,僅主人、與掛機/訪客互斥 =====

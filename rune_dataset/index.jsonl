@@ -45,3 +45,5 @@
 {"file": "20260727-150421-109.png", "dirs": ["right", "left", "left", "down"], "line": "claude", "verified": "purple_gone", "ts": 1785135861.1193218, "map": "165x84", "frame": [1368, 800], "band_y0": 0, "capsule": null}
 {"file": "20260727-152004-053.png", "dirs": ["down", "down", "right", "right"], "line": "claude", "verified": "purple_gone", "ts": 1785136804.0638993, "map": "165x84", "frame": [1368, 800], "band_y0": 0, "capsule": null}
 {"file": "20260727-160228-398.png", "dirs": ["right", "down", "down", "right"], "line": "claude", "verified": "purple_gone", "ts": 1785139348.408917, "map": "165x84", "frame": [1368, 800], "band_y0": 0, "capsule": null}
+{"file": "20260727-161753-583.png", "dirs": ["down", "right", "right", "up"], "line": "claude", "verified": "purple_gone", "ts": 1785140273.5941129, "map": "165x84", "frame": [1368, 800], "band_y0": 0, "capsule": null}
+{"file": "20260727-163332-956.png", "dirs": ["left", "down", "up", "right"], "line": "cv", "verified": "purple_gone", "ts": 1785141212.968732, "map": "165x84", "frame": [1368, 800], "band_y0": 0, "capsule": [519, 236, 848, 317]}

@@ -400,6 +400,18 @@
    <div id="statusPanel" style="margin-top:10px;padding:8px 10px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
      <div id="patrolPhase" style="font-size:15px;font-weight:700;color:#7fe0b0;font-variant-numeric:tabular-nums">狀態：--</div>
      <div id="patrolClock" style="font-size:26px;font-weight:800;color:#e6e8ee;font-variant-numeric:tabular-nums;letter-spacing:1px;margin:2px 0 6px">--:--:--</div>
+
+     <!-- EXP 進度：讀經驗條【上面的文字】，不是量填充長度（底色會隨經驗值變，見 server/exp.py） -->
+     <div id="expBox" style="margin:0 0 8px">
+       <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+         <span id="expPct" style="font-size:19px;font-weight:800;color:#7fe0b0;font-variant-numeric:tabular-nums">--%</span>
+         <span id="expNum" style="font-size:12px;color:#8a8f99;font-variant-numeric:tabular-nums">--</span>
+       </div>
+       <div style="height:5px;background:#2a2d38;border-radius:99px;overflow:hidden;margin:4px 0 3px">
+         <div id="expBar" style="height:100%;width:0%;background:linear-gradient(90deg,#5bc48f,#7fe0b0);transition:width .4s"></div>
+       </div>
+       <div id="expGain" style="font-size:11px;color:#6b7280;font-variant-numeric:tabular-nums">--</div>
+     </div>
      <div id="switchRow" style="display:flex;flex-wrap:wrap;gap:5px"></div>
      <div id="patrolMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
    </div>
@@ -1589,6 +1601,41 @@ function badge(label, on, note, warn){
        + `background:${c[0]};color:${c[1]};border:1px solid ${c[1]}44;white-space:nowrap">`
        + `${mark} ${label}${note ? "・" + note : ""}</span>`;
 }
+// ---- EXP 進度 ----
+// 伺服器端讀經驗條【上面的文字】(點陣模板比對，約 1ms)，這裡只負責顯示。
+// 不用綠/灰長度比例推算：底色會隨經驗值變，而且 1px = 0.073%，文字精度高得多。
+function fmtBig(n){
+  if(n === null || n === undefined) return "--";
+  const a = Math.abs(n);
+  if(a >= 1e12) return (n/1e12).toFixed(2) + " 兆";
+  if(a >= 1e8)  return (n/1e8).toFixed(2) + " 億";
+  if(a >= 1e4)  return (n/1e4).toFixed(1) + " 萬";
+  return String(n);
+}
+async function expTick(){
+  try{
+    const e = await (await fetch(`/exp/status?token=${encodeURIComponent(token)}`)).json();
+    const pct=$("#expPct"), num=$("#expNum"), bar=$("#expBar"), gain=$("#expGain");
+    if(!e.ok){
+      pct.textContent = "--%"; pct.style.color = "#8a8f99";
+      // 讀失敗時把辨識到的原文顯示出來——那是判斷「哪個字元認錯」的唯一線索
+      num.textContent = e.text ? `讀到「${e.text}」` : "";
+      bar.style.width = "0%";
+      gain.textContent = e.err || "讀不到經驗條";
+      return;
+    }
+    pct.textContent = e.pct.toFixed(3) + "%";
+    pct.style.color = "#7fe0b0";
+    num.textContent = e.exp.toLocaleString();
+    bar.style.width = Math.min(100, e.pct) + "%";
+    const parts = [];
+    if(e.gained) parts.push(`本次 +${fmtBig(e.gained)}`);
+    if(e.rate)   parts.push(`每小時 ${fmtBig(e.rate)}`);
+    if(e.levels) parts.push(`升 ${e.levels} 級`);
+    gain.textContent = parts.length ? parts.join("　") : "累計中…";
+  }catch(_){}
+}
+
 async function placeTick(){
   try{
     const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
@@ -1644,6 +1691,7 @@ setInterval(()=>{
   const pane = document.querySelector('.dpane[data-pane="patrol"]');
   if(pane && pane.classList.contains("on")){
     placeTick();
+    expTick();
     // 背景偵測續約:伺服器端 30s 過期,所以每 10 秒續一次。搭在既有的 1 秒輪詢上,
     // 不另開計時器;瀏覽器關掉就不再續約,伺服器那條偵測執行緒會自己退場。
     if((watchTick = (watchTick + 1) % 10) === 1) watchDetect(1);
