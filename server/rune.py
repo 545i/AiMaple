@@ -925,6 +925,76 @@ def _pop_virtual_platform(base):
         _navigator.set_terrain_fn(base)
 
 
+# ---------- 走位記錄 ----------
+# 【為什麼需要】原本走位失敗只寫進 _last["err"] —— 記憶體裡的單一格,下一次嘗試就被蓋掉。
+# 事後完全無從得知「走了哪一側、落在哪、為什麼判失敗」,而走位正是符文流程裡最需要
+# 回溯的部分(站到隔壁平台、落到別層,光看結果分不出是哪一種)。成功也記,才有對照組。
+_NAV_LOG = os.path.join(paths.data_dir("logs"), "rune_nav.jsonl")
+_NAV_LOG_MAX = 2 * 1024 * 1024
+_nav_log_n = 0
+
+
+def _log_nav(rec):
+    """追加一筆走位結果。與 navigator 的 nav_moves.jsonl 同目錄、同樣的大小輪替。"""
+    global _nav_log_n
+    try:
+        out = dict(rec)
+        out["t"] = round(time.time(), 1)
+        with open(_NAV_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(out, ensure_ascii=False) + "\n")
+        _nav_log_n += 1
+        if _nav_log_n % 50 == 0 and os.path.getsize(_NAV_LOG) > _NAV_LOG_MAX:
+            os.replace(_NAV_LOG, _NAV_LOG + ".1")
+    except Exception:
+        pass
+
+
+def _check_spot(px, py):
+    """角色【現在站的位置】能不能按到這顆符文。回 (ok, info)。
+
+    導航完與「本來就在環內」兩條路徑共用同一套判定 —— 判斷條件寫兩份遲早會分岔。"""
+    pos = _dot_now()
+    marks = _purple_now()
+    info = {"pos": list(pos) if pos else None, "purple": [px, py],
+            "dist": abs(pos[0] - px) if pos else None,
+            "dy": abs(pos[1] - py) if pos else None,
+            "purple_visible": None if marks is None else bool(marks)}
+    if not pos:
+        info["reason"] = "no_dot"
+        return False, info
+    # 高度差夠小還不夠 —— 實測有地圖同時存在 y=28/28/29 三塊平台,只比高度會把隔壁
+    # 那塊當成同一層,人站在隔壁平台上按鍵當然沒反應。要比對是不是【同一塊】。
+    same = _same_platform(pos, px, py)
+    info["same_platform"] = same
+    if same is False:
+        info["reason"] = "other_platform"
+        return False, info
+    if info["dy"] > SAME_LEVEL_DY:
+        info["reason"] = "wrong_level"
+        return False, info
+    info["reason"] = ""
+    return True, info
+
+
+def _approach(px, py, side):
+    """從 side 側走到符文旁(px + side*APPROACH_DX)。只負責走,判定交給 _check_spot。"""
+    tx, ty = int(px + side * APPROACH_DX), int(py)
+    arrived = _goto(tx, ty)
+    # Y_TOL=4 會把差 4 層當成已到達 → 上面那趟可能原地不動。沒對齊就往上
+    # 超推一段逼它真的爬(navigator 內建「上繩過頭 → 下跳修正到目標層」)。
+    p = _dot_now()
+    if p and abs(p[1] - py) > SAME_LEVEL_DY:
+        print(f"[rune] dy={abs(p[1] - py)} 仍不同層,往上超推 {Y_OVERSHOOT} 再試")
+        arrived = _goto(tx, ty - Y_OVERSHOOT)
+    # 補正走位:落點超出可用環就用實際誤差反推目標再走一次,把落點拉回環內。
+    p = _dot_now()
+    if p and not (RADIUS_MIN <= abs(p[0] - px) <= RADIUS_MAX):
+        err_x = p[0] - tx
+        print(f"[rune] 落點離符文 {abs(p[0] - px)} 格(誤差 {err_x}),補正走位")
+        _goto(tx - err_x, ty)
+    return bool(arrived), [tx, ty]
+
+
 def _goto(tx, ty, precise=True):
     """導航到 (tx,ty) 並等它跑完。回是否成功啟動並抵達。
 
@@ -972,56 +1042,51 @@ def _attempt_inner(px, py):
     dist = abs(cur[0] - px) if cur else None
     dy = abs(cur[1] - py) if cur else None
     moved = False
-    side = 1 if (cur and cur[0] > px) else -1
     in_ring = (dist is not None and dy is not None
                and RADIUS_MIN <= dist <= RADIUS_MAX and dy <= SAME_LEVEL_DY)
-    if not in_ring:
-        # 不在可用環內才導航;已經在環內就直接開謎題,省下整段走路時間。
-        tx, ty = int(px + side * APPROACH_DX), int(py)
+    attempt = _last.get("attempt")
+    ok, info, arrived = False, {}, True
+    if in_ring:
+        # 已經在環內就直接開謎題,省下整段走路時間。
+        ok, info = _check_spot(px, py)
+        _log_nav(dict(info, attempt=attempt, side=None, moved=False))
+        if not ok:
+            # 距離在環內【不代表站得對】:同高度不同塊平台的距離也可能落在環內,
+            # 那時按鍵不會有反應,還是得走位過去。
+            print(f"[rune] 距離在環內但 {info.get('reason')},仍需走位")
+    if not ok:
         moved = True
-        arrived = _goto(tx, ty)
-        # Y_TOL=4 會把差 4 層當成已到達 → 上面那趟可能原地不動。沒對齊就往上
-        # 超推一段逼它真的爬(navigator 內建「上繩過頭 → 下跳修正到目標層」)。
-        p = _dot_now()
-        if p and abs(p[1] - py) > SAME_LEVEL_DY:
-            print(f"[rune] dy={abs(p[1] - py)} 仍不同層,往上超推 {Y_OVERSHOOT} 再試")
-            arrived = _goto(tx, ty - Y_OVERSHOOT)
-        # 補正走位:navigator 的 X_TOL=3,目標 px±6 最壞會落在離符文 9 格(實測發生過:
-        # 目標 55、落在 58、符文 49)。用實際誤差反推目標再走一次,把落點拉回環內。
-        p = _dot_now()
-        if p and not (RADIUS_MIN <= abs(p[0] - px) <= RADIUS_MAX):
-            err_x = p[0] - tx
-            print(f"[rune] 落點離符文 {abs(p[0] - px)} 格(誤差 {err_x}),補正走位")
-            _goto(tx - err_x, ty)
-        if not arrived:
-            _last["err"] = "沒走到符文位置"
-            return False
-
-    # 記錄實際落點與紫標的距離、紫標是否仍看得見 —— 校準 RADIUS_MIN/MAX 的依據。
-    pos = _dot_now()
-    marks = _purple_now()
-    final = abs(pos[0] - px) if pos else None
-    final_dy = abs(pos[1] - py) if pos else None
-    _last["approach"] = {
-        "moved": moved, "dist_before": dist, "dy_before": dy,
-        "dist": final, "dy": final_dy,
-        "pos": list(pos) if pos else None, "purple": [px, py],
-        "purple_visible": None if marks is None else bool(marks),
-    }
-    # 高度差夠小還不夠 —— 實測有地圖同時存在 y=28/28/29 三塊平台,只比高度會把
-    # 隔壁那塊當成同一層,人站在隔壁平台上按鍵當然沒反應。要比對是不是【同一塊】。
-    if pos:
-        same = _same_platform(pos, px, py)
-        _last["approach"]["same_platform"] = same
-        if same is False:
-            _last["err"] = "站在隔壁那塊平台(高度相近但不同塊),按鍵不會有反應"
+        # 【左右各試一次】起始側取離角色近的那邊(省一趟走路)。
+        # 一定要試另一側 —— side 是用「當前位置在符文哪一邊」算出來的,走完失敗後
+        # 位置沒有本質改變,重算還是同一側,外層 MAX_ATTEMPTS 再跑幾次也是同一側,
+        # 等於永遠不會嘗試另一邊(實測就是落到隔壁平台後一路重試同一側)。
+        first = 1 if (cur and cur[0] > px) else -1
+        for s in (first, -first):
+            arrived, target = _approach(px, py, s)
+            ok, info = _check_spot(px, py)
+            info.update({"side": s, "target": target, "arrived": arrived,
+                         "attempt": attempt, "moved": True})
+            _log_nav(info)
+            if ok and arrived:
+                break
+            print(f"[rune] 從{'右' if s > 0 else '左'}側接近失敗"
+                  f"({info.get('reason') or '沒走到'})"
+                  f"→ {'改試另一側' if s == first else '兩側都失敗'}")
+        if not (ok and arrived):
+            _last["approach"] = dict(info, dist_before=dist, dy_before=dy)
+            _last["err"] = {
+                "other_platform": "兩側都站到隔壁平台(高度相近但不同塊),按鍵不會有反應",
+                "wrong_level": "兩側都落在不同層,按鍵不會有反應",
+                "no_dot": "抓不到角色黃點",
+            }.get(info.get("reason"), "兩側都沒走到符文位置")
             print(f"[rune] {_last['err']}")
             return False
+
+    pos = _dot_now()
+    marks = _purple_now()
+    final = info.get("dist")
+    _last["approach"] = dict(info, moved=moved, dist_before=dist, dy_before=dy)
     print(f"[rune] 到位 {_last['approach']}")
-    if final_dy is not None and final_dy > SAME_LEVEL_DY:
-        _last["err"] = f"與符文差 {final_dy} 層(不同平台),按鍵不會有反應"
-        print(f"[rune] {_last['err']}")
-        return False
     # 紫標被角色蓋掉 → 先退開再說。此時「紫標消失」不代表解除成功,直接解會誤報;
     # 但也不該整輪放棄(實測落點 dist=4 就會蓋住,而 4 是 RADIUS_MIN,等於卡在邊界)。
     # 往外退到環中間,退完看得見就繼續。
