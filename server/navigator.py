@@ -27,7 +27,8 @@ _thread = None
 _stop = threading.Event()
 _op_lock = threading.Lock()
 _state = {"running": False, "phase": "idle", "target": None,
-          "pos": None, "arrived": False, "error": "", "steps": 0}
+          "pos": None, "arrived": False, "error": "", "steps": 0,
+          "stuck_n": 0, "stuck_ok": 0, "stuck_last": None}
 _place = {}   # (x,y) → {"skill","cd","last"(monotonic|None)};放置技能冷卻狀態,供監控下次觸發
 
 # ---- 向量/容差參數 ----
@@ -40,6 +41,33 @@ FALL_MAX = 8          # 下跳閉環最多跳幾次
 PRECISE_X_TOL = 1     # 精確模式水平容差(px):二段跳到位後(可過衝)再走路回正到 ±1
 PRECISE_STEPS = 10    # 精確走路回正最多步數
 X_MAX_STEPS = 14      # 水平閉環步數上限
+
+# ---- 卡住脫困 ----
+# 實測角色會卡在地圖的爬梯處:走位鍵按下去沒反應,位置完全不動。要【按住左右其中
+# 一個方向鍵 + 跳躍鍵】才出得來 —— 單按方向鍵或單獨跳都無效。
+#
+# 為什麼需要獨立看門狗而不是在移動迴圈裡檢查:卡住時主執行緒正阻塞在某個移動函式
+# 裡(最壞是 _rope_to 掃 6 個偏移,每次含 1.6s 固定等待),它不會自己回來檢查。
+# 各移動函式內部雖然已有短程的 stuck 自癒(二段跳撞牆→改走路),但那是「這一步沒效」
+# 等級的處理,救不了「整個角色被地形黏住」。
+STUCK_SECS = 10.0     # 移動階段連續多久沒位移視為卡住
+STUCK_TOL = 1         # 位置變化 ≤ 此值視為沒動(黃點靜止時 0px 抖動,見移動模型)
+STUCK_POLL = 0.5      # 看門狗取樣間隔
+UNSTICK_DIR = "right"  # 脫困方向。固定一邊即可 —— 使用者實測左右都出得來,
+                       # 交替只會讓選錯的那一半白等一輪 STUCK_SECS。
+UNSTICK_JUMPS = 2     # 一次脫困跳幾下
+UNSTICK_HOLD = 0.5    # 跳完再按住方向鍵多久(讓角色真的走離卡點)
+UNSTICK_LAND = 0.6    # 動作結束到判定之間的等待:跳躍途中的位置不算數,要等落地
+REPLAN_MAX = 3        # 脫困後重新規劃路線的次數上限(防無限迴圈)
+
+# 只在【移動中】計時。到點施放技能、等放置技能冷卻、紫標暫停等階段角色本來就靜止,
+# 把那些算進去會不停誤觸發脫困 —— 巡邏只剩冷卻中的點時甚至會整分鐘站著不動。
+#
+# 刻意【不含 fine_x】:那是 ±1px 的精確微調,而 STUCK_TOL=1 會把 1px 的位移看成
+# 「沒動」,反覆微調就可能被誤判成卡住,一腳把角色跳離剛走準的位置。該階段最多
+# PRECISE_STEPS x ~0.25s ≈ 2.5 秒,本來就用不到 10 秒的卡住保護。
+MOVING_PHASES = {"g_walk", "g_jump", "g_fall", "g_rope", "move_x",
+                 "pre_move_x", "fall", "fall_adjust", "rope_up"}
 
 
 def set_keyboard(kb):
@@ -252,6 +280,95 @@ def _face_for_place(face):
     time.sleep(FACE_SETTLE)
 
 
+# ---------- 卡住脫困看門狗 ----------
+_stuck_thread = None
+_stuck_gen = 0            # 世代號:舊執行緒靠它自我退場(同 minimap._watch_loop 的做法)
+_replan = threading.Event()   # 脫困成功 → 位置已變,原路徑作廢,通知主流程重新規劃
+
+
+def _unstick():
+    """脫困動作 + 驗證。回是否真的脫離。
+
+    動作是【按住方向鍵 + 跳】,單按方向鍵或單獨跳都出不來(使用者實測)。
+    方向固定一邊就好 —— 左右都能脫離,交替只會讓選錯的那一半白等一輪 STUCK_SECS。
+
+    先放開所有鍵再動作:卡住時主執行緒很可能正按著某個方向鍵,不清乾淨會互相抵銷。
+
+    【怎麼驗證】比對動作前後的位置。關鍵是【等落地停穩再讀】—— 跳躍途中黃點正在
+    移動,那時的讀數會把「跳起來又落回原地」誤判成脫困成功。這是移動模型裡既有的
+    原則:黃點靜止時 0px 抖動、讀數極準,移動中的瞬時值不可信。"""
+    p0 = _dot()
+    print(f"[nav] 卡住 {STUCK_SECS:.0f}s → 脫困(方向={UNSTICK_DIR},起點={p0})")
+    _release_atk()
+    for k in ("left", "right", "up", "down"):
+        try:
+            _keyboard.key_up(k)
+        except Exception:
+            pass
+    try:
+        _keyboard.key_down(UNSTICK_DIR)
+        for _ in range(UNSTICK_JUMPS):
+            if _stop.is_set():
+                return False
+            _press("x")
+            time.sleep(0.3)
+        time.sleep(UNSTICK_HOLD)
+    except Exception as e:
+        print(f"[nav] 脫困動作失敗: {e!r}")
+        return False
+    finally:
+        try:
+            _keyboard.key_up(UNSTICK_DIR)
+        except Exception:
+            pass
+    time.sleep(UNSTICK_LAND)               # 等落地,別拿空中的位置判定
+    p1 = _settle(retries=6)
+    if p0 is None or p1 is None:
+        return False
+    moved = abs(p1[0] - p0[0]) > STUCK_TOL or abs(p1[1] - p0[1]) > STUCK_TOL
+    print(f"[nav] 脫困{'成功' if moved else '無效'} {p0} → {p1}")
+    return moved
+
+
+def _stuck_watch(gen):
+    """移動階段連續 STUCK_SECS 沒位移就脫困。自己讀黃點而不是看 _state["pos"]:
+    各段更新 pos 的頻率不一,有的段(如二段跳)整段都不讀,靠它會把「沒人更新」
+    誤當成「沒有移動」。"""
+    last, since = None, None
+    # running 轉 False 就退場:單次 move_to 跑完不會 set _stop,少了這個條件
+    # 看門狗會一路空轉到下次導航才被世代號換掉。
+    while not _stop.is_set() and _stuck_gen == gen and _state.get("running"):
+        time.sleep(STUCK_POLL)
+        if _state.get("phase") not in MOVING_PHASES:
+            last, since = None, None       # 非移動階段不計時,離開後從頭算
+            continue
+        p = _dot()
+        if p is None:
+            continue                       # 讀不到黃點不代表沒動,不累計
+        now = time.monotonic()
+        if last is None or abs(p[0] - last[0]) > STUCK_TOL or abs(p[1] - last[1]) > STUCK_TOL:
+            last, since = p, now
+            continue
+        if since is not None and now - since >= STUCK_SECS:
+            _state["stuck_n"] = _state.get("stuck_n", 0) + 1
+            _state["stuck_last"] = round(time.time(), 1)
+            if _unstick():
+                # 脫出後位置已經不在原路徑上了,沿用舊路徑會照著過期的起點走。
+                # 通知主流程重新規劃 —— 移動迴圈看到這個旗標會提早收手。
+                _state["stuck_ok"] = _state.get("stuck_ok", 0) + 1
+                _replan.set()
+            last, since = None, None       # 無論成敗都重新計時,不要連續狂按
+
+
+def _stuck_start():
+    """開一條看門狗;舊的靠世代號自己退場。導航/巡邏啟動時呼叫。"""
+    global _stuck_thread, _stuck_gen
+    _replan.clear()           # 上一趟殘留的重規劃旗標會讓新導航一開始就自我中斷
+    _stuck_gen += 1
+    _stuck_thread = threading.Thread(target=_stuck_watch, args=(_stuck_gen,), daemon=True)
+    _stuck_thread.start()
+
+
 def _release_move_keys():
     """放開所有移動鍵 + 按住的攻擊鍵,確保靜止/垂直動作時不干擾。"""
     for k in ("left", "right", "up", "down"):
@@ -296,7 +413,8 @@ def _walk_to_x(direction, target_x, skills=None, timeout_s=2.5):
     _keyboard.key_down(direction)
     t0 = time.monotonic(); last = None; stuck = 0
     try:
-        while time.monotonic() - t0 < timeout_s and not _stop.is_set():
+        while (time.monotonic() - t0 < timeout_s
+               and not _stop.is_set() and not _replan.is_set()):
             p = _dot()
             if p:
                 _state["pos"] = list(p)
@@ -327,7 +445,7 @@ def _fall_to_y(ty, skills=None):
     time.sleep(0.2)
     try:
         for _ in range(FALL_MAX):
-            if _stop.is_set():
+            if _stop.is_set() or _replan.is_set():
                 break
             p = _dot()
             if p:
@@ -355,7 +473,7 @@ def _move_to_x(tx, skills=None):
     """水平閉環:遠用二段跳、近用走路;卡住(x 沒變)自癒——換走路脫困。"""
     last_x = None
     for i in range(X_MAX_STEPS):
-        if _stop.is_set():
+        if _stop.is_set() or _replan.is_set():   # 脫困過 → 目標與路徑都要重算,別再往舊 tx 走
             return
         p = _dot()
         if not p:
@@ -461,56 +579,70 @@ def _rope_to(nx, ty):
 
 def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None):
     """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。
-    skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。"""
-    p = _settle()
-    if p is None:
-        _state["error"] = "抓不到角色黃點"
-        return False
-    _state["pos"] = list(p)
-    pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
-    nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms)
-    start = pathgraph.nearest_node(nodes, p)
-    path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
-    if path is None:
-        _state["error"] = f"無路徑 {start}→({tx},{ty})"
-        print(f"[nav] 無路徑 {start}→({tx},{ty})")
-        return False
-    _state["path"] = [[list(n), mt] for n, mt in path]
-    print(f"[nav] 路徑 {start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
-    for node, mt in path:
-        if _stop.is_set():
+    skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。
+
+    【脫困後會重新規劃】看門狗把角色從卡點跳出來之後,角色已經不在原路徑的起點上了,
+    沿用舊路徑等於照著過期的座標走(例如「從 x=26 走到 x=113」,但人已經被跳到 x=40)。
+    所以 _replan 一旦被設起來就丟掉目前這條路徑,重讀位置、重算一條。"""
+    for attempt in range(REPLAN_MAX):
+        _replan.clear()
+        p = _settle()
+        if p is None:
+            _state["error"] = "抓不到角色黃點"
             return False
-        nx, ny = node
-        _state["phase"] = "g_" + mt
-        p_start = _dot()
-        if mt == "walk":
-            _move_to_x(nx, skills)                      # 同平台走位(移動攻擊穿插平A)
-        elif mt == "fall":
-            _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 走到掉落點→垂直落下
-        elif mt == "jump":                              # 物理二段跳:橫向~30px 落到落點平台
-            _settle()
-            pp = _dot() or (nx, ny)
-            dr = 1 if nx >= pp[0] else -1
-            cur = next((pf for pf in platforms if abs(pf["y"] - pp[1]) <= Y_TOL
-                        and pf["xA"] - 2 <= pp[0] <= pf["xB"] + 2), None)
-            tgt = next((pf for pf in platforms if abs(pf["y"] - ny) <= Y_TOL
-                        and pf["xA"] - 3 <= nx <= pf["xB"] + 3), None)
-            if cur and tgt:                             # 起跳點:使落點(起跳±30)落在目標平台內
-                if dr > 0:
-                    lo, hi = max(cur["xA"], tgt["xA"] - 30), min(cur["xB"], tgt["xB"] - 30)
-                else:
-                    lo, hi = max(cur["xA"], tgt["xA"] + 30), min(cur["xB"], tgt["xB"] + 30)
-                if lo <= hi:
-                    _walk_to((lo + hi) // 2)            # 起跳點取範圍中間→落到目標平台中部(避邊緣)
-                    _settle()
-            _double_jump("right" if dr > 0 else "left", skills)
-            _settle(); _move_to_x(nx, skills)           # 落點微調到目標 x
-        elif mt == "rope":
-            _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 走到重疊區→上繩到頂
-        p_end = _dot()
-        _log_move(_state.get("mode", "move"), mt,
-                  list(p_start) if p_start else None, [nx, ny],
-                  list(p_end) if p_end else None)
+        _state["pos"] = list(p)
+        pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
+        nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms)
+        start = pathgraph.nearest_node(nodes, p)
+        path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
+        if path is None:
+            _state["error"] = f"無路徑 {start}→({tx},{ty})"
+            print(f"[nav] 無路徑 {start}→({tx},{ty})")
+            return False
+        _state["path"] = [[list(n), mt] for n, mt in path]
+        print(f"[nav] 路徑{'(重規劃 %d)' % attempt if attempt else ''} "
+              f"{start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
+        for node, mt in path:
+            if _stop.is_set():
+                return False
+            if _replan.is_set():
+                break                                   # 脫困過 → 這條路徑作廢,跳出去重算
+            nx, ny = node
+            _state["phase"] = "g_" + mt
+            p_start = _dot()
+            if mt == "walk":
+                _move_to_x(nx, skills)                      # 同平台走位(移動攻擊穿插平A)
+            elif mt == "fall":
+                _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 走到掉落點→垂直落下
+            elif mt == "jump":                              # 物理二段跳:橫向~30px 落到落點平台
+                _settle()
+                pp = _dot() or (nx, ny)
+                dr = 1 if nx >= pp[0] else -1
+                cur = next((pf for pf in platforms if abs(pf["y"] - pp[1]) <= Y_TOL
+                            and pf["xA"] - 2 <= pp[0] <= pf["xB"] + 2), None)
+                tgt = next((pf for pf in platforms if abs(pf["y"] - ny) <= Y_TOL
+                            and pf["xA"] - 3 <= nx <= pf["xB"] + 3), None)
+                if cur and tgt:                             # 起跳點:使落點(起跳±30)落在目標平台內
+                    if dr > 0:
+                        lo, hi = max(cur["xA"], tgt["xA"] - 30), min(cur["xB"], tgt["xB"] - 30)
+                    else:
+                        lo, hi = max(cur["xA"], tgt["xA"] + 30), min(cur["xB"], tgt["xB"] + 30)
+                    if lo <= hi:
+                        _walk_to((lo + hi) // 2)            # 起跳點取範圍中間→落到目標平台中部(避邊緣)
+                        _settle()
+                _double_jump("right" if dr > 0 else "left", skills)
+                _settle(); _move_to_x(nx, skills)           # 落點微調到目標 x
+            elif mt == "rope":
+                _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 走到重疊區→上繩到頂
+            p_end = _dot()
+            _log_move(_state.get("mode", "move"), mt,
+                      list(p_start) if p_start else None, [nx, ny],
+                      list(p_end) if p_end else None)
+        if not _replan.is_set():
+            break                                       # 整條路徑跑完沒被打斷
+    else:
+        print(f"[nav] 重新規劃 {REPLAN_MAX} 次仍未走完,交給上層(巡邏會重挑點)")
+    _replan.clear()
     if precise:
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
@@ -550,6 +682,10 @@ def _goto_sync(tx, ty, skills=None, precise=False):
         _fall_to_y(ty, skills)
     _state["phase"] = "move_x"
     _move_to_x(tx, skills)                 # 最後水平(同層直接走 / 上下層後微調)
+    # 這條是【沒有平台資料時】的簡單導航,結構是線性的,沒有可以重規劃的路徑物件。
+    # 脫困仍會讓上面的移動迴圈提早收手 → 這裡就會判定未到達,由上層(巡邏)重挑點再來。
+    # 旗標一定要清掉,否則下一趟導航會一開始就自我中斷。
+    _replan.clear()
     if precise:                            # 精確到位:二段跳可能過衝 → 走路回正到 ±1px
         _state["phase"] = "fine_x"
         _fine_tune_x(tx)
@@ -768,6 +904,7 @@ def move_to(tx, ty, skills=None, precise=False):
                                    args=(int(tx), int(ty), skills or [], bool(precise)),
                                    daemon=True)
         _thread.start()
+        _stuck_start()
         return True, "ok"
 
 
@@ -787,10 +924,12 @@ def patrol_start(points_fn, attack_key="a", cast_mode="hold2s"):
         _stop.clear()
         _place.clear()
         _state.update({"running": True, "phase": "patrol", "mode": "patrol",
-                       "arrived": False, "error": "", "rounds": 0})
+                       "arrived": False, "error": "", "rounds": 0,
+                       "stuck_n": 0, "stuck_ok": 0, "stuck_last": None})
         _thread = threading.Thread(target=_patrol_wrap,
                                    args=(points_fn, attack_key, cast_mode), daemon=True)
         _thread.start()
+        _stuck_start()
         global _timer_thread, _timer_gen
         _timer_gen += 1                    # 讓先前殘留的看門狗退場
         if _patrol_deadline is not None:

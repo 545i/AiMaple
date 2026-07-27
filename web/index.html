@@ -1647,7 +1647,9 @@ async function placeTick(){
     el.style.color = S[1];
     const detail = st.overall === "stopped"
       ? (st.phase === "time_up" ? "・巡邏時間到" : (st.error ? "・" + st.error : ""))
-      : `・${PHASE_TXT[st.phase]||st.phase||"--"}・已造訪 ${st.rounds||0} 點`;
+      : `・${PHASE_TXT[st.phase]||st.phase||"--"}・已造訪 ${st.rounds||0} 點`
+        // 卡在爬梯處的自動脫困。分子＝真的脫出（動作後位置有變），分母＝觸發次數
+        + (st.stuck_n ? `・🪃 脫困 ${st.stuck_ok||0}/${st.stuck_n}` : "");
     el.textContent = S[0] + detail;
     // 大字倒數:無限用 ∞,停止中就不顯示時間避免誤讀
     const clk = $("#patrolClock");
