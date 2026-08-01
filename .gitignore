@@ -57,3 +57,5 @@ firmware/*.hex
 # 註：要反選就不能忽略整個目錄，必須寫成 rune_dataset/*
 rune_dataset/*
 !rune_dataset/index.jsonl
+# 膠囊定位真值(tools/gen_box_truth.py 產生,純文字 34KB):改進定位時的評估基準
+!rune_dataset/box_truth.json
