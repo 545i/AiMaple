@@ -160,14 +160,19 @@ def search_x(w):
     return int(w * SEARCH_X_MARGIN), int(w * (1.0 - SEARCH_X_MARGIN))
 
 
-def find_capsule(bgr):
-    """回膠囊框 (x0, y0, x1, y1),找不到回 None。
+def _find_by_edges(bgr):
+    """靠【金色描邊】定位。回膠囊框 (x0, y0, x1, y1),找不到回 None。
 
-    搜尋範圍由 search_band(縱向) + search_x(橫向) 界定 —— 膠囊固定在視窗上緣中央,
-    掃整張畫面只會多引入誤判來源(實測:草地植被的假金線、小地圖邊框)。
+    搜尋範圍由 search_band(縱向) + search_x(橫向) 界定 —— 掃整張畫面只會多引入
+    誤判來源(實測:草地植被的假金線、小地圖邊框)。
 
     寬度一律鎖成 CAP_W:實測會量到 352~363(描邊與相鄰的黃色箭頭像素連通),不修正的話
-    第 1 格會越過左端蓋、吃進膠囊外的背景,分割就會壞掉。"""
+    第 1 格會越過左端蓋、吃進膠囊外的背景,分割就會壞掉。
+
+    【這條路的先天限制】描邊只有 1~3px 寬,在實戰幀裡會碎裂:取一張失敗案例逐像素查,
+    搜尋範圍內有 7027 個金色像素,卻沒有任何寬度 >=150px 的連通元件。半透明 UI 疊在
+    動態亮背景上,混色後大量像素落出金色範圍。所以它準的時候很準(誤差中位 2px),
+    但實戰幀有六成完全找不到 —— 那部分交給 _find_by_template。"""
     by0, by1 = search_band(bgr.shape[0])
     bx0, bx1 = search_x(bgr.shape[1])
     if by1 <= by0 or bx1 <= bx0:
@@ -202,6 +207,88 @@ def find_capsule(bgr):
     x0 = max(0, min(bx0 + x0, bgr.shape[1] - 1))
     return (x0, ytop, min(bgr.shape[1], x0 + CAP_W),
             min(bgr.shape[0], ytop + CAP_H))
+
+
+# ---------- 膠囊定位:邊緣形狀模板 ----------
+# 膠囊的【整體輪廓】(上下緣 + 兩端圓角 + 四支箭頭的位置)由 127 張已知真值的樣本
+# 取 Canny 邊緣後平均而成。用形狀比對而不是找連續金線,所以描邊碎裂也不影響 ——
+# 這正是描邊法在實戰幀上失效的地方。
+#
+# 【度量必須是 CCOEFF 不能用 CCORR】實測差距極大:同一組模板,CCORR 只有 7% 落在
+# 20px 內,CCOEFF 有 55%。CCOEFF 會先減去均值,對整體亮度變化免疫;CCORR 則會被
+# 「邊緣多的區域」整片拉高分數,在特效滿天的畫面裡到處都是假匹配。
+_CAP_TPL_PATH = paths.srv_res("rune_capsule_tpl.png")   # 唯讀資源:內嵌在 exe
+_CAP_TPL = None
+if os.path.exists(_CAP_TPL_PATH):
+    _ct = cv2.imread(_CAP_TPL_PATH, cv2.IMREAD_GRAYSCALE)
+    if _ct is not None and _ct.shape == (CAP_H, CAP_W):
+        _CAP_TPL = _ct.astype(np.float32) / 255.0
+
+TPL_MIN_SCORE = 0.15         # 低於此分數視為沒找到。實測 0.15 與 0(完全不設限)
+                             # 表現相同,但留著它才擋得住「畫面上根本沒謎題」的情況;
+                             # 0.25 以上會開始丟掉真的膠囊(40% → 28%)。
+
+
+def _canny_f32(bgr):
+    return cv2.Canny(cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY), 50, 150).astype(np.float32) / 255.0
+
+
+def _find_by_template(bgr):
+    """靠【邊緣形狀】定位。模板不在就回 None,由呼叫端只用描邊法。"""
+    if _CAP_TPL is None:
+        return None
+    by0, by1 = search_band(bgr.shape[0])
+    bx0, bx1 = search_x(bgr.shape[1])
+    sub = bgr[by0:by1, bx0:bx1]
+    if sub.shape[0] < CAP_H or sub.shape[1] < CAP_W:
+        return None
+    res = cv2.matchTemplate(_canny_f32(sub), _CAP_TPL, cv2.TM_CCOEFF_NORMED)
+    _mn, mx, _ml, ml = cv2.minMaxLoc(res)
+    if mx < TPL_MIN_SCORE:
+        return None
+    x, y = bx0 + ml[0], by0 + ml[1]
+    return (x, y, min(bgr.shape[1], x + CAP_W), min(bgr.shape[0], y + CAP_H))
+
+
+def _slot_consistency(bgr, box):
+    """四格面積一致性。兩種定位法各給一個答案時用它當裁判 ——
+    框對了四格各含一支箭頭、面積相近;框歪了會切到背景,面積立刻失衡。
+    純粹比較用,不是「是不是膠囊」的驗證(那是 read_dirs 裡的 AREA_OK)。"""
+    if box is None:
+        return -1e9
+    cap = bgr[box[1]:box[3], box[0]:box[2]]
+    if cap.size == 0:
+        return -1e9
+    dist = _chroma_map(cap)
+    w = cap.shape[1] / 4
+    areas = []
+    for k in range(4):
+        m = _seg(dist, int(k * w), int((k + 1) * w))
+        areas.append(0 if m is None else int((m > 0).sum()))
+    if min(areas) <= 0:
+        return -1e9
+    return -(max(areas) / min(areas) - 1) * 100 - abs(sum(areas) / 4 - 440) * 0.05
+
+
+def find_capsule(bgr):
+    """回膠囊框 (x0, y0, x1, y1),找不到回 None。
+
+    兩種定位法【都跑】,再用四格面積一致性挑一個 —— 這是 2-fold 交叉驗證出來的最佳
+    組合(每張都在沒參與建模板時被評估):
+        現行描邊法          14%
+        純模板             42%
+        模板優先+描邊退路      43%
+        兩者取面積較一致者     44%   ← 採用
+    差別在於兩者失敗的樣本不重疊:描邊法在描邊完整時精準(誤差中位 2px)但實戰幀常
+    整個找不到;模板法找得到但誤差中位 16px。讓面積一致性當裁判,兩邊的長處都留住。
+    負樣本(畫面上沒謎題)在四種策略下都是零誤判。"""
+    edge = _find_by_edges(bgr)
+    tpl = _find_by_template(bgr)
+    if edge is None:
+        return tpl
+    if tpl is None:
+        return edge
+    return edge if _slot_consistency(bgr, edge) >= _slot_consistency(bgr, tpl) else tpl
 
 
 def slots(box, n=4):

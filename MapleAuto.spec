@@ -15,6 +15,7 @@
     web/                 中控頁
     firmware/            韌體 .hex + .ino 原始碼 ★使用者要求不可外放
     server/rune_arrow_tpl.png   符文判向模板
+    server/rune_capsule_tpl.png 符文膠囊定位模板(邊緣形狀)
     server/km.dll        KMBox 驅動(ctypes 載入,必須跟得到)
 
 放素材夾(第三方大位元 或 必須可寫):
@@ -39,6 +40,7 @@ datas = [
     (os.path.join(ROOT, "firmware", "arduino_kbm.ino.hex"), "firmware"),
     (os.path.join(ROOT, "firmware", "arduino_kbm"), os.path.join("firmware", "arduino_kbm")),
     (os.path.join(SRV, "rune_arrow_tpl.png"), "."),
+    (os.path.join(SRV, "rune_capsule_tpl.png"), "."),
 ]
 # km.dll 用 ctypes 載入,PyInstaller 掃不到 → 必須手動列為 binaries
 binaries = []
