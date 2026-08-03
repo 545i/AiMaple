@@ -58,7 +58,7 @@ BLINK_DX = 28         # 一次瞬移的水平距離
 DIR_HOLD = 0.15       # 按瞬移鍵之前方向鍵要先按住多久。實測 0.06 完全不觸發(位移 0),
                       # 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
 BLINK_WAIT = 0.6      # 瞬移後等動作結束
-BLINK_DY_MAX = 22     # 垂直瞬移一次最遠跨多少層距(見 jobs.DEFAULT_MOVE 的說明)
+BLINK_DY_MAX = 24     # 垂直瞬移一次最遠跨多少層距(見 jobs.DEFAULT_MOVE 的說明)
 BLINK_TAIL = 0.08     # 放開方向鍵後的緩衝
 BLINK_UP_MAX = 10     # 【水平】瞬移能順帶爬升多少層距(見 jobs.DEFAULT_MOVE)
 
