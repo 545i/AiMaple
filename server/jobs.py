@@ -37,6 +37,11 @@ _lock = threading.Lock()
 # 【這些數字的來源】見 DEV_LOG 的移動模型:二段跳同層水平精確 30px(16 組實測 ±1、
 # 左右對稱);X→P 間隔 0.2s;繩索按 C 一路上到頂約 1.6s。換職業必須重新量。
 DEFAULT_MOVE = {
+    # 移動方式。不同職業的位移原語根本不同,不是換個鍵就好:
+    #   double_jump 二段跳 + 繩索 + 下跳(蓮)
+    #   blink       瞬移(陰陽師):水平固定距離、垂直直接到相鄰平台,不需要繩索
+    "type": "double_jump",
+    # --- double_jump 用 ---
     "jump_key1": "x",        # 二段跳第一段(也用於下跳、卡住脫困)
     "jump_key2": "p",        # 二段跳第二段
     "rope_key": "c",         # 上繩
@@ -44,6 +49,22 @@ DEFAULT_MOVE = {
     "jump_interval": 0.20,   # 第一段到第二段的間隔(down-to-down)
     "jump_land": 1.0,        # 二段跳後等落地
     "rope_up": 1.6,          # 上繩到頂
+    # --- blink 用 ---
+    "blink_key": "v",        # 瞬移鍵
+    "blink_dx": 28,          # 一次瞬移的水平距離(小地圖 px)
+    "dir_hold": 0.15,        # 【關鍵】按 blink_key 之前方向鍵要先按住多久。
+                             # 實測 0.06 時瞬移完全不觸發(位移 0),遊戲要先認到
+                             # 方向鍵按住的狀態,瞬移才會朝那個方向走。
+    "blink_wait": 0.6,       # 瞬移後等動作結束
+}
+
+# 主動技能的排程(目前只有召喚,之後要加別的再擴充這裡)
+DEFAULT_SKILLS = {
+    "summon_key": "",            # 空 = 此職業沒有召喚
+    "summon_cd": 0.0,            # 冷卻秒數
+    "summon_while_moving": True,  # 可否邊移動邊放
+    "summon_priority": True,      # 冷卻一好就優先放(主要輸出來源)
+    "summon_pause_on_rune": True,  # 解符文期間暫停放 —— 召喚物會遮住小地圖的符文紫標
 }
 DEFAULT_ATTACK = {"key": "a", "mode": "move", "jump_atk": True, "fall_atk": True}
 DEFAULT_NAME = "蓮"
@@ -63,19 +84,36 @@ def _path(name):
 def _norm_move(m):
     m = dict(m or {})
     out = dict(DEFAULT_MOVE)
-    for k in ("jump_key1", "jump_key2", "rope_key"):
+    t = str(m.get("type", out["type"]) or "").strip().lower()
+    out["type"] = t if t in ("double_jump", "blink") else DEFAULT_MOVE["type"]
+    for k in ("jump_key1", "jump_key2", "rope_key", "blink_key"):
         v = str(m.get(k, out[k]) or out[k]).strip().lower()[:12]
         out[k] = v or DEFAULT_MOVE[k]
-    try:
-        out["jump_dx"] = max(1, min(200, int(m.get("jump_dx", out["jump_dx"]))))
-    except (TypeError, ValueError):
-        pass
+    for k in ("jump_dx", "blink_dx"):
+        try:
+            out[k] = max(1, min(200, int(m.get(k, out[k]))))
+        except (TypeError, ValueError):
+            pass
     for k, lo, hi in (("jump_interval", 0.02, 2.0), ("jump_land", 0.0, 5.0),
-                      ("rope_up", 0.0, 10.0)):
+                      ("rope_up", 0.0, 10.0), ("dir_hold", 0.0, 1.0),
+                      ("blink_wait", 0.05, 3.0)):
         try:
             out[k] = max(lo, min(hi, float(m.get(k, out[k]))))
         except (TypeError, ValueError):
             pass
+    return out
+
+
+def _norm_skills(s):
+    s = dict(s or {})
+    out = dict(DEFAULT_SKILLS)
+    out["summon_key"] = str(s.get("summon_key", out["summon_key"]) or "").strip().lower()[:12]
+    try:
+        out["summon_cd"] = max(0.0, min(3600.0, float(s.get("summon_cd", out["summon_cd"]))))
+    except (TypeError, ValueError):
+        pass
+    for k in ("summon_while_moving", "summon_priority", "summon_pause_on_rune"):
+        out[k] = bool(s.get(k, out[k]))
     return out
 
 
@@ -105,17 +143,20 @@ def get(name):
     except (OSError, ValueError):
         return None
     return {"name": name, "move": _norm_move(d.get("move")),
-            "attack": _norm_attack(d.get("attack"))}
+            "attack": _norm_attack(d.get("attack")),
+            "skills": _norm_skills(d.get("skills"))}
 
 
-def save(name, move=None, attack=None):
-    """存/覆寫一個職業。move/attack 省略時沿用既有值(沒有既有值就用預設)。"""
+def save(name, move=None, attack=None, skills=None):
+    """存/覆寫一個職業。move/attack/skills 省略時沿用既有值(沒有既有值就用預設)。"""
     name = _safe(name)
     if not name:
         return None
-    old = get(name) or {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK}
+    old = get(name) or {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK,
+                        "skills": DEFAULT_SKILLS}
     rec = {"move": _norm_move(move if move is not None else old["move"]),
-           "attack": _norm_attack(attack if attack is not None else old["attack"])}
+           "attack": _norm_attack(attack if attack is not None else old["attack"]),
+           "skills": _norm_skills(skills if skills is not None else old.get("skills"))}
     with _lock:
         os.makedirs(_DIR, exist_ok=True)
         with open(_path(name), "w", encoding="utf-8") as f:
@@ -159,7 +200,7 @@ def ensure_default():
         att = mapdata.get_attack()
     except Exception:
         att = DEFAULT_ATTACK
-    save(DEFAULT_NAME, DEFAULT_MOVE, att)
+    save(DEFAULT_NAME, DEFAULT_MOVE, att, DEFAULT_SKILLS)
     _set_current_name(DEFAULT_NAME)
 
 
@@ -189,4 +230,5 @@ def status():
     cur = current_name()
     return {"current": cur, "jobs": list_jobs(),
             "detail": get(cur) if cur else None,
-            "defaults": {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK}}
+            "defaults": {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK,
+                         "skills": DEFAULT_SKILLS}}

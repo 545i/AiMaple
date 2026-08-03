@@ -959,7 +959,7 @@ async def job_save(request: Request, token: str = Query("")):
     name = str(body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="缺少職業名稱")
-    rec = jobs.save(name, body.get("move"), body.get("attack"))
+    rec = jobs.save(name, body.get("move"), body.get("attack"), body.get("skills"))
     if rec is None:
         raise HTTPException(status_code=400, detail="職業名稱無效")
     # 存的就是當前選中的那個 → 立刻生效,不必再按一次套用
