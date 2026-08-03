@@ -82,6 +82,36 @@ def _grab_window():
 DOT_MIN_FILL = 0.45
 
 
+def purple_pixels_at(cx, cy, radius=5):
+    """(cx,cy) 附近還有多少個【紫標色】像素。抓不到小地圖回 None。
+
+    【為什麼不能用 _purple_marks 的結果】那個函式會做連通元件 + 面積下限 6 的過濾,
+    而符文被角色或召喚物削掉大半時,露出來的部分會低於 6 個像素 → 整個 blob 被濾掉
+    → 看起來像「紫標消失了」。實測角色站在符文旁 6 格並召喚後,連續 12 幀都判定
+    「消失」,但每一幀該位置都還有 4 個紫色像素 —— 符文從頭到尾都在。
+
+    解除驗證要的是「這裡還有沒有符文」,不是「這裡有沒有一個夠大的紫色斑塊」,
+    所以直接數像素,不做任何面積過濾。"""
+    with _lock:
+        b = (_last.get("x"), _last.get("y"), _last.get("w"), _last.get("h"))
+        found = _last.get("found")
+    if not found or None in b:
+        return None
+    frame = _grab_window()
+    if frame is None:
+        return None
+    x, y, w, h = b
+    if y + h > frame.shape[0] or x + w > frame.shape[1]:
+        return None
+    mm = frame[y:y + h, x:x + w]
+    y0, y1 = max(0, cy - radius), min(h, cy + radius + 1)
+    x0, x1 = max(0, cx - radius), min(w, cx + radius + 1)
+    if y1 <= y0 or x1 <= x0:
+        return 0
+    sub = cv2.cvtColor(mm[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
+    return int(cv2.inRange(sub, PURPLE_LO, PURPLE_HI).sum() // 255)
+
+
 def blobs_near(cx, cy, radius=6):
     """最近一次偵測的小地圖上,(cx,cy) 附近有哪些彩色物件。回 [{dx,dy,H,S,V,area,fill}]。
 
@@ -120,7 +150,13 @@ def blobs_near(cx, cy, radius=6):
         bw = int(st[i, cv2.CC_STAT_WIDTH])
         bh = int(st[i, cv2.CC_STAT_HEIGHT])
         px = hsv[lab == i]
+        # bx0/by0 是【外接矩形左上角】相對於查詢點的偏移。判斷「有沒有蓋住某個點」
+        # 要用矩形範圍,不能用中心距離 —— 實測紅召喚物(10x10)中心離符文 5 格卻確實
+        # 蓋住了符文,而地圖元素(8x7)中心同樣離 5 格卻沒蓋到。見 rune._occluded_at。
         out.append({"dx": int(cen[i][0]) + x0 - cx, "dy": int(cen[i][1]) + y0 - cy,
+                    "bx0": int(st[i, cv2.CC_STAT_LEFT]) + x0 - cx,
+                    "by0": int(st[i, cv2.CC_STAT_TOP]) + y0 - cy,
+                    "bw": bw, "bh": bh,
                     "H": int(np.median(px[:, 0])), "S": int(np.median(px[:, 1])),
                     "V": int(np.median(px[:, 2])), "area": a,
                     "fill": round(a / max(1, bw * bh), 2)})
@@ -180,13 +216,19 @@ def _player_dot(bgr, last=None):
 
 
 # ---------- 紫色菱形標記 ----------
+# 實機採樣核心色 BGR(255,102,221) → HSV(143,153,255)。抽成常數是為了讓
+# purple_pixels_at 用【同一組】色域 —— 兩邊若分頭定義,遲早會漂成兩套判準。
+PURPLE_LO = (138, 130, 235)
+PURPLE_HI = (148, 180, 255)
+
+
 def _purple_marks(bgr):
     """小地圖內的紫色菱形標記 [(x, y), ...]。
     同角色點:固定素材、顏色形狀永不變(使用者確認),用精確色窄容差。
     實機採樣核心色 BGR(255,102,221) → HSV(143,153,255):H 138~148、
     S 130~180、V≥235。點狀大小/形狀過濾同黃點。"""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, (138, 130, 235), (148, 180, 255))
+    mask = cv2.inRange(hsv, PURPLE_LO, PURPLE_HI)
     n, _lab, stats, cent = cv2.connectedComponentsWithStats(mask)
     out = []
     for i in range(1, n):

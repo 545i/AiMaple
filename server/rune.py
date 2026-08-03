@@ -512,9 +512,9 @@ def _purple_now():
 
 
 PURPLE_MARK_H = (138, 148)     # 符文紫標的色相範圍(與 minimap._purple_marks 一致)
-OCCLUDE_DIST = 4               # 判定「壓在符文上」的中心距上限(小地圖 px)。
-                               # 紫標本身 7x7,真的蓋住它的東西中心必然在這個距離內;
-                               # 放寬會把地圖上的固定元素也算進來(見 _occluded_at)。
+OCCLUDE_R = 12                 # 找遮擋物的搜尋半徑。判定用的是「外接矩形有沒有覆蓋
+                               # 符文中心」,不是中心距離,所以這裡只要夠大能把附近的
+                               # 物件都收進來即可(實測遮擋物中心可離到 5~6 格)。
 
 
 def _occluded_at(px, py):
@@ -525,16 +525,20 @@ def _occluded_at(px, py):
     而誤判成功的代價很高:紫標 hook 是邊緣觸發,那顆符文之後不會再被解,
     減益會一直掛著。
 
-    判斷方式:看符文位置【正上方】有沒有非紫標色的彩色物件。是紫標色的話,
-    那本來就會被 _purple_now 找到,不需要這道。
+    判斷方式:看有沒有非紫標色的物件,其【外接矩形覆蓋符文中心】。紫標色的不算 ——
+    那本來就會被 _purple_now 找到。
 
-    【距離門檻不能放寬】實機發現小地圖上還有其他固定元素(實測 H=100 的一對,
-    在角色左右 ±11~13 對稱出現,是地圖標記不是召喚物)。半徑放到 6 就會把那些
-    也算成遮擋 → 永遠判定「不可確認」→ 符文永遠解不掉,比原本的誤判成功更糟。
-    符文紫標本身只有 7x7,真的蓋住它的東西中心必然很近,所以只認 OCCLUDE_DIST 以內。"""
+    【必須用矩形覆蓋,不能用中心距離】這是實機資料逼出來的。按下召喚鍵後連續取樣
+    40 次,其中 t=13.0s 那一幀紫標整個消失,當下:
+        紅召喚物 (96,36) 10x10  中心離符文 5 格  → 確實蓋住符文
+        地圖元素 (104,47) 8x7   中心離符文 5 格  → 沒蓋到
+    中心距離一樣是 5,結果卻相反,所以中心距離根本不是對的判準。改看矩形範圍:
+    紅召喚物覆蓋 x91~101 含符文中心 x=101;地圖元素覆蓋 y43~50 不含符文 y=38。
+    (那一幀符文只剩 4 個像素,低於 _purple_marks 的面積下限 6,所以整個被濾掉 ——
+     這就是「紫標消失但符文還在」的真實樣貌。)"""
     import minimap
     try:
-        near = minimap.blobs_near(int(px), int(py), radius=OCCLUDE_DIST + 2)
+        near = minimap.blobs_near(int(px), int(py), radius=OCCLUDE_R)
     except Exception:
         return None
     if near is None:
@@ -542,23 +546,44 @@ def _occluded_at(px, py):
     for b in near:
         if PURPLE_MARK_H[0] <= b["H"] <= PURPLE_MARK_H[1]:
             continue                        # 紫標色 → 交給 _purple_now 判,不算遮擋物
-        if abs(b["dx"]) <= OCCLUDE_DIST and abs(b["dy"]) <= OCCLUDE_DIST:
-            return True                     # 有非紫標的東西壓在符文中心上
+        # 外接矩形是否覆蓋符文中心(查詢點的相對座標即原點)
+        if (b["bx0"] <= 0 < b["bx0"] + b["bw"]
+                and b["by0"] <= 0 < b["by0"] + b["bh"]):
+            return True
     return False
 
 
 def _purple_gone(px=None, py=None):
     """紫標是否已消失(解除成功的驗證)。未知一律當作「沒消失」,寧可重試也不要誤報成功。
 
-    px,py:解除前記錄的符文位置。給了就多做一道遮擋檢查 —— 見 _occluded_at。"""
+    px,py:解除前記錄的符文位置。給了就多做兩道檢查,順序是有意義的:
+
+      ① 該位置還有沒有【紫標色像素】—— 這道最關鍵。
+         _purple_marks 會做連通元件 + 面積下限 6 的過濾,而符文被角色或召喚物削掉
+         大半時露出的部分不到 6 像素,整個 blob 就被濾掉,看起來像「消失了」。
+         實測角色站在符文旁 6 格並召喚後,連續 12 幀都判定消失,但每幀該位置都還有
+         4 個紫色像素 —— 符文從頭到尾都在。舊邏輯在這個情境下誤判率是 100%。
+      ② 完全沒有紫像素時,再看是不是被別的東西整個蓋住(_occluded_at)。
+
+    兩道都過才判成功。誤判成功的代價很高:紫標 hook 是邊緣觸發,那顆符文之後
+    不會再被解;而誤判失敗只是多重試一次。"""
     marks = _purple_now()
     if marks is None or len(marks) != 0:
         return False
     if px is None:
         return True
-    occ = _occluded_at(px, py)
-    if occ:
-        print(f"[rune] 紫標不見了,但 ({px},{py}) 被別的物件壓著(召喚物?),不判成功")
+    import minimap
+    try:
+        npx = minimap.purple_pixels_at(int(px), int(py), radius=5)
+    except Exception:
+        npx = None
+    if npx is None:
+        return False                        # 判斷不了 → 當作沒解除
+    if npx > 0:
+        print(f"[rune] 紫標 blob 消失,但 ({px},{py}) 仍有 {npx} 個紫色像素 → 符文還在")
+        return False
+    if _occluded_at(px, py):
+        print(f"[rune] 紫標不見了,但 ({px},{py}) 被別的物件整個蓋住,不判成功")
         return False
     return True
 
