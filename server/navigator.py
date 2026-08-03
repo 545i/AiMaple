@@ -821,12 +821,21 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         _state["path"] = [[list(n), mt] for n, mt in path]
         print(f"[nav] 路徑{'(重規劃 %d)' % attempt if attempt else ''} "
               f"{start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
+        prev_y = start[1]        # 規劃時角色所在的層;每段結束後更新成該段的目標層
         for node, mt in path:
             if _stop.is_set():
                 return False
             if _replan.is_set():
                 break                                   # 脫困過 → 這條路徑作廢,跳出去重算
             nx, ny = node
+            # 【每段開始前確認還在預期的層】角色會意外掉層 —— 瞬移的落點可能剛好落在
+            # 兩塊同高平台的間隙(實測 y=28 有 x20~57 與 x64~88 兩塊,間隙 57~64,
+            # 一次 20px 的瞬移很容易停在裡面),角色就掉到下一層去了。
+            # 不檢查的話會照著「以為還在原層」的路徑繼續走,後面每一段都是錯的。
+            cur = _dot()
+            if cur and abs(cur[1] - prev_y) > Y_TOL:
+                print(f"[nav] 角色不在預期的層(y={cur[1]},應為 {prev_y}) → 重新規劃")
+                break
             _state["phase"] = "g_" + mt
             p_start = _dot()
             if mt == "walk":
@@ -861,8 +870,17 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             _log_move(_state.get("mode", "move"), mt,
                       list(p_start) if p_start else None, [nx, ny],
                       list(p_end) if p_end else None)
-        if not _replan.is_set():
-            break                                       # 整條路徑跑完沒被打斷
+            prev_y = ny                                 # 這段的目標層,下一段據此校驗
+        else:
+            if not _replan.is_set():
+                break                                   # 整條路徑跑完沒被打斷
+            continue                                    # 脫困過 → 重新規劃
+        # 走到這裡代表段迴圈被 break(掉層,或脫困)。掉層未必是壞事 —— 有時剛好掉到
+        # 目標層上,那就不必再繞一圈重規劃。
+        cur = _dot()
+        if (not _replan.is_set() and cur
+                and abs(cur[0] - tx) <= X_TOL and abs(cur[1] - ty) <= Y_TOL):
+            break
     else:
         print(f"[nav] 重新規劃 {REPLAN_MAX} 次仍未走完,交給上層(巡邏會重挑點)")
     _replan.clear()
