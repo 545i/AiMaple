@@ -1120,8 +1120,18 @@ async function mmTick(){
         try{
           // 設定面板的渲染【不在這裡】(見 applyMapStatus/refreshSettings)。
           // 預覽只負責畫圖層,疊加需要小地圖尺寸(s.w/s.h)才能把座標換成百分比。
-          const mm = mapCache
-            || await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json();
+          //
+          // 【不能只靠 mapCache】它只在 refreshSettings() 時更新,而那只在進面板時跑一次。
+          // 小地圖的偵測尺寸會變(同一張圖曾在 181x66 / 165x75 之間跳,見 DEV_LOG 已知問題),
+          // map_id 一變就是另一份設定 —— 這時 cache 還是舊的,預覽就畫不出平台/巡邏點,
+          // 看起來像「設定不見了」,其實資料好好的在檔案裡。
+          // 所以偵測到的小地圖尺寸與 cache 對不上時,強制重拉一次。
+          const sizeChanged = mapCache && mapCache.map_id
+            && !String(mapCache.map_id).startsWith(`${s.w}x${s.h}`);
+          const mm = (mapCache && !sizeChanged)
+            ? mapCache
+            : applyMapStatusAndReturn(
+                await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json());
           // 地形疊加:平台=水平線(藍)、繩索=垂直虛線(黃)
           const terr = mm.platforms || [], rps = mm.ropes || [];
           if(terr.length || rps.length){
@@ -1215,6 +1225,12 @@ $("#mmRedetectBtn").onclick = async ()=>{   // 解除鎖定,下一幀起重新�
 // 偵測則改由 /minimap/watch 宣告需求:進巡邏分頁就請伺服器每 2 秒自己偵測,
 // 這樣「開始巡航」(需要 current_map_id)與設定顯示都不必先開預覽。
 let mapCache = null, watchTick = 0;
+// 給預覽用:更新 cache 並把資料回傳,讓「發現 map_id 變了就重拉」那條路徑能一次做完
+// 更新與取用（不然預覽拿到新資料、cache 卻還是舊的，下一秒又觸發重拉）。
+function applyMapStatusAndReturn(mm){
+  applyMapStatus(mm);
+  return mm || {};
+}
 function applyMapStatus(mm){
   if(!mm) return;
   mapCache = mm;
