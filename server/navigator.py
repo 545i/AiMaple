@@ -320,6 +320,7 @@ def status():
     s["placements"] = pl
     rem = patrol_remaining()
     s["patrol_remaining"] = None if rem is None else round(rem, 1)
+    s["pass_n"] = _state.get("pass_n", 0)
     sr = summon_remaining()
     s["summon"] = None if sr is None else {
         "key": _summon["key"], "cd": _summon["cd"],
@@ -661,6 +662,8 @@ def _move_to_x(tx, skills=None):
         if not p:
             continue
         _state["pos"] = list(p); _state["steps"] += 1
+        if _maybe_cast_passing(p):      # 路過巡邏點 → 就地平A,打完重讀位置再繼續
+            continue
         dx = tx - p[0]
         if abs(dx) <= X_TOL:
             return
@@ -982,6 +985,45 @@ def _run(tx, ty, skills, precise=False):
         _state["running"] = False
 
 
+# ---- 路過就打:走位途中經過巡邏點,就地平A 再繼續 ----
+# 原本只有【終點】會平A,路上經過的巡邏點都白走。對定點輸出的職業(不能邊移動邊攻擊)
+# 差別很大 —— 那些點本來就是使用者挑的怪點,經過卻不打等於浪費一趟。
+PASS_BY_TOL = 3        # 距離巡邏點多近算「經過」(小地圖 px,與 X_TOL 同量級)
+_pass = {"points": [], "done": set(), "key": "", "mode": "hold2s", "on": False}
+
+
+def set_pass_by(points, attack_key, cast_mode, enabled=True):
+    """設定本輪「路過就打」的點。每輪開頭由 _patrol_run 呼叫,順便清掉上一輪的紀錄。"""
+    _pass["points"] = [(int(p["x"]), int(p["y"])) for p in (points or [])]
+    _pass["done"] = set()
+    _pass["key"] = attack_key or ""
+    _pass["mode"] = cast_mode or "hold2s"
+    # 移動攻擊模式(mode="move")走位時本來就一直按著攻擊鍵,不需要這個機制
+    _pass["on"] = bool(enabled and attack_key and cast_mode != "move")
+
+
+def _maybe_cast_passing(pos):
+    """走位途中檢查有沒有經過還沒打過的巡邏點。有就地平A 一次。回是否打了。
+
+    【每個點一輪只打一次】用 done 記著 —— 否則角色在點附近來回微調時會反覆觸發,
+    走位整個卡住。目標點本身不排除:它由到點流程再打一次,兩者不衝突(到點那次
+    是站穩後打,這次是路過打)。"""
+    if not _pass["on"] or not pos:
+        return False
+    for key in _pass["points"]:
+        if key in _pass["done"]:
+            continue
+        if abs(pos[0] - key[0]) <= PASS_BY_TOL and abs(pos[1] - key[1]) <= PASS_BY_TOL:
+            _pass["done"].add(key)
+            _release_move_keys()           # 先停下來:定點職業不能邊移動邊攻擊
+            _state["phase"] = "pass_cast"
+            print(f"[nav] 路過巡邏點 {key} → 就地平A")
+            _cast_skill(_pass["key"], _pass["mode"])
+            _state["pass_n"] = _state.get("pass_n", 0) + 1
+            return True
+    return False
+
+
 def _cast_skill(skill_key, mode="hold2s"):
     """到站立點施放攻擊技能。mode: hold2s(長按 2 秒) / tap2(按兩次)。"""
     try:
@@ -1086,6 +1128,9 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         prev = (pt["x"], pt["y"])
         tx, ty = pt["x"], pt["y"]
         _state["phase"] = "goto"
+        # 路過就打:本輪走位途中經過的巡邏點都就地平A 一次。每輪重設,所以
+        # 「這一趟打過的點」不會延續到下一趟。
+        set_pass_by(pts, attack_key, cast_mode)
         atk_skills = [attack_key] if cast_mode == "move" else None   # 移動攻擊:走位穿插平A
         arrived = _goto_sync(tx, ty, skills=atk_skills, precise=bool(pt.get("precise")))
         if _stop.is_set():

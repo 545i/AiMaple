@@ -1645,6 +1645,7 @@ document.querySelectorAll(".dtab").forEach(t=>{
 
 // ---- 巡邏監控：階段(平A/放置技能)＋各放置技能點下次觸發倒數 ----
 const PHASE_TXT = {idle:"待機",starting:"啟動中",patrol:"巡邏中",settle:"定位",rope_up:"上繩",
+  pass_cast:"路過補刀",summon:"放召喚",
   fall:"下跳",fall_adjust:"下跳修正",move_x:"水平移動",goto:"前往點",cast:"平A攻擊",place:"放置技能",
   done:"完成",time_up:"時間到已停止",purple_pause:"紫標暫停"};
 // 開關徽章:一眼看出「開/關」以及「開了但目前不生效」
@@ -1778,6 +1779,7 @@ async function placeTick(){
     const detail = st.overall === "stopped"
       ? (st.phase === "time_up" ? "・巡邏時間到" : (st.error ? "・" + st.error : ""))
       : `・${PHASE_TXT[st.phase]||st.phase||"--"}・已造訪 ${st.rounds||0} 點`
+        + (st.pass_n ? `・路過補刀 ${st.pass_n}` : "")
         // 卡在爬梯處的自動脫困。分子＝真的脫出（動作後位置有變），分母＝觸發次數
         + (st.stuck_n ? `・🪃 脫困 ${st.stuck_ok||0}/${st.stuck_n}` : "");
     el.textContent = S[0] + detail;
