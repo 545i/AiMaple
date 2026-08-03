@@ -59,6 +59,7 @@ DIR_HOLD = 0.15       # 按瞬移鍵之前方向鍵要先按住多久。實測 0
                       # 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
 BLINK_WAIT = 0.6      # 瞬移後等動作結束
 BLINK_DY_MAX = 22     # 垂直瞬移一次最遠跨多少層距(見 jobs.DEFAULT_MOVE 的說明)
+BLINK_TAIL = 0.08     # 放開方向鍵後的緩衝
 
 
 FALL_MAX = 8          # 下跳閉環最多跳幾次
@@ -71,6 +72,7 @@ def set_move_params(m):
     """套用職業的移動參數(由 jobs.apply 呼叫)。缺的欄位保留現值。"""
     global JUMP_DX, JUMP_INTERVAL, JUMP_K1, JUMP_K2, ROPE_K, JUMP_LAND, ROPE_UP_WAIT
     global MOVE_TYPE, BLINK_K, BLINK_DX, DIR_HOLD, BLINK_WAIT, BLINK_DY_MAX
+    global BLINK_TAIL
     m = dict(m or {})
     JUMP_DX = int(m.get("jump_dx", JUMP_DX))
     JUMP_INTERVAL = float(m.get("jump_interval", JUMP_INTERVAL))
@@ -86,6 +88,7 @@ def set_move_params(m):
     DIR_HOLD = float(m.get("dir_hold", DIR_HOLD))
     BLINK_WAIT = float(m.get("blink_wait", BLINK_WAIT))
     BLINK_DY_MAX = int(m.get("blink_dy_max", BLINK_DY_MAX))
+    BLINK_TAIL = float(m.get("blink_tail", BLINK_TAIL))
     if MOVE_TYPE == "blink":
         print(f"[nav] 移動參數 type=瞬移 鍵={BLINK_K} 距離={BLINK_DX} "
               f"dir_hold={DIR_HOLD} 等待={BLINK_WAIT} 跳躍鍵={JUMP_K1}({JUMP_DX})")
@@ -531,9 +534,14 @@ def _double_jump(direction, skills=None):
 def _blink(direction, skills=None):
     """朝 direction 瞬移一次(方向鍵按住 DIR_HOLD → 按瞬移鍵 → 放開)。
 
-    【方向鍵必須先按住再按技能】實測 DIR_HOLD=0.06 時瞬移完全不觸發(三次量測位移
-    全為 0),0.15 才穩定觸發 —— 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
-    這與二段跳不同:二段跳用 _press 點一下轉向就夠。"""
+    【方向鍵在整段期間都按著,所以位移 = 瞬移 + 走路】這點量錯過:原本以為「瞬移 28px」,
+    其實 28 裡有一段是 BLINK_WAIT 期間繼續走路走出來的。把 wait 從 0.60 壓到 0.20,
+    位移掉到 20 —— 差的 8px 正好對應 0.4 秒走路(實測走路 16px/秒)。
+    但【效率反而變好】:0.60 那組是 28px/1.19s = 23.5px/秒,0.20 這組是 20px/0.59s
+    = 33.9px/秒,快了 44%。所以參數要照「每秒移動多少」挑,不是照「一次走多遠」。
+
+    【DIR_HOLD 一度以為要 0.15】那是量測時遊戲沒有焦點造成的假象(按鍵全送進終端機,
+    位移當然是 0)。焦點正確後 0.06 一樣觸發,取 0.08 留點餘裕。"""
     _release_atk()                         # 瞬移是位移技能,按住攻擊鍵會互相搶輸入
     _keyboard.key_down(direction)
     try:
@@ -542,7 +550,7 @@ def _blink(direction, skills=None):
         time.sleep(BLINK_WAIT)
     finally:
         _keyboard.key_up(direction)
-    time.sleep(0.15)
+    time.sleep(BLINK_TAIL)
 
 
 def _blink_v(up, skills=None):
