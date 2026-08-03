@@ -511,10 +511,56 @@ def _purple_now():
         return None
 
 
-def _purple_gone():
-    """紫標是否已消失(解除成功的驗證)。未知一律當作「沒消失」,寧可重試也不要誤報成功。"""
+PURPLE_MARK_H = (138, 148)     # 符文紫標的色相範圍(與 minimap._purple_marks 一致)
+OCCLUDE_DIST = 4               # 判定「壓在符文上」的中心距上限(小地圖 px)。
+                               # 紫標本身 7x7,真的蓋住它的東西中心必然在這個距離內;
+                               # 放寬會把地圖上的固定元素也算進來(見 _occluded_at)。
+
+
+def _occluded_at(px, py):
+    """符文位置上是否壓著【別的】彩色物件。回 True/False,判斷不了回 None。
+
+    陰陽師的召喚物會蓋在符文上(使用者實測:三個召喚物同時在場時完全遮住符文圖案),
+    那時小地圖上的紫標會消失 —— 但那不是解除成功。只看「紫標不見了」會誤判,
+    而誤判成功的代價很高:紫標 hook 是邊緣觸發,那顆符文之後不會再被解,
+    減益會一直掛著。
+
+    判斷方式:看符文位置【正上方】有沒有非紫標色的彩色物件。是紫標色的話,
+    那本來就會被 _purple_now 找到,不需要這道。
+
+    【距離門檻不能放寬】實機發現小地圖上還有其他固定元素(實測 H=100 的一對,
+    在角色左右 ±11~13 對稱出現,是地圖標記不是召喚物)。半徑放到 6 就會把那些
+    也算成遮擋 → 永遠判定「不可確認」→ 符文永遠解不掉,比原本的誤判成功更糟。
+    符文紫標本身只有 7x7,真的蓋住它的東西中心必然很近,所以只認 OCCLUDE_DIST 以內。"""
+    import minimap
+    try:
+        near = minimap.blobs_near(int(px), int(py), radius=OCCLUDE_DIST + 2)
+    except Exception:
+        return None
+    if near is None:
+        return None
+    for b in near:
+        if PURPLE_MARK_H[0] <= b["H"] <= PURPLE_MARK_H[1]:
+            continue                        # 紫標色 → 交給 _purple_now 判,不算遮擋物
+        if abs(b["dx"]) <= OCCLUDE_DIST and abs(b["dy"]) <= OCCLUDE_DIST:
+            return True                     # 有非紫標的東西壓在符文中心上
+    return False
+
+
+def _purple_gone(px=None, py=None):
+    """紫標是否已消失(解除成功的驗證)。未知一律當作「沒消失」,寧可重試也不要誤報成功。
+
+    px,py:解除前記錄的符文位置。給了就多做一道遮擋檢查 —— 見 _occluded_at。"""
     marks = _purple_now()
-    return marks is not None and len(marks) == 0
+    if marks is None or len(marks) != 0:
+        return False
+    if px is None:
+        return True
+    occ = _occluded_at(px, py)
+    if occ:
+        print(f"[rune] 紫標不見了,但 ({px},{py}) 被別的物件壓著(召喚物?),不判成功")
+        return False
+    return True
 
 
 # ---------- 取幀 / 定位 / 辨識 ----------
@@ -1148,7 +1194,9 @@ def _attempt_inner(px, py):
         # 可能誤判成失敗,接著又白白吃一次符文冷卻。
         t0 = time.monotonic()
         while time.monotonic() - t0 < VERIFY_WAIT:
-            if _purple_gone():
+            # 帶入符文座標:紫標消失時要再確認那個位置沒有被召喚物之類的東西壓著,
+            # 否則「看不到紫標」會被當成解除成功(見 _occluded_at)。
+            if _purple_gone(px, py):
                 _last["err"] = ""
                 _stat("solved")
                 print("[rune] 解除成功")

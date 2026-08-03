@@ -82,6 +82,51 @@ def _grab_window():
 DOT_MIN_FILL = 0.45
 
 
+def blobs_near(cx, cy, radius=6):
+    """最近一次偵測的小地圖上,(cx,cy) 附近有哪些彩色物件。回 [{dx,dy,H,S,V,area,fill}]。
+
+    【為什麼需要】符文解除的驗證是「小地圖上的紫標消失了」,但紫標消失有兩種原因:
+    真的解除了、或是【被別的東西蓋住】。陰陽師的召喚物就會蓋在符文上(使用者實測),
+    那時誤判成功的代價很高 —— 紫標 hook 是邊緣觸發,那顆符文之後不會再被解。
+    所以要能看見「該位置現在有沒有別的彩色物件」,有的話就不能判成功。
+
+    座標是小地圖內的相對座標(與 status() 的 dot/purple 同一套)。"""
+    with _lock:
+        b = (_last.get("x"), _last.get("y"), _last.get("w"), _last.get("h"))
+    if not _last.get("found") or None in b:
+        return None
+    frame = _grab_window()
+    if frame is None:
+        return None
+    x, y, w, h = b
+    if y + h > frame.shape[0] or x + w > frame.shape[1]:
+        return None
+    mm = frame[y:y + h, x:x + w]
+    x0, y0 = max(0, cx - radius), max(0, cy - radius)
+    x1, y1 = min(w, cx + radius + 1), min(h, cy + radius + 1)
+    sub = mm[y0:y1, x0:x1]
+    if sub.size == 0:
+        return []
+    hsv = cv2.cvtColor(sub, cv2.COLOR_BGR2HSV)
+    # 門檻刻意寬:這裡要找的是「有沒有東西」,不是「是不是某個特定物件」,
+    # 收窄只會讓遮擋物漏網,而漏網就等於誤判解除成功。
+    mask = ((hsv[:, :, 1] >= 110) & (hsv[:, :, 2] >= 140)).astype(np.uint8)
+    n, lab, st, cen = cv2.connectedComponentsWithStats(mask, 8)
+    out = []
+    for i in range(1, n):
+        a = int(st[i, cv2.CC_STAT_AREA])
+        if a < 4:
+            continue
+        bw = int(st[i, cv2.CC_STAT_WIDTH])
+        bh = int(st[i, cv2.CC_STAT_HEIGHT])
+        px = hsv[lab == i]
+        out.append({"dx": int(cen[i][0]) + x0 - cx, "dy": int(cen[i][1]) + y0 - cy,
+                    "H": int(np.median(px[:, 0])), "S": int(np.median(px[:, 1])),
+                    "V": int(np.median(px[:, 2])), "area": a,
+                    "fill": round(a / max(1, bw * bh), 2)})
+    return out
+
+
 def _player_dot(bgr, last=None):
     """在(小地圖)影像內找角色黃點。回 (x, y) 或 None。
 
