@@ -61,6 +61,14 @@ DEFAULT_MOVE = {
                              # 決定「瞬移後又走了多遠」—— 壓短會讓單次位移變小,
                              # 但每秒移動距離反而變大(見 blink_dx 的說明)。
     "blink_tail": 0.08,      # 放開方向鍵後的緩衝
+    "blink_up_max": 10,      # 【水平】瞬移能順帶爬升多少層距。
+                             # 一度以為瞬移是純水平(dy 恆為 0)—— 那是因為當時角色站在
+                             # 長平台上,落點還在同一塊平台。用兩塊 x 不重疊、差 10 層的
+                             # 平台重測,6 次來回全部成立:
+                             #     往左 dx -20~-22 dy -10(直接上到上方平台)
+                             #     往右 dx +20~+21 dy +10(直接下到下方平台)
+                             # 所以它落到「水平距離處的平台」,高度差在此範圍內都接得住。
+                             # 【上限尚未夾出】只驗證過 10,手邊沒有其他高度差的平台可測。
     "blink_dy_max": 22,      # 垂直瞬移一次最遠能跨多少層距。
                              # 【怎麼量出來的】用地圖幾何當尺,比逐點實測快:
                              #   y=49 → y=27(距 22) 直達      → 22 可達
@@ -109,7 +117,7 @@ def _norm_move(m):
     for k in ("jump_key2", "rope_key"):
         if k in m:
             out[k] = str(m[k] or "").strip().lower()[:12]
-    for k in ("jump_dx", "blink_dx", "blink_dy_max"):
+    for k in ("jump_dx", "blink_dx", "blink_dy_max", "blink_up_max"):
         try:
             out[k] = max(1, min(200, int(m.get(k, out[k]))))
         except (TypeError, ValueError):

@@ -206,7 +206,7 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
 
 
 def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
-                  free_vertical=False, blink_dy=22):
+                  free_vertical=False, blink_dy=22, blink_up=10):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
@@ -252,8 +252,10 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
         for jx in (a["xA"], a["xB"], amid):
             for dr in (1, -1):
                 lx = jx + dr * jump
-                # 瞬移沒有垂直分量(實測 dy 恆為 0),所以 free_vertical 時完全不許上升
-                up_allow = 0 if free_vertical else jump_up
+                # 【水平瞬移會跨層】它落到「水平距離處的平台」,高度差在 blink_up 內
+                # 都接得住(實測差 10 的兩塊平台可直接互跳,6 次全成立)。
+                # 先前誤以為瞬移純水平而設 0,結果路徑被迫「先垂直上去再水平」,繞遠路。
+                up_allow = blink_up if free_vertical else jump_up
                 for j, b in enumerate(plats):
                     if j == i or b["y"] < a["y"] - up_allow:   # 不能落到比 a 高太多的平台
                         continue

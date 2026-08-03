@@ -60,6 +60,7 @@ DIR_HOLD = 0.15       # 按瞬移鍵之前方向鍵要先按住多久。實測 0
 BLINK_WAIT = 0.6      # 瞬移後等動作結束
 BLINK_DY_MAX = 22     # 垂直瞬移一次最遠跨多少層距(見 jobs.DEFAULT_MOVE 的說明)
 BLINK_TAIL = 0.08     # 放開方向鍵後的緩衝
+BLINK_UP_MAX = 10     # 【水平】瞬移能順帶爬升多少層距(見 jobs.DEFAULT_MOVE)
 
 
 FALL_MAX = 8          # 下跳閉環最多跳幾次
@@ -72,7 +73,7 @@ def set_move_params(m):
     """套用職業的移動參數(由 jobs.apply 呼叫)。缺的欄位保留現值。"""
     global JUMP_DX, JUMP_INTERVAL, JUMP_K1, JUMP_K2, ROPE_K, JUMP_LAND, ROPE_UP_WAIT
     global MOVE_TYPE, BLINK_K, BLINK_DX, DIR_HOLD, BLINK_WAIT, BLINK_DY_MAX
-    global BLINK_TAIL
+    global BLINK_TAIL, BLINK_UP_MAX
     m = dict(m or {})
     JUMP_DX = int(m.get("jump_dx", JUMP_DX))
     JUMP_INTERVAL = float(m.get("jump_interval", JUMP_INTERVAL))
@@ -89,6 +90,7 @@ def set_move_params(m):
     BLINK_WAIT = float(m.get("blink_wait", BLINK_WAIT))
     BLINK_DY_MAX = int(m.get("blink_dy_max", BLINK_DY_MAX))
     BLINK_TAIL = float(m.get("blink_tail", BLINK_TAIL))
+    BLINK_UP_MAX = int(m.get("blink_up_max", BLINK_UP_MAX))
     if MOVE_TYPE == "blink":
         print(f"[nav] 移動參數 type=瞬移 鍵={BLINK_K} 距離={BLINK_DX} "
               f"dir_hold={DIR_HOLD} 等待={BLINK_WAIT} 跳躍鍵={JUMP_K1}({JUMP_DX})")
@@ -808,7 +810,8 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
                                               jump=step_dx(),
                                               free_vertical=(MOVE_TYPE == "blink"),
-                                              blink_dy=BLINK_DY_MAX)
+                                              blink_dy=BLINK_DY_MAX,
+                                              blink_up=BLINK_UP_MAX)
         start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
