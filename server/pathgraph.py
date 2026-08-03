@@ -205,7 +205,8 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     return nodes, edges
 
 
-def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4, free_vertical=False):
+def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
+                  free_vertical=False, blink_dy=22):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
@@ -260,33 +261,56 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4, free_vertical=
                         nb = (max(b["xA"], min(b["xB"], lx)), b["y"])
                         addn((jx, a["y"]), i); addn(nb, j)
                         conns.append(((jx, a["y"]), nb, jump + abs(b["y"] - a["y"]) + 1, "jump"))
-        # 掉落:a 的 x 正下方有平台
-        for j, b in enumerate(plats):
-            if j == i or b["y"] <= a["y"]:
-                continue
-            ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
-            if ox2 < ox1:
-                continue
-            cx = (ox1 + ox2) // 2
-            if blocked(cx, a["y"], b["y"]):
-                continue
-            addn((cx, a["y"]), i); addn((cx, b["y"]), j)
-            conns.append(((cx, a["y"]), (cx, b["y"]), abs(b["y"] - a["y"]) + 1, "fall"))
-        # 上升:二段跳職業要靠繩索,所以只在大落差(>jump_up)時建邊 —— 小落差由 jump 邊
-        # 涵蓋。瞬移職業則是任何升幅都走這種邊(它的 jump 邊不能上升)。
-        for j, b in enumerate(plats):
-            if j == i or b["y"] >= a["y"]:
-                continue
-            if not free_vertical and a["y"] - b["y"] <= jump_up:
-                continue
-            ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
-            if ox2 < ox1:
-                continue
-            cx = (ox1 + ox2) // 2
-            if blocked(cx, a["y"], b["y"]):
-                continue
-            addn((cx, a["y"]), i); addn((cx, b["y"]), j)
-            conns.append(((cx, a["y"]), (cx, b["y"]), (a["y"] - b["y"]) + 1, "rope"))
+        if free_vertical:
+            # 【瞬移的垂直規則】它會【越過較近的平台】落到範圍內【最遠】那個,
+            # 不是停在最近的。實測 x=98 從 y=49 往上,範圍內有 y=38(距 11)與
+            # y=27(距 22),結果直接到 27 —— y=38 在那個 x 根本到不了。
+            # 所以每個方向【只建一條邊】,連到最遠的可達平台;若照一般寫法把較近的
+            # 也連上,導航就會在兩層之間無限來回(實測 90 秒只走到 6 個點)。
+            # 也因此不做 blocked 檢查:夾層擋不住瞬移,反而是它被越過的原因。
+            for sign in (-1, 1):             # -1=往上(y 變小)、+1=往下
+                best = None
+                for j, b in enumerate(plats):
+                    if j == i:
+                        continue
+                    d = (b["y"] - a["y"]) * sign
+                    if d <= 0 or d > blink_dy:
+                        continue
+                    ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+                    if ox2 < ox1:
+                        continue
+                    if best is None or d > best[0]:
+                        best = (d, j, b, (ox1 + ox2) // 2)
+                if best:
+                    d, j, b, cx = best
+                    addn((cx, a["y"]), i); addn((cx, b["y"]), j)
+                    conns.append(((cx, a["y"]), (cx, b["y"]), d + 1,
+                                  "fall" if sign > 0 else "rope"))
+        else:
+            # 掉落:a 的 x 正下方有平台
+            for j, b in enumerate(plats):
+                if j == i or b["y"] <= a["y"]:
+                    continue
+                ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+                if ox2 < ox1:
+                    continue
+                cx = (ox1 + ox2) // 2
+                if blocked(cx, a["y"], b["y"]):
+                    continue
+                addn((cx, a["y"]), i); addn((cx, b["y"]), j)
+                conns.append(((cx, a["y"]), (cx, b["y"]), abs(b["y"] - a["y"]) + 1, "fall"))
+            # 上升:靠繩索,只在大落差(>jump_up)時建邊 —— 小落差由 jump 邊涵蓋。
+            for j, b in enumerate(plats):
+                if j == i or b["y"] >= a["y"] or a["y"] - b["y"] <= jump_up:
+                    continue
+                ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
+                if ox2 < ox1:
+                    continue
+                cx = (ox1 + ox2) // 2
+                if blocked(cx, a["y"], b["y"]):
+                    continue
+                addn((cx, a["y"]), i); addn((cx, b["y"]), j)
+                conns.append(((cx, a["y"]), (cx, b["y"]), (a["y"] - b["y"]) + 1, "rope"))
     edges = {n: [] for n in nodes}
     for a in nodes:
         pa = node_plat.get(a)

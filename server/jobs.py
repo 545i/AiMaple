@@ -56,6 +56,13 @@ DEFAULT_MOVE = {
                              # 實測 0.06 時瞬移完全不觸發(位移 0),遊戲要先認到
                              # 方向鍵按住的狀態,瞬移才會朝那個方向走。
     "blink_wait": 0.6,       # 瞬移後等動作結束
+    "blink_dy_max": 22,      # 垂直瞬移一次最遠能跨多少層距。
+                             # 【怎麼量出來的】用地圖幾何當尺,比逐點實測快:
+                             #   y=49 → y=27(距 22) 直達      → 22 可達
+                             #   y=49 → y=23(距 26) 必須經中間層 → 26 不可達
+                             # 所以上界落在 [22,26),取已驗證的 22。
+                             # 【關鍵性質】瞬移會【越過較近的平台】落到範圍內【最遠】
+                             # 那個,不是停在最近的 —— 建圖規則整個依賴這一點。
 }
 
 # 主動技能的排程(目前只有召喚,之後要加別的再擴充這裡)
@@ -97,7 +104,7 @@ def _norm_move(m):
     for k in ("jump_key2", "rope_key"):
         if k in m:
             out[k] = str(m[k] or "").strip().lower()[:12]
-    for k in ("jump_dx", "blink_dx"):
+    for k in ("jump_dx", "blink_dx", "blink_dy_max"):
         try:
             out[k] = max(1, min(200, int(m.get(k, out[k]))))
         except (TypeError, ValueError):

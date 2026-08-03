@@ -58,6 +58,7 @@ BLINK_DX = 28         # 一次瞬移的水平距離
 DIR_HOLD = 0.15       # 按瞬移鍵之前方向鍵要先按住多久。實測 0.06 完全不觸發(位移 0),
                       # 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
 BLINK_WAIT = 0.6      # 瞬移後等動作結束
+BLINK_DY_MAX = 22     # 垂直瞬移一次最遠跨多少層距(見 jobs.DEFAULT_MOVE 的說明)
 
 
 FALL_MAX = 8          # 下跳閉環最多跳幾次
@@ -69,7 +70,7 @@ X_MAX_STEPS = 14      # 水平閉環步數上限
 def set_move_params(m):
     """套用職業的移動參數(由 jobs.apply 呼叫)。缺的欄位保留現值。"""
     global JUMP_DX, JUMP_INTERVAL, JUMP_K1, JUMP_K2, ROPE_K, JUMP_LAND, ROPE_UP_WAIT
-    global MOVE_TYPE, BLINK_K, BLINK_DX, DIR_HOLD, BLINK_WAIT
+    global MOVE_TYPE, BLINK_K, BLINK_DX, DIR_HOLD, BLINK_WAIT, BLINK_DY_MAX
     m = dict(m or {})
     JUMP_DX = int(m.get("jump_dx", JUMP_DX))
     JUMP_INTERVAL = float(m.get("jump_interval", JUMP_INTERVAL))
@@ -84,6 +85,7 @@ def set_move_params(m):
     BLINK_DX = int(m.get("blink_dx", BLINK_DX))
     DIR_HOLD = float(m.get("dir_hold", DIR_HOLD))
     BLINK_WAIT = float(m.get("blink_wait", BLINK_WAIT))
+    BLINK_DY_MAX = int(m.get("blink_dy_max", BLINK_DY_MAX))
     if MOVE_TYPE == "blink":
         print(f"[nav] 移動參數 type=瞬移 鍵={BLINK_K} 距離={BLINK_DX} "
               f"dir_hold={DIR_HOLD} 等待={BLINK_WAIT} 跳躍鍵={JUMP_K1}({JUMP_DX})")
@@ -740,9 +742,13 @@ VERT_MAX_STEPS = 6      # 垂直移動最多幾層(防止在無解的地形上�
 def _blink_to_y(ty, skills=None):
     """瞬移職業的垂直移動:一層一層瞬移到目標層。回是否到達。
 
-    【為什麼可以這麼簡單】瞬移直接落到上/下最近的可站平台,任意 x 位置都行 ——
-    不必像繩索那樣先走到確切的 x。實測 (68,49)→(68,38)→(68,23),每次停在最近那層。
-    走不動就是那個方向沒有平台可落(例如站在該層邊界),回 False 讓上層換個 x 再試。"""
+    【瞬移會越過較近的平台】落到 BLINK_DY_MAX 以內【最遠】的那個,不是停在最近的。
+    所以某些 x 位置根本到不了中間層 —— 實測 x=98 從 y=49 往上會直接到 y=27,
+    把 y=38 整個跳過;從 27 往下又直接回 49。pathgraph 已依這個規則建圖(只連最遠
+    可達的平台),但執行時仍可能因量測誤差或地形差異繞回來,所以這裡再擋一次:
+    看到走過的層又出現就放棄,交給上層換個 x 或重新規劃。
+    沒有這道保護時實測會無限來回,90 秒只走到 6 個點。"""
+    seen = []
     for _ in range(VERT_MAX_STEPS):
         if _stop.is_set() or _replan.is_set():
             return False
@@ -753,6 +759,10 @@ def _blink_to_y(ty, skills=None):
         dy = ty - p[1]
         if abs(dy) <= Y_TOL:
             return True
+        if any(abs(p[1] - y) <= Y_TOL for y in seen):
+            print(f"[nav] 垂直瞬移在 {seen + [p[1]]} 之間來回,到不了 {ty} → 放棄本段")
+            return False
+        seen.append(p[1])
         if not _blink_v(dy < 0, skills):
             print(f"[nav] 垂直瞬移走不動(y={p[1]} → 目標 {ty}),該方向可能沒有平台")
             return False
@@ -789,7 +799,8 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # 否則換職業後規劃出來的跳躍邊與實際飛得到的距離對不上。
         nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
                                               jump=step_dx(),
-                                              free_vertical=(MOVE_TYPE == "blink"))
+                                              free_vertical=(MOVE_TYPE == "blink"),
+                                              blink_dy=BLINK_DY_MAX)
         start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
