@@ -42,10 +42,22 @@ Y_TOL = 4             # 垂直到達容差
 JUMP_INTERVAL = 0.20  # X→P 的間隔(down-to-down)
 KEY_HOLD = 0.06
 JUMP_K1 = "x"         # 二段跳第一段(下跳與卡住脫困也用它)
-JUMP_K2 = "p"         # 二段跳第二段
-ROPE_K = "c"          # 上繩
+JUMP_K2 = "p"         # 二段跳第二段。空字串 = 此職業【沒有】二段跳,只跳一段
+ROPE_K = "c"          # 上繩。空字串 = 不用繩索(瞬移職業直接上下層)
 JUMP_LAND = 1.0       # 二段跳後等落地
 ROPE_UP_WAIT = 1.6    # 上繩到頂
+
+# 移動方式。兩種職業的位移原語根本不同,不是換個按鍵就好:
+#   double_jump  二段跳飛固定距離 + 繩索上樓 + 下跳落到正下方(蓮)
+#   blink        瞬移:水平固定距離、【垂直直接到相鄰平台】(陰陽師)
+# 差別最大的是垂直:二段跳職業要走到繩索的確切 x 才上得去,瞬移職業在任意 x 都能上下,
+# 所以路徑規劃與走位流程都要分兩套。
+MOVE_TYPE = "double_jump"
+BLINK_K = "v"         # 瞬移鍵
+BLINK_DX = 28         # 一次瞬移的水平距離
+DIR_HOLD = 0.15       # 按瞬移鍵之前方向鍵要先按住多久。實測 0.06 完全不觸發(位移 0),
+                      # 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
+BLINK_WAIT = 0.6      # 瞬移後等動作結束
 
 
 FALL_MAX = 8          # 下跳閉環最多跳幾次
@@ -57,6 +69,7 @@ X_MAX_STEPS = 14      # 水平閉環步數上限
 def set_move_params(m):
     """套用職業的移動參數(由 jobs.apply 呼叫)。缺的欄位保留現值。"""
     global JUMP_DX, JUMP_INTERVAL, JUMP_K1, JUMP_K2, ROPE_K, JUMP_LAND, ROPE_UP_WAIT
+    global MOVE_TYPE, BLINK_K, BLINK_DX, DIR_HOLD, BLINK_WAIT
     m = dict(m or {})
     JUMP_DX = int(m.get("jump_dx", JUMP_DX))
     JUMP_INTERVAL = float(m.get("jump_interval", JUMP_INTERVAL))
@@ -65,8 +78,77 @@ def set_move_params(m):
     ROPE_K = str(m.get("rope_key", ROPE_K))
     JUMP_LAND = float(m.get("jump_land", JUMP_LAND))
     ROPE_UP_WAIT = float(m.get("rope_up", ROPE_UP_WAIT))
-    print(f"[nav] 移動參數 跳躍鍵={JUMP_K1}+{JUMP_K2} 繩索鍵={ROPE_K} "
-          f"飛距={JUMP_DX} 間隔={JUMP_INTERVAL} 落地={JUMP_LAND} 上繩={ROPE_UP_WAIT}")
+    t = str(m.get("type", MOVE_TYPE) or MOVE_TYPE)
+    MOVE_TYPE = t if t in ("double_jump", "blink") else "double_jump"
+    BLINK_K = str(m.get("blink_key", BLINK_K))
+    BLINK_DX = int(m.get("blink_dx", BLINK_DX))
+    DIR_HOLD = float(m.get("dir_hold", DIR_HOLD))
+    BLINK_WAIT = float(m.get("blink_wait", BLINK_WAIT))
+    if MOVE_TYPE == "blink":
+        print(f"[nav] 移動參數 type=瞬移 鍵={BLINK_K} 距離={BLINK_DX} "
+              f"dir_hold={DIR_HOLD} 等待={BLINK_WAIT} 跳躍鍵={JUMP_K1}({JUMP_DX})")
+    else:
+        print(f"[nav] 移動參數 type=二段跳 跳躍鍵={JUMP_K1}+{JUMP_K2} 繩索鍵={ROPE_K} "
+              f"飛距={JUMP_DX} 間隔={JUMP_INTERVAL} 落地={JUMP_LAND} 上繩={ROPE_UP_WAIT}")
+
+
+def step_dx():
+    """目前職業一次水平位移原語能移動多遠。給 pathgraph 建圖與起跳點計算共用 ——
+    寫死 30 會讓瞬移職業規劃出跳不到的邊。"""
+    return BLINK_DX if MOVE_TYPE == "blink" else JUMP_DX
+
+
+# ---- 召喚(主要輸出技能) ----
+# 有些職業的傷害幾乎全來自召喚物(陰陽師:紅 55s / 紫 25s,冷卻 60s),冷卻一好就該補,
+# 不能等走到巡邏點才放 —— 那會白白空轉一段冷卻。所以放在每輪【開頭】,先於走位。
+_summon = {"key": "", "cd": 0.0, "while_moving": True, "priority": True, "last": None}
+
+
+def set_summon(cfg):
+    """由 jobs.apply 注入。key 空字串 = 此職業沒有召喚。"""
+    cfg = dict(cfg or {})
+    _summon.update({
+        "key": str(cfg.get("summon_key", "") or "").strip(),
+        "cd": float(cfg.get("summon_cd", 0) or 0),
+        "while_moving": bool(cfg.get("summon_while_moving", True)),
+        "priority": bool(cfg.get("summon_priority", True)),
+    })
+    _summon["last"] = None                 # 換職業後冷卻重算,別沿用上一個職業的計時
+    if _summon["key"]:
+        print(f"[nav] 召喚 鍵={_summon['key']} 冷卻={_summon['cd']}s "
+              f"移動中可放={_summon['while_moving']} 優先={_summon['priority']}")
+
+
+def summon_ready():
+    if not _summon["key"] or _summon["cd"] <= 0:
+        return False
+    last = _summon["last"]
+    return last is None or (time.monotonic() - last) >= _summon["cd"]
+
+
+def _cast_summon():
+    """放召喚並記下時間。回是否真的放了。"""
+    if not summon_ready():
+        return False
+    try:
+        _press(_summon["key"], hold=0.12)
+    except Exception as e:
+        print(f"[nav] 召喚失敗: {e!r}")
+        return False
+    _summon["last"] = time.monotonic()
+    _state["summon_n"] = _state.get("summon_n", 0) + 1
+    print(f"[nav] 放召喚(第 {_state['summon_n']} 次)")
+    time.sleep(0.25)                       # 施放後搖,太快接走位會被吃掉
+    return True
+
+
+def summon_remaining():
+    """距離下次可放還有幾秒;沒有召喚回 None,已就緒回 0。"""
+    if not _summon["key"] or _summon["cd"] <= 0:
+        return None
+    if _summon["last"] is None:
+        return 0.0
+    return max(0.0, _summon["cd"] - (time.monotonic() - _summon["last"]))
 
 # ---- 卡住脫困 ----
 # 實測角色會卡在地圖的爬梯處:走位鍵按下去沒反應,位置完全不動。要【按住左右其中
@@ -218,6 +300,12 @@ def status():
     s["placements"] = pl
     rem = patrol_remaining()
     s["patrol_remaining"] = None if rem is None else round(rem, 1)
+    sr = summon_remaining()
+    s["summon"] = None if sr is None else {
+        "key": _summon["key"], "cd": _summon["cd"],
+        "remaining": round(sr, 1), "ready": sr <= 0.05,
+        "n": _state.get("summon_n", 0)}
+    s["move_type"] = MOVE_TYPE
     return s
 
 
@@ -421,17 +509,52 @@ def _same_skills(skills):
 
 def _double_jump(direction, skills=None):
     """朝 direction 二段跳(X→interval→P)。預設跳前放開攻擊鍵(避免與 X/P 衝突);
-    勾「二段跳保持攻擊」則不放、跳後重新按住(某些技能支援邊跳邊連發)。"""
+    勾「二段跳保持攻擊」則不放、跳後重新按住(某些技能支援邊跳邊連發)。
+
+    JUMP_K2 為空 = 此職業沒有二段跳,只按第一段(實測陰陽師 X 單跳 18px,
+    連按兩次只有 21px —— 那 3px 是落地殘餘不是第二段)。"""
     if not _jump_hold_atk:
         _release_atk()
     _press(direction)                      # 轉向(press,確保面向)
     time.sleep(0.12)
     _keyboard.key_down(JUMP_K1); time.sleep(KEY_HOLD); _keyboard.key_up(JUMP_K1)
-    time.sleep(max(0.0, JUMP_INTERVAL - KEY_HOLD))
-    _keyboard.key_down(JUMP_K2); time.sleep(KEY_HOLD); _keyboard.key_up(JUMP_K2)
+    if JUMP_K2:
+        time.sleep(max(0.0, JUMP_INTERVAL - KEY_HOLD))
+        _keyboard.key_down(JUMP_K2); time.sleep(KEY_HOLD); _keyboard.key_up(JUMP_K2)
     if _jump_hold_atk:
         _same_skills(skills)               # 保持攻擊:跳後重新按住
     time.sleep(JUMP_LAND)                  # 等落地(職業參數)
+
+
+def _blink(direction, skills=None):
+    """朝 direction 瞬移一次(方向鍵按住 DIR_HOLD → 按瞬移鍵 → 放開)。
+
+    【方向鍵必須先按住再按技能】實測 DIR_HOLD=0.06 時瞬移完全不觸發(三次量測位移
+    全為 0),0.15 才穩定觸發 —— 遊戲要先認到方向鍵按住的狀態,瞬移才會朝那個方向走。
+    這與二段跳不同:二段跳用 _press 點一下轉向就夠。"""
+    _release_atk()                         # 瞬移是位移技能,按住攻擊鍵會互相搶輸入
+    _keyboard.key_down(direction)
+    try:
+        time.sleep(DIR_HOLD)
+        _press(BLINK_K)
+        time.sleep(BLINK_WAIT)
+    finally:
+        _keyboard.key_up(direction)
+    time.sleep(0.15)
+
+
+def _blink_v(up, skills=None):
+    """垂直瞬移一次:up=True 往上、False 往下。回是否真的移動了。
+
+    【與二段跳職業的差別】瞬移直接落到【上/下最近的可站平台】,任意 x 位置都行,
+    不需要走到繩索的確切位置。實測 (68,49)→(68,38)→(68,23),每次都停在最近那層。
+    走不動(該方向沒有平台)時回 False,由呼叫端決定要不要換水平位置再試。"""
+    a = _dot()
+    _blink("up" if up else "down", skills)
+    b = _dot()
+    if a is None or b is None:
+        return False
+    return abs(b[1] - a[1]) > Y_TOL
 
 
 def _walk_to_x(direction, target_x, skills=None, timeout_s=2.5):
@@ -494,9 +617,17 @@ def _rope_up(skills=None):
     time.sleep(ROPE_UP_WAIT)
 
 
+def _hop(direction, skills=None):
+    """一次水平位移原語:瞬移職業用瞬移,其餘用二段跳。"""
+    if MOVE_TYPE == "blink":
+        _blink(direction, skills)
+    else:
+        _double_jump(direction, skills)
+
+
 # ---------- 導航主邏輯 ----------
 def _move_to_x(tx, skills=None):
-    """水平閉環:遠用二段跳、近用走路;卡住(x 沒變)自癒——換走路脫困。"""
+    """水平閉環:遠用位移原語(瞬移/二段跳)、近用走路;卡住(x 沒變)自癒——換走路脫困。"""
     last_x = None
     for i in range(X_MAX_STEPS):
         if _stop.is_set() or _replan.is_set():   # 脫困過 → 目標與路徑都要重算,別再往舊 tx 走
@@ -509,11 +640,11 @@ def _move_to_x(tx, skills=None):
         if abs(dx) <= X_TOL:
             return
         d = "right" if dx > 0 else "left"
-        # 卡住自癒:上一步後 x 幾乎沒變 → 二段跳撞牆/無效,改走路脫困
+        # 卡住自癒:上一步後 x 幾乎沒變 → 位移原語撞牆/無效,改走路脫困
         stuck = last_x is not None and abs(p[0] - last_x) <= 1
         last_x = p[0]
-        if abs(dx) > JUMP_DX - 5 and not stuck:
-            _double_jump(d, skills)
+        if abs(dx) > step_dx() - 5 and not stuck:
+            _hop(d, skills)
         else:
             _walk_to_x(d, tx, skills)
 
@@ -603,6 +734,42 @@ def _rope_to(nx, ty):
     return False
 
 
+VERT_MAX_STEPS = 6      # 垂直移動最多幾層(防止在無解的地形上無限重試)
+
+
+def _blink_to_y(ty, skills=None):
+    """瞬移職業的垂直移動:一層一層瞬移到目標層。回是否到達。
+
+    【為什麼可以這麼簡單】瞬移直接落到上/下最近的可站平台,任意 x 位置都行 ——
+    不必像繩索那樣先走到確切的 x。實測 (68,49)→(68,38)→(68,23),每次停在最近那層。
+    走不動就是那個方向沒有平台可落(例如站在該層邊界),回 False 讓上層換個 x 再試。"""
+    for _ in range(VERT_MAX_STEPS):
+        if _stop.is_set() or _replan.is_set():
+            return False
+        p = _settle()
+        if not p:
+            return False
+        _state["pos"] = list(p)
+        dy = ty - p[1]
+        if abs(dy) <= Y_TOL:
+            return True
+        if not _blink_v(dy < 0, skills):
+            print(f"[nav] 垂直瞬移走不動(y={p[1]} → 目標 {ty}),該方向可能沒有平台")
+            return False
+    return False
+
+
+def _go_vertical(nx, ty, skills=None):
+    """移到目標層。依職業選路:瞬移職業直接上下,二段跳職業要靠繩索/下跳。"""
+    if MOVE_TYPE == "blink":
+        return _blink_to_y(ty, skills)
+    p = _dot()
+    if p and ty > p[1]:
+        _fall_to_y(ty, skills)
+        return True
+    return _rope_to(nx, ty)
+
+
 def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None):
     """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。
     skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。
@@ -621,7 +788,8 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # jump=JUMP_DX:飛距是【職業參數】,不能讓 pathgraph 用它自己的預設 30,
         # 否則換職業後規劃出來的跳躍邊與實際飛得到的距離對不上。
         nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
-                                              jump=JUMP_DX)
+                                              jump=step_dx(),
+                                              free_vertical=(MOVE_TYPE == "blink"))
         start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
@@ -641,30 +809,32 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             p_start = _dot()
             if mt == "walk":
                 _move_to_x(nx, skills)                      # 同平台走位(移動攻擊穿插平A)
-            elif mt == "fall":
-                _move_to_x(nx, skills); _settle(); _fall_to_y(ny)   # 走到掉落點→垂直落下
-            elif mt == "jump":                              # 物理二段跳:橫向~30px 落到落點平台
+            elif mt in ("fall", "rope"):
+                # 垂直移動。瞬移職業在任意 x 都能直接上下,先走到目標 x 再垂直即可;
+                # 二段跳職業則是 fall=走到掉落點垂直落下、rope=走到繩索重疊區上繩。
+                _move_to_x(nx, skills); _settle()
+                _go_vertical(nx, ny, skills)
+            elif mt == "jump":                              # 位移原語橫向飛到落點平台
                 _settle()
                 pp = _dot() or (nx, ny)
                 dr = 1 if nx >= pp[0] else -1
+                step = step_dx()
                 cur = next((pf for pf in platforms if abs(pf["y"] - pp[1]) <= Y_TOL
                             and pf["xA"] - 2 <= pp[0] <= pf["xB"] + 2), None)
                 tgt = next((pf for pf in platforms if abs(pf["y"] - ny) <= Y_TOL
                             and pf["xA"] - 3 <= nx <= pf["xB"] + 3), None)
-                if cur and tgt:                             # 起跳點:使落點(起跳±30)落在目標平台內
+                if cur and tgt:                             # 起跳點:使落點(起跳±step)落在目標平台內
                     if dr > 0:
-                        lo, hi = (max(cur["xA"], tgt["xA"] - JUMP_DX),
-                                  min(cur["xB"], tgt["xB"] - JUMP_DX))
+                        lo, hi = (max(cur["xA"], tgt["xA"] - step),
+                                  min(cur["xB"], tgt["xB"] - step))
                     else:
-                        lo, hi = (max(cur["xA"], tgt["xA"] + JUMP_DX),
-                                  min(cur["xB"], tgt["xB"] + JUMP_DX))
+                        lo, hi = (max(cur["xA"], tgt["xA"] + step),
+                                  min(cur["xB"], tgt["xB"] + step))
                     if lo <= hi:
                         _walk_to((lo + hi) // 2)            # 起跳點取範圍中間→落到目標平台中部(避邊緣)
                         _settle()
-                _double_jump("right" if dr > 0 else "left", skills)
+                _hop("right" if dr > 0 else "left", skills)
                 _settle(); _move_to_x(nx, skills)           # 落點微調到目標 x
-            elif mt == "rope":
-                _move_to_x(nx, skills); _settle(); _rope_to(nx, ny)  # 走到重疊區→上繩到頂
             p_end = _dot()
             _log_move(_state.get("mode", "move"), mt,
                       list(p_start) if p_start else None, [nx, ny],
@@ -699,7 +869,14 @@ def _goto_sync(tx, ty, skills=None, precise=False):
         return False
     _state["pos"] = list(p)
     dy = ty - p[1]
-    if dy < -Y_TOL:                        # 目標更高 → 【先水平對齊繩索(在目標 x 正下方),再上繩】
+    if MOVE_TYPE == "blink":
+        # 瞬移職業:垂直移動不挑 x,先走到目標 x 再一層層瞬移過去即可。
+        if abs(dy) > Y_TOL:
+            _state["phase"] = "pre_move_x"
+            _move_to_x(tx, skills)
+            _state["phase"] = "rope_up" if dy < 0 else "fall"
+            _blink_to_y(ty, skills)
+    elif dy < -Y_TOL:                      # 目標更高 → 【先水平對齊繩索(在目標 x 正下方),再上繩】
         _state["phase"] = "pre_move_x"     # 實測:繩索固定位置,原地按C不在繩索下方無效
         _move_to_x(tx, skills)             # 先走到目標 x(當前層),對齊繩索
         _state["phase"] = "rope_up"
@@ -819,6 +996,15 @@ def _patrol_run(points_fn, attack_key, cast_mode):
             _state["error"] = "偵測到紫標,已自動暫停巡邏"
             print("[nav] 紫標存在 → 暫停巡邏")
             return
+        # 召喚:冷卻一好就補,而且【先於走位】—— 對召喚流職業那是主要傷害來源,
+        # 等走到巡邏點才放會白白空轉一段冷卻。
+        # 解符文期間不會走到這裡:那條流程會先 stop 巡邏,走位改由 rune 自己的
+        # move_to 負責,所以「符文出現時暫停召喚」是自然成立的,不需要額外開關。
+        if _summon["priority"] and summon_ready():
+            _state["phase"] = "summon"
+            _cast_summon()
+            if _stop.is_set():
+                return
         pts = points_fn() or []            # 每輪重讀:運行中改放置技能/冷卻即時生效
         if not pts:
             if _stop.wait(0.5):

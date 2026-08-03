@@ -205,7 +205,7 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     return nodes, edges
 
 
-def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4):
+def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4, free_vertical=False):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
@@ -218,7 +218,14 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4):
         正好差 11,導航反覆嘗試都上不去,得靠繩索)。
       * fall:掉落——a 的 x 正下方有平台(中間無夾層)→ 垂直落下。
       * rope:大落差上升——a 上方有重疊平台且升幅>jump_up → 走到重疊區上繩到頂。
-    每種邊都對應一個可靠的按鍵動作。回 (nodes, edges)。"""
+    每種邊都對應一個可靠的按鍵動作。回 (nodes, edges)。
+
+    free_vertical=True 給【瞬移職業】(陰陽師)用,規則有兩處不同:
+      * jump 邊不再允許略升。瞬移的水平位移實測 dy 恆為 0,沒有垂直分量,
+        靠它「跳上」略高的平台是二段跳才有的性質,照用會規劃出上不去的路徑。
+      * 垂直邊不限升幅。瞬移在任意 x 都能直接上下到【相鄰】平台,不需要繩索,
+        所以連 jump_up 以內的小升幅也走這種邊(二段跳職業那些是由 jump 邊涵蓋的)。
+        夾層檢查(blocked)照舊 —— 瞬移只會停在最近那層,中間有平台就到不了目標。"""
     plats = [dict(p) for p in platforms]
     nodes = [(int(x), int(y)) for x, y in points]
     node_plat = {}
@@ -244,8 +251,10 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4):
         for jx in (a["xA"], a["xB"], amid):
             for dr in (1, -1):
                 lx = jx + dr * jump
+                # 瞬移沒有垂直分量(實測 dy 恆為 0),所以 free_vertical 時完全不許上升
+                up_allow = 0 if free_vertical else jump_up
                 for j, b in enumerate(plats):
-                    if j == i or b["y"] < a["y"] - jump_up:   # 不能落到比 a 高太多的平台
+                    if j == i or b["y"] < a["y"] - up_allow:   # 不能落到比 a 高太多的平台
                         continue
                     if b["xA"] - 3 <= lx <= b["xB"] + 3:
                         nb = (max(b["xA"], min(b["xB"], lx)), b["y"])
@@ -263,9 +272,12 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4):
                 continue
             addn((cx, a["y"]), i); addn((cx, b["y"]), j)
             conns.append(((cx, a["y"]), (cx, b["y"]), abs(b["y"] - a["y"]) + 1, "fall"))
-        # 繩索:a 上方重疊平台且大上升(>jump_up)
+        # 上升:二段跳職業要靠繩索,所以只在大落差(>jump_up)時建邊 —— 小落差由 jump 邊
+        # 涵蓋。瞬移職業則是任何升幅都走這種邊(它的 jump 邊不能上升)。
         for j, b in enumerate(plats):
-            if j == i or b["y"] >= a["y"] or a["y"] - b["y"] <= jump_up:
+            if j == i or b["y"] >= a["y"]:
+                continue
+            if not free_vertical and a["y"] - b["y"] <= jump_up:
                 continue
             ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
             if ox2 < ox1:

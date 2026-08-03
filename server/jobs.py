@@ -228,6 +228,7 @@ def apply(name):
         navigator.set_jump_hold_atk(a["jump_atk"])
         navigator.set_fall_hold_atk(a["fall_atk"])
         navigator.set_move_params(job["move"])
+        navigator.set_summon(job.get("skills"))
     except Exception as e:
         return False, f"套用失敗: {e!r}"
     _set_current_name(job["name"])

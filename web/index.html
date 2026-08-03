@@ -1793,9 +1793,15 @@ async function placeTick(){
                            : "✓ 巡邏中遇到符文會自動前往解除")
         : "未開啟：紫標只會通知＋暫停巡邏";
     }
+    // 召喚（召喚流職業的主要輸出）：冷卻一好就會在每輪開頭補，先於走位
+    const sm = st.summon;
+    const smLine = sm
+      ? `<div>🔮 召喚 <b>${labelFor(sm.key)}</b>　${sm.ready ? "🟢 就緒（下一輪即放）"
+          : `🟠 ${sm.remaining}s 後可放`}　冷卻 ${sm.cd}s　已放 ${sm.n} 次</div>`
+      : "";
     const pl = st.placements || [], box = $("#placeMon");
-    if(!pl.length){ box.textContent = "（此地圖無放置技能點）"; return; }
-    box.innerHTML = pl.map(p=>{
+    if(!pl.length){ box.innerHTML = smLine || "（此地圖無放置技能點）"; return; }
+    box.innerHTML = smLine + pl.map(p=>{
       const s = p.ready ? "🟢 就緒（下次到點即放）" : `🟠 ${p.remaining}s 後可放`;
       const fc = p.face === "left" ? "　⬅朝左" : (p.face === "right" ? "　➡朝右" : "");
       return `<div>放置技能 <b>${labelFor(p.skill)}</b> @(${p.x},${p.y})${fc}　${s}　冷卻 ${p.cd}s</div>`;
