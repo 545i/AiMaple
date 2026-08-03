@@ -86,9 +86,17 @@ def _norm_move(m):
     out = dict(DEFAULT_MOVE)
     t = str(m.get("type", out["type"]) or "").strip().lower()
     out["type"] = t if t in ("double_jump", "blink") else DEFAULT_MOVE["type"]
-    for k in ("jump_key1", "jump_key2", "rope_key", "blink_key"):
-        v = str(m.get(k, out[k]) or out[k]).strip().lower()[:12]
+    # 必要的鍵:空值沒有意義,退回預設
+    for k in ("jump_key1", "blink_key"):
+        v = str(m.get(k, out[k]) or "").strip().lower()[:12]
         out[k] = v or DEFAULT_MOVE[k]
+    # 可選的鍵:空字串是有意義的 —— 代表【此職業沒有這個動作】。
+    # 陰陽師沒有二段跳(實測單跳 18、連按 X,X 只有 21,差 3 是落地殘餘不是第二段),
+    # 也不需要繩索(瞬移可直接上下層)。原本這裡一律 `or 預設值`,空字串會被換回
+    # 'p' 和 'c',等於無法表達「沒有」,走位時就會去按根本不存在的技能。
+    for k in ("jump_key2", "rope_key"):
+        if k in m:
+            out[k] = str(m[k] or "").strip().lower()[:12]
     for k in ("jump_dx", "blink_dx"):
         try:
             out[k] = max(1, min(200, int(m.get(k, out[k]))))
