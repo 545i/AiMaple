@@ -44,6 +44,7 @@ import revive
 import firmware
 import paths
 import exp
+import jobs
 
 # 走 paths 而非自己拼 ../web:打包成 exe 後 web/ 在 exe 內部(sys._MEIPASS),
 # 不在 exe 旁邊,自己拼相對路徑會找不到頁面。
@@ -148,6 +149,13 @@ async def lifespan(app):
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_terrain_fn(lambda: (mapdata.points(mapdata.current_map_id()),
                                       mapdata.platforms(mapdata.current_map_id())))
+    # 職業:第一次啟動把現況存成「蓮」,之後每次啟動套用上次選的那個。
+    # navigator 的移動參數是模組級變數,不套用就會退回寫死的預設(=蓮的值)。
+    jobs.ensure_default()
+    _cur_job = jobs.current_name()
+    if _cur_job:
+        _ok, _msg = jobs.apply(_cur_job)
+        print(f"[job] 套用職業「{_cur_job}」: {_msg}")
     # 紫標(=符文 rune)出現 → 開了自動解除就去解,否則沿用「暫停巡邏」(危險規避)。
     # Telegram 通知照舊(在 minimap 內)。
     rune.set_hooks(navigator=navigator, keyboard=keyboard,
@@ -932,6 +940,54 @@ def minimap_redetect(token: str = Query("")):
     _check_owner(token)
     minimap.redetect()
     return JSONResponse(minimap.status())
+
+
+# ===== 職業設定:攻擊 + 移動參數的具名組合 =====
+@app.get("/job/status")
+def job_status(token: str = Query("")):
+    """{current, jobs:[名稱], detail:{name,move,attack}, defaults}"""
+    _check_owner(token)
+    return JSONResponse(jobs.status())
+
+
+@app.post("/job/save")
+async def job_save(request: Request, token: str = Query("")):
+    """body: {"name":"漂移","move":{...},"attack":{...}}
+    move/attack 省略時沿用該職業既有值,所以可以只改其中一半。"""
+    _check_owner(token)
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="缺少職業名稱")
+    rec = jobs.save(name, body.get("move"), body.get("attack"))
+    if rec is None:
+        raise HTTPException(status_code=400, detail="職業名稱無效")
+    # 存的就是當前選中的那個 → 立刻生效,不必再按一次套用
+    if jobs.current_name() == rec["name"]:
+        jobs.apply(rec["name"])
+    return JSONResponse(rec)
+
+
+@app.post("/job/apply")
+def job_apply(token: str = Query(""), name: str = Query(...)):
+    """切換職業:攻擊設定寫回 _attack.json,移動參數注入 navigator。"""
+    _check_owner(token)
+    if navigator.is_running():
+        raise HTTPException(status_code=409, detail="巡邏/導航進行中,請先停止再換職業")
+    ok, msg = jobs.apply(name)
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return JSONResponse(jobs.status())
+
+
+@app.post("/job/delete")
+def job_delete(token: str = Query(""), name: str = Query(...)):
+    _check_owner(token)
+    if name == jobs.current_name():
+        raise HTTPException(status_code=400, detail="不能刪除目前使用中的職業")
+    if not jobs.delete(name):
+        raise HTTPException(status_code=404, detail="找不到該職業")
+    return JSONResponse(jobs.status())
 
 
 # ===== EXP 進度 =====

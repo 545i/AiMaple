@@ -1,0 +1,192 @@
+# -*- coding: utf-8 -*-
+"""職業設定:把「換一個角色就要重調」的參數收成一組,可具名保存與切換。
+
+--------------------------------------------------------------------------
+為什麼要有這一層
+--------------------------------------------------------------------------
+原本攻擊鍵存在 layouts/_attack.json,而移動參數(二段跳飛多遠、兩段之間隔多久、
+跳躍/上繩用哪個鍵、等落地多久)全部【寫死在 navigator.py 裡】。那些數字是對著
+一個角色量出來的 —— 二段跳水平 30px、上繩 1.6 秒,換個職業就全部不對:
+位移距離不同、技能鍵不同、動作前後搖也不同。
+
+所以把它們收攏成「職業」:一個職業 = 一組攻擊設定 + 一組移動參數。
+切換職業時兩者一起套用,不必逐項重設。
+
+--------------------------------------------------------------------------
+與既有設定的關係
+--------------------------------------------------------------------------
+【刻意不動 layouts/_attack.json】它仍然是「當前生效的攻擊設定」,既有的 UI 與
+/map/attack 端點照常運作。切換職業時把該職業的攻擊設定【寫進】它,所以:
+  * 使用者臨時改攻擊鍵 → 只影響當前,不會污染職業設定
+  * 想把臨時的調整存起來 → 呼叫 save(name) 把當前狀態存成職業
+這樣「當前狀態」與「具名設定」分離,跟 profiles(地圖設置)是同一套思路。
+
+地圖層級的東西(巡邏點、平台、繩索)不屬於職業 —— 那些跟地形綁定,是 profiles 管的。
+"""
+import json
+import os
+import threading
+
+import paths
+
+_DIR = paths.data_dir("jobs")
+_CUR_PATH = os.path.join(_DIR, "_current.json")
+_lock = threading.Lock()
+
+# 預設值 = 目前寫在 navigator.py 裡的那組,量自職業「蓮」。
+# 【這些數字的來源】見 DEV_LOG 的移動模型:二段跳同層水平精確 30px(16 組實測 ±1、
+# 左右對稱);X→P 間隔 0.2s;繩索按 C 一路上到頂約 1.6s。換職業必須重新量。
+DEFAULT_MOVE = {
+    "jump_key1": "x",        # 二段跳第一段(也用於下跳、卡住脫困)
+    "jump_key2": "p",        # 二段跳第二段
+    "rope_key": "c",         # 上繩
+    "jump_dx": 30,           # 二段跳一次的水平飛距(小地圖 px)
+    "jump_interval": 0.20,   # 第一段到第二段的間隔(down-to-down)
+    "jump_land": 1.0,        # 二段跳後等落地
+    "rope_up": 1.6,          # 上繩到頂
+}
+DEFAULT_ATTACK = {"key": "a", "mode": "move", "jump_atk": True, "fall_atk": True}
+DEFAULT_NAME = "蓮"
+
+
+def _safe(name):
+    """檔名安全化。與 mapdata._safe_name 同樣的理由:使用者可以輸入任意職業名。"""
+    keep = "".join(c for c in str(name or "").strip()
+                   if c.isalnum() or c in "._-()（）" or ord(c) > 127)
+    return keep[:40]
+
+
+def _path(name):
+    return os.path.join(_DIR, _safe(name) + ".json")
+
+
+def _norm_move(m):
+    m = dict(m or {})
+    out = dict(DEFAULT_MOVE)
+    for k in ("jump_key1", "jump_key2", "rope_key"):
+        v = str(m.get(k, out[k]) or out[k]).strip().lower()[:12]
+        out[k] = v or DEFAULT_MOVE[k]
+    try:
+        out["jump_dx"] = max(1, min(200, int(m.get("jump_dx", out["jump_dx"]))))
+    except (TypeError, ValueError):
+        pass
+    for k, lo, hi in (("jump_interval", 0.02, 2.0), ("jump_land", 0.0, 5.0),
+                      ("rope_up", 0.0, 10.0)):
+        try:
+            out[k] = max(lo, min(hi, float(m.get(k, out[k]))))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
+def _norm_attack(a):
+    a = dict(a or {})
+    mode = a.get("mode")
+    return {"key": (str(a.get("key", "a") or "a").strip().lower()[:12] or "a"),
+            "mode": mode if mode in ("tap2", "hold2s", "move") else "hold2s",
+            "jump_atk": bool(a.get("jump_atk", False)),
+            "fall_atk": bool(a.get("fall_atk", False))}
+
+
+def list_jobs():
+    """已存的職業名清單。"""
+    try:
+        return sorted(f[:-5] for f in os.listdir(_DIR)
+                      if f.endswith(".json") and not f.startswith("_"))
+    except OSError:
+        return []
+
+
+def get(name):
+    """讀一個職業。不存在回 None。"""
+    try:
+        with open(_path(name), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return {"name": name, "move": _norm_move(d.get("move")),
+            "attack": _norm_attack(d.get("attack"))}
+
+
+def save(name, move=None, attack=None):
+    """存/覆寫一個職業。move/attack 省略時沿用既有值(沒有既有值就用預設)。"""
+    name = _safe(name)
+    if not name:
+        return None
+    old = get(name) or {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK}
+    rec = {"move": _norm_move(move if move is not None else old["move"]),
+           "attack": _norm_attack(attack if attack is not None else old["attack"])}
+    with _lock:
+        os.makedirs(_DIR, exist_ok=True)
+        with open(_path(name), "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False, indent=1)
+    return {"name": name, **rec}
+
+
+def delete(name):
+    with _lock:
+        try:
+            os.remove(_path(name))
+            return True
+        except OSError:
+            return False
+
+
+def current_name():
+    try:
+        with open(_CUR_PATH, encoding="utf-8") as f:
+            return str(json.load(f).get("name") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _set_current_name(name):
+    with _lock:
+        os.makedirs(_DIR, exist_ok=True)
+        with open(_CUR_PATH, "w", encoding="utf-8") as f:
+            json.dump({"name": name}, f, ensure_ascii=False)
+
+
+def ensure_default():
+    """第一次啟動時把現況存成預設職業。
+
+    現況取自【目前生效的攻擊設定】而不是 DEFAULT_ATTACK —— 使用者早就在中控頁
+    設好平A了,直接拿預設值覆蓋等於把他的設定弄丟。"""
+    if list_jobs():
+        return
+    try:
+        import mapdata
+        att = mapdata.get_attack()
+    except Exception:
+        att = DEFAULT_ATTACK
+    save(DEFAULT_NAME, DEFAULT_MOVE, att)
+    _set_current_name(DEFAULT_NAME)
+
+
+def apply(name):
+    """切換到某職業:攻擊設定寫回 _attack.json,移動參數注入 navigator。
+    回 (ok, msg)。"""
+    job = get(name)
+    if job is None:
+        return False, f"職業「{name}」不存在"
+    try:
+        import mapdata
+        import navigator
+        a = job["attack"]
+        # 攻擊設定走既有那條路:寫進 _attack.json + 同步 navigator 的兩個開關,
+        # 與 /map/attack 端點做的事完全一致(見 main.py 的 map_attack)。
+        mapdata.set_attack(a["key"], a["mode"], a["jump_atk"], a["fall_atk"])
+        navigator.set_jump_hold_atk(a["jump_atk"])
+        navigator.set_fall_hold_atk(a["fall_atk"])
+        navigator.set_move_params(job["move"])
+    except Exception as e:
+        return False, f"套用失敗: {e!r}"
+    _set_current_name(job["name"])
+    return True, "ok"
+
+
+def status():
+    cur = current_name()
+    return {"current": cur, "jobs": list_jobs(),
+            "detail": get(cur) if cur else None,
+            "defaults": {"move": DEFAULT_MOVE, "attack": DEFAULT_ATTACK}}

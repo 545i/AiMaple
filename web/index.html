@@ -418,6 +418,43 @@
    <div id="placeMon" style="font-size:13px;color:#cfd3db;display:flex;flex-direction:column;gap:3px;margin-top:6px"></div>
    <div style="border-top:1px solid #2a2d38;margin:12px 0 6px;padding-top:8px;font-size:12px;color:#8a8f99">⚙ 巡邏設定（設好即可收在下方，平時看上面狀態就好）</div>
 
+   <div class="msec">職業（攻擊＋移動參數一組·換角色時整組切換）</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     二段跳飛多遠、用哪個鍵、等落地多久，這些都跟職業綁在一起。目前這組數值量自「蓮」，
+     換職業要重新量（同層二段跳的水平距離最關鍵）。</div>
+   <div style="display:flex;gap:6px;align-items:center;margin:6px 0">
+     <select id="jobSel" style="flex:1;background:#161922;color:#e6e8ee;border:1px solid #2a2d38;border-radius:8px;padding:8px"></select>
+     <div class="mbtn" id="jobApplyBtn" style="flex:0 0 auto;padding:8px 12px">切換</div>
+   </div>
+   <div class="mbtn" id="jobEditBtn">🧬 職業參數：展開</div>
+   <div id="jobBox" style="display:none;margin-top:8px;padding:8px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
+     <div style="display:flex;gap:6px;margin-bottom:6px">
+       <input id="jobName" placeholder="職業名稱" style="flex:1;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:8px;padding:7px">
+     </div>
+     <div class="mgrid2">
+       <label style="font-size:12px;color:#8a8f99">二段跳鍵1<input id="jkey1" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">二段跳鍵2<input id="jkey2" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div class="mgrid2" style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">上繩鍵<input id="jrope" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">二段跳水平距離(px)<input id="jdx" type="number" min="1" max="200" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div class="mgrid2" style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">兩段間隔(秒)<input id="jint" type="number" step="0.01" min="0.02" max="2" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">等落地(秒)<input id="jland" type="number" step="0.1" min="0" max="5" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">上繩到頂(秒)<input id="jropeup" type="number" step="0.1" min="0" max="10" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div style="font-size:11px;color:#6b7280;margin-top:6px">
+       平A設定（攻擊鍵/模式/跳躍攻擊）在下方「平A」區，儲存職業時會一起收進去。</div>
+     <div class="mgrid2" style="margin-top:8px">
+       <div class="mbtn" id="jobSaveBtn">💾 儲存為此名稱</div>
+       <div class="mbtn" id="jobDelBtn">🗑 刪除</div>
+     </div>
+     <div id="jobMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
+   </div>
+
    <div class="msec">目前方向（最後觸發的方向鍵＝角色面向）</div>
    <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
      <div id="faceArrow" style="font-size:40px;font-weight:800;color:#ffb020;width:56px;text-align:center;line-height:1">→</div>
@@ -735,6 +772,7 @@ function loadDash(){
   // refreshSettings 取代 refreshMapStat:後者只更新「地圖/點數」那一行,巡邏點清單、
   // 地形、平A 都不填 —— 平A 尤其不能不填,表單維持預設值時按儲存會覆寫掉真正的設定。
   refreshFace(); refreshSettings(); refreshRuneStatus(); refreshPatrolMins();
+  refreshJobs();
   fwStatus();
   if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
   if(patrolPaneOn()) watchDetect(1);
@@ -1601,6 +1639,82 @@ function badge(label, on, note, warn){
        + `background:${c[0]};color:${c[1]};border:1px solid ${c[1]}44;white-space:nowrap">`
        + `${mark} ${label}${note ? "・" + note : ""}</span>`;
 }
+// ---- 職業（攻擊＋移動參數一組） ----
+// 移動參數原本寫死在 navigator.py（量自「蓮」），現在收成職業設定，換角色整組切換。
+let jobDetail = null;
+function jobFill(d){
+  if(!d) return;
+  jobDetail = d;
+  $("#jobName").value = d.name || "";
+  const m = d.move || {};
+  $("#jkey1").value = m.jump_key1 ?? "";
+  $("#jkey2").value = m.jump_key2 ?? "";
+  $("#jrope").value = m.rope_key ?? "";
+  $("#jdx").value   = m.jump_dx ?? "";
+  $("#jint").value  = m.jump_interval ?? "";
+  $("#jland").value = m.jump_land ?? "";
+  $("#jropeup").value = m.rope_up ?? "";
+}
+async function refreshJobs(){
+  try{
+    const s = await (await fetch(`/job/status?token=${encodeURIComponent(token)}`)).json();
+    const sel = $("#jobSel");
+    sel.innerHTML = (s.jobs||[]).map(n=>
+      `<option value="${n}"${n===s.current?" selected":""}>${n}</option>`).join("")
+      || `<option value="">（尚無職業）</option>`;
+    jobFill(s.detail);
+  }catch(_){}
+}
+$("#jobEditBtn").onclick = ()=>{
+  const b = $("#jobBox"), on = b.style.display === "none";
+  b.style.display = on ? "block" : "none";
+  $("#jobEditBtn").textContent = on ? "🧬 職業參數：收合" : "🧬 職業參數：展開";
+};
+$("#jobApplyBtn").onclick = async ()=>{
+  const n = $("#jobSel").value;
+  if(!n) return;
+  try{
+    const r = await fetch(`/job/apply?token=${encodeURIComponent(token)}&name=${encodeURIComponent(n)}`,{method:"POST"});
+    if(!r.ok){ toast((await r.json()).detail || "切換失敗", false); return; }
+    jobFill((await r.json()).detail);
+    toast(`已切換到「${n}」`, true);
+    refreshFace && refreshFace();
+  }catch(_){ toast("切換失敗（連線？）", false); }
+};
+$("#jobSaveBtn").onclick = async ()=>{
+  const name = $("#jobName").value.trim();
+  if(!name){ $("#jobMsg").textContent = "請先填職業名稱"; return; }
+  try{
+    // 平A設定一起收進去：職業 = 移動參數 + 攻擊設定，切換時兩者一起套用
+    const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+    const body = {
+      name,
+      move: {jump_key1:$("#jkey1").value.trim(), jump_key2:$("#jkey2").value.trim(),
+             rope_key:$("#jrope").value.trim(), jump_dx:+$("#jdx").value,
+             jump_interval:+$("#jint").value, jump_land:+$("#jland").value,
+             rope_up:+$("#jropeup").value},
+      attack: {key:st.attack_key, mode:st.attack_mode,
+               jump_atk:!!st.jump_atk, fall_atk:!!st.fall_atk},
+    };
+    const r = await fetch(`/job/save?token=${encodeURIComponent(token)}`,
+      {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if(!r.ok){ $("#jobMsg").textContent = (await r.json()).detail || "儲存失敗"; return; }
+    $("#jobMsg").textContent = `已儲存「${name}」（含平A設定）`;
+    await refreshJobs();
+  }catch(_){ $("#jobMsg").textContent = "儲存失敗（連線？）"; }
+};
+$("#jobDelBtn").onclick = async ()=>{
+  const n = $("#jobSel").value;
+  if(!n || !confirm(`確定刪除職業「${n}」？`)) return;
+  try{
+    const r = await fetch(`/job/delete?token=${encodeURIComponent(token)}&name=${encodeURIComponent(n)}`,{method:"POST"});
+    if(!r.ok){ $("#jobMsg").textContent = (await r.json()).detail || "刪除失敗"; return; }
+    $("#jobMsg").textContent = `已刪除「${n}」`;
+    await refreshJobs();
+  }catch(_){ $("#jobMsg").textContent = "刪除失敗（連線？）"; }
+};
+$("#jobSel").onchange = ()=>{ /* 只換顯示，按「切換」才真的套用 */ };
+
 // ---- EXP 進度 ----
 // 伺服器端讀經驗條【上面的文字】(點陣模板比對，約 1ms)，這裡只負責顯示。
 // 不用綠/灰長度比例推算：底色會隨經驗值變，而且 1px = 0.073%，文字精度高得多。

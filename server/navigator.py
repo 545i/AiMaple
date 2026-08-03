@@ -32,15 +32,41 @@ _state = {"running": False, "phase": "idle", "target": None,
 _place = {}   # (x,y) → {"skill","cd","last"(monotonic|None)};放置技能冷卻狀態,供監控下次觸發
 
 # ---- 向量/容差參數 ----
+# 【JUMP_DX / JUMP_INTERVAL / 下面的按鍵與等待都屬於「職業」】預設值量自職業「蓮」,
+# 由 jobs.set_move_params() 在切換職業時覆寫。換職業這些全都不一樣:位移距離、
+# 技能鍵、動作前後搖。X_TOL/Y_TOL/FALL_MAX 這類是小地圖解析度與閉環邏輯的參數,
+# 與職業無關,不在覆寫範圍。
 JUMP_DX = 30          # 二段跳一次水平飛距(px)
 X_TOL = 3             # 水平到達容差
 Y_TOL = 4             # 垂直到達容差
 JUMP_INTERVAL = 0.20  # X→P 的間隔(down-to-down)
 KEY_HOLD = 0.06
+JUMP_K1 = "x"         # 二段跳第一段(下跳與卡住脫困也用它)
+JUMP_K2 = "p"         # 二段跳第二段
+ROPE_K = "c"          # 上繩
+JUMP_LAND = 1.0       # 二段跳後等落地
+ROPE_UP_WAIT = 1.6    # 上繩到頂
+
+
 FALL_MAX = 8          # 下跳閉環最多跳幾次
 PRECISE_X_TOL = 1     # 精確模式水平容差(px):二段跳到位後(可過衝)再走路回正到 ±1
 PRECISE_STEPS = 10    # 精確走路回正最多步數
 X_MAX_STEPS = 14      # 水平閉環步數上限
+
+
+def set_move_params(m):
+    """套用職業的移動參數(由 jobs.apply 呼叫)。缺的欄位保留現值。"""
+    global JUMP_DX, JUMP_INTERVAL, JUMP_K1, JUMP_K2, ROPE_K, JUMP_LAND, ROPE_UP_WAIT
+    m = dict(m or {})
+    JUMP_DX = int(m.get("jump_dx", JUMP_DX))
+    JUMP_INTERVAL = float(m.get("jump_interval", JUMP_INTERVAL))
+    JUMP_K1 = str(m.get("jump_key1", JUMP_K1))
+    JUMP_K2 = str(m.get("jump_key2", JUMP_K2))
+    ROPE_K = str(m.get("rope_key", ROPE_K))
+    JUMP_LAND = float(m.get("jump_land", JUMP_LAND))
+    ROPE_UP_WAIT = float(m.get("rope_up", ROPE_UP_WAIT))
+    print(f"[nav] 移動參數 跳躍鍵={JUMP_K1}+{JUMP_K2} 繩索鍵={ROPE_K} "
+          f"飛距={JUMP_DX} 間隔={JUMP_INTERVAL} 落地={JUMP_LAND} 上繩={ROPE_UP_WAIT}")
 
 # ---- 卡住脫困 ----
 # 實測角色會卡在地圖的爬梯處:走位鍵按下去沒反應,位置完全不動。要【按住左右其中
@@ -310,7 +336,7 @@ def _unstick():
         for _ in range(UNSTICK_JUMPS):
             if _stop.is_set():
                 return False
-            _press("x")
+            _press(JUMP_K1)
             time.sleep(0.3)
         time.sleep(UNSTICK_HOLD)
     except Exception as e:
@@ -400,12 +426,12 @@ def _double_jump(direction, skills=None):
         _release_atk()
     _press(direction)                      # 轉向(press,確保面向)
     time.sleep(0.12)
-    _keyboard.key_down("x"); time.sleep(KEY_HOLD); _keyboard.key_up("x")
+    _keyboard.key_down(JUMP_K1); time.sleep(KEY_HOLD); _keyboard.key_up(JUMP_K1)
     time.sleep(max(0.0, JUMP_INTERVAL - KEY_HOLD))
-    _keyboard.key_down("p"); time.sleep(KEY_HOLD); _keyboard.key_up("p")
+    _keyboard.key_down(JUMP_K2); time.sleep(KEY_HOLD); _keyboard.key_up(JUMP_K2)
     if _jump_hold_atk:
         _same_skills(skills)               # 保持攻擊:跳後重新按住
-    time.sleep(1.0)                        # 等落地
+    time.sleep(JUMP_LAND)                  # 等落地(職業參數)
 
 
 def _walk_to_x(direction, target_x, skills=None, timeout_s=2.5):
@@ -452,7 +478,7 @@ def _fall_to_y(ty, skills=None):
                 _state["pos"] = list(p)
                 if p[1] >= ty - Y_TOL:
                     break
-            _keyboard.key_down("x"); time.sleep(0.08); _keyboard.key_up("x")
+            _keyboard.key_down(JUMP_K1); time.sleep(0.08); _keyboard.key_up(JUMP_K1)
             if _fall_hold_atk:
                 _same_skills(skills)
             time.sleep(0.45)
@@ -464,8 +490,8 @@ def _fall_to_y(ty, skills=None):
 def _rope_up(skills=None):
     """繩索 C 上升到第 4 層(不中斷)。上繩前放開攻擊鍵。"""
     _release_atk()
-    _press("c")
-    time.sleep(1.6)
+    _press(ROPE_K)
+    time.sleep(ROPE_UP_WAIT)
 
 
 # ---------- 導航主邏輯 ----------
@@ -592,7 +618,10 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             return False
         _state["pos"] = list(p)
         pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
-        nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms)
+        # jump=JUMP_DX:飛距是【職業參數】,不能讓 pathgraph 用它自己的預設 30,
+        # 否則換職業後規劃出來的跳躍邊與實際飛得到的距離對不上。
+        nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
+                                              jump=JUMP_DX)
         start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
@@ -624,9 +653,11 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
                             and pf["xA"] - 3 <= nx <= pf["xB"] + 3), None)
                 if cur and tgt:                             # 起跳點:使落點(起跳±30)落在目標平台內
                     if dr > 0:
-                        lo, hi = max(cur["xA"], tgt["xA"] - 30), min(cur["xB"], tgt["xB"] - 30)
+                        lo, hi = (max(cur["xA"], tgt["xA"] - JUMP_DX),
+                                  min(cur["xB"], tgt["xB"] - JUMP_DX))
                     else:
-                        lo, hi = max(cur["xA"], tgt["xA"] + 30), min(cur["xB"], tgt["xB"] + 30)
+                        lo, hi = (max(cur["xA"], tgt["xA"] + JUMP_DX),
+                                  min(cur["xB"], tgt["xB"] + JUMP_DX))
                     if lo <= hi:
                         _walk_to((lo + hi) // 2)            # 起跳點取範圍中間→落到目標平台中部(避邊緣)
                         _settle()

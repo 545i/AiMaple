@@ -36,6 +36,8 @@ server/telegram.json
 layouts/
 # 具名地圖設置（「北方」等）
 profiles/
+# 職業設定（攻擊鍵＋移動參數，每個角色一份）
+jobs/
 # 移動記錄，會滾到 8MB 後輪替成 .1
 server/nav_moves.jsonl*
 # 運動校準原始數據
