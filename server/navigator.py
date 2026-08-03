@@ -274,11 +274,24 @@ _move_log_n = 0
 
 def _log_move(mode, act, start, target, end):
     """追加一筆移動記錄。原本無上限成長(實測掛機累積到 1.3MB/12000 筆仍在長),
-    長期掛機會把磁碟慢慢吃掉,也讓後續分析要掃越來越大的檔。加上大小輪替。"""
+    長期掛機會把磁碟慢慢吃掉,也讓後續分析要掃越來越大的檔。加上大小輪替。
+
+    【為什麼要記 map_id】start/end 是「角色確實站得住的位置」—— 那本身就是一份
+    自動累積的地形資料,比手標平台完整(實測 597 個去重位置裡有 122 個落在已標平台外,
+    其中 y=34 那批正是梯子處,導航就是在那裡失敗的)。但沒有 map_id 就無法按地圖分離,
+    多張圖的座標混在一起等於不能用。參考 auto-maple 的 Layout:它在每次移動後
+    記錄角色位置,路徑規劃直接在這些「走過的點」上做 A*,完全不需要手標地形。"""
     global _move_log_n
     try:
+        mid = ""
+        try:
+            import mapdata
+            mid = mapdata.current_map_id() or ""
+        except Exception:
+            pass
         with open(_MOVE_LOG, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"t": round(time.time(), 1), "mode": mode, "act": act,
+            f.write(json.dumps({"t": round(time.time(), 1), "map": mid,
+                                "mode": mode, "act": act,
                                 "start": start, "target": target, "end": end},
                                ensure_ascii=False) + "\n")
         _move_log_n += 1
