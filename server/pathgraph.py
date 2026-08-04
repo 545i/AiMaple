@@ -271,7 +271,6 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
             # 也連上,導航就會在兩層之間無限來回(實測 90 秒只走到 6 個點)。
             # 也因此不做 blocked 檢查:夾層擋不住瞬移,反而是它被越過的原因。
             for sign in (-1, 1):             # -1=往上(y 變小)、+1=往下
-                best = None
                 for j, b in enumerate(plats):
                     if j == i:
                         continue
@@ -281,10 +280,18 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
                     ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
                     if ox2 < ox1:
                         continue
-                    if best is None or d > best[0]:
-                        best = (d, j, b, (ox1 + ox2) // 2)
-                if best:
-                    d, j, b, cx = best
+                    cx = (ox1 + ox2) // 2
+                    # 【「最遠」必須在這個 x 位置上判斷,不能全域取一個】
+                    # 瞬移會越過較近的平台落到最遠那個,但「最遠是誰」隨 x 而不同。
+                    # 原本對每個平台只留一條全域最遠的邊,結果:從 y=58 往上只連到
+                    # y=35(x95~122,距 23),而 x=30 那裡根本沒有 y=35 —— 該處真正
+                    # 該連的是 y=45(x10~45,距 13)。少了那條邊,路徑就得先橫越大半張
+                    # 地圖到 x=108 才上得去(實測規劃出 30→108→上樓→再折回 75)。
+                    if any((c["y"] - a["y"]) * sign > d
+                           and (c["y"] - a["y"]) * sign <= blink_dy
+                           and c["xA"] <= cx <= c["xB"]
+                           for c in plats):
+                        continue             # 這個 x 上有更遠的平台,瞬移會越過 b
                     addn((cx, a["y"]), i); addn((cx, b["y"]), j)
                     conns.append(((cx, a["y"]), (cx, b["y"]), d + 1,
                                   "fall" if sign > 0 else "rope"))
