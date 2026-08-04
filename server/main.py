@@ -639,7 +639,8 @@ def _start_patrol_current():
         return False, "此地圖尚未設定座標"
     # 場上已經有符文就先去解:紫標 hook 是邊緣觸發、又被 Telegram 通知冷卻節流,
     # 「開巡邏前符文就在」不會觸發它,而巡邏兜底看到紫標就停 → 開了巡邏卻原地不動。
-    # 解完 rune 會自己呼叫這個函式接回巡邏(只有解成功才會,不會遞迴)。
+    # 解完 rune 會自己呼叫這個函式接回巡邏。【解不掉而放棄時也會接回】—— 但那個符文
+    # 已經進了 rune 的放棄冷卻,下面這行會直接回 False,所以不會遞迴。
     if rune.solve_if_present():
         return True, "偵測到符文,先去解除,解完自動續巡邏"
     att = mapdata.get_attack()

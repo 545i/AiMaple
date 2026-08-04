@@ -764,6 +764,58 @@ def _rope_to(nx, ty):
 
 VERT_MAX_STEPS = 6      # 垂直移動最多幾層(防止在無解的地形上無限重試)
 
+# ---- 卡在層與層之間的脫困 ----
+# 【和「卡住看門狗」不是同一件事】看門狗管的是「位置完全不動」;這裡管的是角色停在
+# 【不屬於任何平台的 y】—— 最典型是掛在繩索中段(實測 y=51,而平台只有 45 和 56)。
+# 那個狀態下角色其實還會左右微動(x 在 18↔23 抖),位移大於 STUCK_TOL,看門狗判定
+# 「有在動」永遠不觸發;而每段開頭的層校驗只會 break 去重規劃,重規劃出來的起點
+# 一樣是錯的層 → 實測 REPLAN_MAX 用完、上層重挑點、再進來又是同一套,連續 30 幾輪
+# 無限外圈直到人工停止。所以偵測到「不在任何層」時要先把角色弄回某個平台再談路徑。
+OFFLAYER_DROPS = 3      # 歸位動作最多做幾次
+OFFLAYER_LAND = 0.7     # 每次動作後等落地再讀位置(空中的讀數不可信,同 _unstick)
+
+
+def _on_some_platform(p, platforms):
+    """角色是否站在某塊平台的層上(只看 y;x 不管,掉在平台外的空隙也算該層)。"""
+    return bool(p and any(abs(p[1] - pf["y"]) <= Y_TOL for pf in platforms))
+
+
+def _deblock_layer(platforms):
+    """把卡在層與層之間的角色弄回某個平台層。回是否回到層上。
+
+    動作用【下跳】(按住 down + 跳躍鍵):掛在繩索上時這是唯一能脫離的輸入 —— 單按
+    方向鍵會被繩索吃掉、單獨跳只會在繩上原地彈。落下去一定會踩到某塊平台,之後
+    路徑重新規劃就有正確的起點了。
+
+    刻意【不指定要回哪一層】:這裡只負責「回到可規劃的狀態」,回哪層由後續重規劃
+    處理。硬指定目標層會退化成又一次 _go_vertical,而那正是卡住的地方。"""
+    _release_move_keys()
+    for i in range(OFFLAYER_DROPS):
+        if _stop.is_set():
+            return False
+        p0 = _dot()
+        print(f"[nav] 不在任何平台層(pos={p0}) → 下跳歸位(第 {i + 1} 次)")
+        try:
+            _keyboard.key_down("down")
+            time.sleep(0.2)
+            _press(JUMP_K1, hold=0.08)
+        except Exception as e:
+            print(f"[nav] 歸位動作失敗: {e!r}")
+            return False
+        finally:
+            try:
+                _keyboard.key_up("down")
+            except Exception:
+                pass
+        time.sleep(OFFLAYER_LAND)
+        p = _settle(retries=6)
+        if _on_some_platform(p, platforms):
+            print(f"[nav] 歸位成功 {p0} → {p}")
+            _state["pos"] = list(p)
+            return True
+    print("[nav] 歸位失敗,仍不在任何平台層")
+    return False
+
 
 def _blink_to_y(ty, skills=None):
     """瞬移職業的垂直移動:一層一層瞬移到目標層。回是否到達。
@@ -819,6 +871,13 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         if p is None:
             _state["error"] = "抓不到角色黃點"
             return False
+        # 【規劃前先確認站在某層上】不在任何層(掛在繩索中段等)時 nearest_node 只會
+        # 挑一個「最近」的錯誤起點,依它算出的每一段都對不上,重規劃幾次都是同一個錯。
+        # 先把角色弄回平台,這條路徑才有意義。
+        if not _on_some_platform(p, platforms):
+            _state["phase"] = "deblock"
+            _deblock_layer(platforms)
+            p = _settle() or p
         _state["pos"] = list(p)
         pts = [(int(d["x"]), int(d["y"])) for d in points_dicts]
         # jump=JUMP_DX:飛距是【職業參數】,不能讓 pathgraph 用它自己的預設 30,
@@ -1055,12 +1114,57 @@ def _refresh_places(pts):
     _place.update(new)
 
 
+# ---- 已確認是「解不掉的符文」的紫標:暫時不因為它暫停巡邏 ----
+# 紫標的語意是【符文 or 危險(玩家/特殊NPC進圖)】,分不出來時停巡邏是對的。但 rune
+# 對某個紫標跑完整套解除流程(走到旁邊、開過謎題)之後,那個位置就【已知是符文】——
+# 不是玩家。原本放棄後仍會讓巡邏每輪停下,人不重開就整晚停擺;而重開也沒用,兜底
+# 立刻又停。所以只對「rune 親自放棄過、且位置吻合」的那一個紫標放行,其餘照舊立刻停。
+_purple_ignore = {"pos": None, "until": 0.0, "tol": 3}
+
+
+def ignore_purple_at(x, y, secs, tol=3):
+    """把 (x,y) 的紫標標記成已知符文,secs 秒內不因為它暫停巡邏。rune 放棄時呼叫。"""
+    _purple_ignore.update({"pos": (int(x), int(y)),
+                           "until": time.monotonic() + float(secs), "tol": int(tol)})
+    print(f"[nav] 紫標 ({x},{y}) 已確認是解不掉的符文 → {secs:.0f}s 內不因它暫停巡邏")
+
+
+def clear_purple_ignore():
+    """解除放行(符文解掉了/換地圖/使用者手動重設)。"""
+    _purple_ignore.update({"pos": None, "until": 0.0})
+
+
+def _purple_ignored(m):
+    """這個紫標是不是正在放行中的那一個。"""
+    gp = _purple_ignore.get("pos")
+    if not gp or time.monotonic() >= _purple_ignore.get("until", 0.0):
+        return False
+    tol = _purple_ignore.get("tol", 3)
+    return abs(m.get("x", 0) - gp[0]) <= tol and abs(m.get("y", 0) - gp[1]) <= tol
+
+
 def _purple_present():
-    """小地圖目前是否有紫標。抓不到狀態回 False。"""
+    """小地圖目前是否有【需要暫停巡邏】的紫標。抓不到狀態回 False。
+    放行中的那個符文不算 —— 但只要另外還有紫標(可能是玩家)就照樣回 True。"""
     try:
-        return bool(minimap.status().get("purple"))
+        marks = minimap.status().get("purple") or []
+        return any(not _purple_ignored(m) for m in marks)
     except Exception:
         return False
+
+
+# ---- 到不了的巡邏點:退避停用 ----
+# 【為什麼非有不可】放置技能點只要冷卻好就【無條件優先】(skip_ready[0]),而冷卻
+# (rec["last"])只在成功放置後才更新 —— 到不了就永遠 ready、永遠被挑中。實測換地圖
+# 後巡邏點對不上,同一個點連續 25~30 次「無路徑/未到達」,整趟巡邏鎖死到人工介入。
+# 普通點靠「不連號」至少會換人,略過點連那層保護都沒有。
+#
+# 停用是【暫時】的:地形資料會隨著實走累積、地圖也可能是暫時被擋住,永久剔除等於
+# 把使用者設好的點默默丟掉。連續失敗就把停用時間加倍(60→120→240s),真的永遠去
+# 不了的點退避到 5 分鐘試一次,不再吃掉巡邏時間。
+UNREACH_FAILS = 2        # 連續幾次到不了才停用(單次失敗可能只是路過被怪打斷)
+UNREACH_COOLDOWN = 60.0  # 首次停用時長(秒)
+UNREACH_MAX = 300.0      # 停用時長上限
 
 
 def _patrol_run(points_fn, attack_key, cast_mode):
@@ -1071,6 +1175,7 @@ def _patrol_run(points_fn, attack_key, cast_mode):
     點若設 precise=True,到點會走路回正到 ±1px 才施放(定點放置技能)。"""
     visits = 0
     prev = None                            # 上一點座標 (x,y),用於不連號
+    unreach = {}                           # (x,y) → {"n":連續失敗次數, "until":解禁時刻}
     while not _stop.is_set():
         if _patrol_time_up():              # 巡邏時限到 → 收工
             _state["phase"] = "time_up"
@@ -1108,14 +1213,24 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         _refresh_places(pts)
         now = time.monotonic()
         # 略過放置技能點:冷卻好→優先去放;冷卻中→排除(只在普通點循環刷怪)
+        # 停用中(到不了)的點兩類都先濾掉,免得又被挑中空跑一趟。
         skip_ready, normal = [], []
         for p in pts:
+            r = unreach.get((p["x"], p["y"]))
+            if r and now < r["until"]:
+                continue
             if p.get("skill") and p.get("skip"):
                 rec = _place.get((p["x"], p["y"]))
                 if rec and (rec["last"] is None or now - rec["last"] >= rec["cd"]):
                     skip_ready.append(p)
             else:
                 normal.append(p)
+        # 全部點都在停用中 → 不能就這樣空轉下去(整張圖被擋住、或地形資料一時不準都
+        # 可能全滅)。全解禁重來一輪,寧可再試一次也不要巡邏靜止不動。
+        if not skip_ready and not normal and unreach:
+            print("[nav] 所有巡邏點都在停用中 → 全部解禁重試")
+            unreach.clear()
+            continue
         if skip_ready:
             pt = skip_ready[0]                                   # 冷卻好的放置技能點→優先導航
         elif normal:
@@ -1138,10 +1253,18 @@ def _patrol_run(points_fn, attack_key, cast_mode):
         _release_move_keys()               # 到點靜止:先放開移動鍵,平A/放置技能時皆不移動
         if not arrived:                    # 沒到點附近(導航受阻)→ 不施放平A/放置技能,重挑點重試
             _state["phase"] = "retry"
-            print(f"[nav] 未到達 ({tx},{ty}) pos={_state.get('pos')},跳過施放、重試")
+            r = unreach.setdefault((tx, ty), {"n": 0, "until": 0.0, "cd": UNREACH_COOLDOWN})
+            r["n"] += 1
+            msg = ""
+            if r["n"] >= UNREACH_FAILS:    # 連續到不了 → 停用一段時間,別再讓它吃巡邏時間
+                r["until"] = time.monotonic() + r["cd"]
+                msg = f",連續 {r['n']} 次到不了 → 停用 {r['cd']:.0f}s"
+                r["cd"] = min(UNREACH_MAX, r["cd"] * 2)   # 再失敗就退避得更久
+            print(f"[nav] 未到達 ({tx},{ty}) pos={_state.get('pos')},跳過施放、重試{msg}")
             if _stop.wait(0.3):
                 return
             continue
+        unreach.pop((tx, ty), None)        # 到得了就把失敗紀錄清乾淨,下次不帶著舊帳
         # ① 平A:移動攻擊模式已在走位中穿插,到點不再cast;其他模式到點施放(確保站穩)
         if cast_mode != "move":
             _state["phase"] = "cast"
@@ -1265,7 +1388,12 @@ def stop():
 
 def pause_purple():
     """紫標偵測 hook 呼叫:標記原因後停止巡邏/導航(危險規避)。
-    若由巡邏執行緒自身觸發(_dot→detect→hook),stop() 只 set 事件、不 join 自己→安全。"""
+    若由巡邏執行緒自身觸發(_dot→detect→hook),stop() 只 set 事件、不 join 自己→安全。
+
+    放行中的符文(rune 解不掉、已確認不是玩家)不觸發暫停 —— 否則 rune 一放棄,hook
+    這條路徑就把巡邏停掉,和巡邏兜底一起把人鎖在原地。場上若另有紫標仍照常暫停。"""
+    if not _purple_present():
+        return
     if _state.get("running"):
         _state["error"] = "偵測到紫標,已自動暫停巡邏"
         _state["phase"] = "purple_pause"

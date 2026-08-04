@@ -115,6 +115,28 @@ VERIFY_WAIT = 3.5                      # 按完方向鍵後最多輪詢多久等
 MAX_ROUNDS = 2                         # 單次嘗試內的「開謎題→辨識」重試次數
 RETRY_WAIT = 6.0                       # 同上重試前的等待:符文按失敗後有冷卻,畫面會顯示
                                        # 「暫時收不到效果(剩餘時間:N秒)」,沒等就再按也開不了
+# 放棄過的符文位置,一段時間內不再自動接手。
+# 【為什麼】解不掉的符文(走位到不了、地形無解)放棄後會 pause_purple 暫停巡邏等人工。
+# 但使用者一按重開巡邏,solve_if_present 立刻又看到同一個紫標、又接手、又用完
+# MAX_ATTEMPTS、又暫停 —— 實測就是這樣來回三輪,每輪吃掉一分多鐘,人不盯著就整晚
+# 停在那裡。記下放棄的位置後,冷卻內讓巡邏正常刷怪,符文自己會消失或下次再碰運氣。
+GIVEUP_COOLDOWN = 600.0                # 放棄後多久內不再自動接手同一位置(秒)
+GIVEUP_TOL = 6                         # 視為「同一個符文」的位置容差(小地圖 px)。
+                                       # 同一個符文的偵測座標會飄:實測 (16,90)→(16,92)
+                                       # →(12,90),差到 4 格,容差抓太小就認不出是同一個。
+_giveup = {"pos": None, "at": 0.0}
+
+
+def _given_up(marks):
+    """marks 的第一個紫標是不是剛放棄過的那一個(冷卻內)。"""
+    gp, gat = _giveup.get("pos"), _giveup.get("at", 0.0)
+    if not gp or not marks or time.monotonic() - gat >= GIVEUP_COOLDOWN:
+        return False
+    m = marks[0]
+    mx = m["x"] if isinstance(m, dict) else m[0]
+    my = m["y"] if isinstance(m, dict) else m[1]
+    return abs(mx - gp[0]) <= GIVEUP_TOL and abs(my - gp[1]) <= GIVEUP_TOL
+
 MAX_ATTEMPTS = 3                       # 整體重試次數(含重新導航)。必須有:紫標 hook 是邊緣
                                        # 觸發,紫標一直在不會再觸發,不自己重試就等於放棄。
 ATTEMPT_GAP = 8.0                      # 整體重試之間的間隔
@@ -1163,8 +1185,15 @@ def _attempt_inner(px, py):
     # 往外退到環中間,退完看得見就繼續。
     if marks is not None and not marks:
         away = 1 if (pos and pos[0] >= px) else -1
-        back = int(px + away * APPROACH_DX)
-        print(f"[rune] 角色蓋住紫標(dist={final}),往外退到 {back} 再試")
+        # 【退避目標必須真的比現在遠】原本固定退到 px ± APPROACH_DX(=5),但會蓋住紫標的
+        # 落點本來就在 4~5 格 —— 算出來的目標常常【就是角色現在站的位置】。實測 pos=91、
+        # 紫標 96 時導航收到 (91,136)→(91,136) 的空路徑,一步沒動,當然還是蓋住,然後
+        # 整輪放棄;紫標消失後又重新偵測到,同一套重跑六輪都在空退。
+        # 退到 RADIUS_MAX 外一點:上面「不因為距離就放棄」那段已經說明 RADIUS_MAX 偏保守,
+        # 實測 7~8 格照樣開得了謎題(log 有多次成功),寧可遠一點也不要留在蓋住的距離。
+        out = max(RADIUS_MAX + 2, (final or 0) + 2)
+        back = int(px + away * out)
+        print(f"[rune] 角色蓋住紫標(dist={final}),往外退到 {back}(距離 {out})再試")
         _goto(back, int(py))
         pos = _dot_now()
         marks = _purple_now()
@@ -1275,11 +1304,31 @@ def _solve_flow(purple, resume=True):
             except Exception:
                 pass
         try:
+            if solved:
+                # 解掉了 → 放行標記作廢(同位置若再刷出符文要正常接手/暫停)
+                _giveup.update({"pos": None, "at": 0.0})
+                try:
+                    _navigator.clear_purple_ignore()
+                except Exception:
+                    pass
             if solved and resume and _resume_fn:
                 _resume_fn()                    # 解掉了 → 接回巡邏
             elif not solved:
-                print("[rune] 放棄,暫停巡邏等人工處理")
-                _navigator.pause_purple()       # 試完仍失敗 → 回到原本的安全行為
+                # 【放棄後不再把人鎖在原地】記下位置 + 通知 navigator 放行,然後照常接回
+                # 巡邏。原本是 pause_purple() 停在那裡等人工,但紫標不會自己消失 ——
+                # 人重開巡邏,兜底看到同一個紫標又立刻停,實測就這樣整晚停擺。
+                # 這個紫標已經被完整解除流程試過(走到旁邊、開過謎題),確定是符文不是
+                # 玩家,放行它是安全的;場上若另有紫標,巡邏兜底照樣會停。
+                gx, gy = (purple[0] if purple else (None, None))
+                _giveup.update({"pos": (gx, gy) if gx is not None else None,
+                                "at": time.monotonic()})
+                print(f"[rune] 放棄,{GIVEUP_COOLDOWN:.0f}s 內不再接手該位置,巡邏照常")
+                if gx is not None:
+                    _navigator.ignore_purple_at(gx, gy, GIVEUP_COOLDOWN, GIVEUP_TOL)
+                if resume and _resume_fn:
+                    _resume_fn()                # 接回巡邏(有別的紫標的話兜底會再停)
+                else:
+                    _navigator.pause_purple()   # 手動測試路徑:維持原本的安全行為
         except Exception:
             pass
         try:
@@ -1303,6 +1352,11 @@ def trigger_solve(purple=None, resume=True, force=False, need_patrol=True):
         return False
     if not purple:
         return False
+    # hook 路徑也要擋:回 False 讓 main 走 pause_purple(),而那邊已對放行中的符文放水,
+    # 所以結果是「不接手、也不暫停」—— 正是放棄後該有的行為。
+    if not force and _given_up(purple):
+        print(f"[rune] 符文 {_giveup['pos']} 剛放棄過,不重複接手")
+        return False
     if not _busy.acquire(blocking=False):       # 已在解,別重入
         return True
     _last.update({"solved": None, "err": "", "dirs": [], "approach": None})
@@ -1323,6 +1377,12 @@ def solve_if_present(resume=True):
         return False
     marks = _purple_now()
     if not marks:
+        return False
+    # 剛放棄過的同一個符文就別再接手 —— 否則「放棄→重開→立刻又接手→再放棄」會無限
+    # 繞下去,巡邏永遠跑不起來。冷卻內照常巡邏刷怪,符文到期自己會消失。
+    if _given_up(marks):
+        left = GIVEUP_COOLDOWN - (time.monotonic() - _giveup["at"])
+        print(f"[rune] 符文 {_giveup['pos']} 剛放棄過,{left:.0f}s 內不再接手 → 照常巡邏")
         return False
     print(f"[rune] 巡邏啟動前偵測到符文 {marks[0]},先接手解除")
     # need_patrol=False:這是巡邏啟動路徑,navigator 還沒 running,但使用者剛按下開始巡邏
