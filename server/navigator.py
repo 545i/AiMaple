@@ -817,6 +817,28 @@ def _deblock_layer(platforms):
     return False
 
 
+def _learn_blink_dy(span):
+    """看到比 BLINK_DY_MAX 更大的單次瞬移跨距就把上限放寬。
+
+    【為什麼要自己學】這個值決定建圖時「這個 x 上誰是最遠可達平台」,填小了會把真正
+    的落點判成「超出範圍」,於是把中間那層誤認成最遠 —— 建出一條實機走不到的邊,角色
+    在兩層之間來回,中間層整層失聯(實測 x≈27 的 y=45 就是這樣消失的)。
+    而這個上限很難靠人工夾:要找到「一條 x 線上剛好有三層、距離跨過上限」的地形才測得出,
+    平常量到的都只是「那兩層剛好差這麼多」,永遠是低估。既然實走時每次瞬移的跨距本來就
+    在手上,超過就放寬,參數會自己收斂到真值。
+
+    只放寬不收窄:跨距小可能只是那個 x 沒有更遠的平台,不代表上限變小。
+
+    上限本身不寫回設定檔(那是職業參數,該由使用者確認後改),但印出來提示。"""
+    global BLINK_DY_MAX
+    if span <= BLINK_DY_MAX or span > BLINK_DY_MAX * 3:   # 3 倍以上當量測異常,不採信
+        return
+    old = BLINK_DY_MAX
+    BLINK_DY_MAX = int(span)
+    print(f"[nav] 實走瞬移跨距 {span} > 設定上限 {old} → 本次執行放寬為 {BLINK_DY_MAX}"
+          f"(建議把職業設定的 blink_dy_max 一起改大,否則重開又會低估)")
+
+
 def _blink_to_y(ty, skills=None):
     """瞬移職業的垂直移動:一層一層瞬移到目標層。回是否到達。
 
@@ -837,6 +859,8 @@ def _blink_to_y(ty, skills=None):
         dy = ty - p[1]
         if abs(dy) <= Y_TOL:
             return True
+        if seen:
+            _learn_blink_dy(abs(p[1] - seen[-1]))   # 上一次瞬移的實際跨距 → 校準上限
         if any(abs(p[1] - y) <= Y_TOL for y in seen):
             print(f"[nav] 垂直瞬移在 {seen + [p[1]]} 之間來回,到不了 {ty} → 放棄本段")
             return False
