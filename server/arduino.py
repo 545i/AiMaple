@@ -60,6 +60,17 @@ class ArduinoKeyboard:
         # 最後觸發的方向鍵 = 角色當前面向(方向預覽用)。任何來源(WS/校準/掛機/
         # 轉向)按下 left/right 都會更新這裡,達成「最後觸發即當前方向」。
         self.last_dir = "right"
+        self._btn_hook = None      # 實體按鈕回呼:fn(name) —— 見 set_button_hook
+        self._rx = b""             # 序列埠讀取緩衝(可能讀到半行,要自己拼)
+        self.btn_n = 0             # 收到幾次按鈕事件(供 /arduino/status 觀察)
+        self.btn_last = None       # 最後一次的時間
+
+    def set_button_hook(self, fn):
+        """註冊實體按鈕的回呼。韌體按下時送 "BTN:<name>",這裡收到就呼叫 fn(name)。
+
+        用注入而不是讓本模組直接 import navigator:這層只管序列埠,不該知道
+        「按鈕代表停止巡邏」——那是 main 的接線決定(同 minimap.set_event_hook)。"""
+        self._btn_hook = fn
 
     def _detect_port(self):
         """自動找 Arduino 的序列埠(依描述/VID)，避免燒錄後埠號變動。"""
@@ -100,6 +111,55 @@ class ArduinoKeyboard:
         except Exception:
             return 0, 0
 
+    def _feed(self, data):
+        """把剛讀到的位元組拼進緩衝、切出完整的行,認出韌體主動送來的事件。
+        回傳「不是事件」的那些行(指令的 OK/ERR 回應)。
+
+        【為什麼要逐行解析而不是整段丟棄】原本射後不理是 read(in_waiting) 直接扔掉,
+        那樣按鈕上報也一起被扔了。序列埠上現在混著兩種東西:指令的回應、板子主動送的
+        BTN: 事件,必須分開。"""
+        self._rx += data
+        if len(self._rx) > 4096:        # 異常堆積(沒有換行的雜訊)→ 丟掉,別無限長大
+            self._rx = b""
+            return []
+        others = []
+        while b"\n" in self._rx:
+            raw, self._rx = self._rx.split(b"\n", 1)
+            s = raw.decode(errors="replace").strip()
+            if not s:
+                continue
+            if s.startswith("BTN:"):
+                self._on_button(s[4:].strip() or "STOP")
+            else:
+                others.append(s)
+        return others
+
+    def _on_button(self, name):
+        self.btn_n += 1
+        self.btn_last = round(time.time(), 1)
+        print(f"[Arduino] 實體按鈕 {name}")
+        fn = self._btn_hook
+        if fn is None:
+            return
+        try:
+            fn(name)
+        except Exception as e:        # 回呼爆掉不能連累 worker,否則鍵盤整個失效
+            print(f"[Arduino] 按鈕回呼錯誤: {e!r}")
+
+    def _pump(self):
+        """讀掉序列埠上等待中的資料(順便觸發按鈕事件)。不阻塞。
+
+        由 worker 在【送完指令後】與【佇列空閒時】各呼叫一次:只有前者的話,掛機
+        沒送指令的空檔就收不到按鈕;只有後者的話,連續送指令時按鈕會被延遲。"""
+        if not self.connected or self._ser is None:
+            return
+        try:
+            n = self._ser.in_waiting
+            if n:
+                self._feed(self._ser.read(n))
+        except Exception:
+            pass
+
     def _write_cmd(self, cmd, want_reply=False):
         """送一筆指令。want_reply=True 時回傳板子的回應字串(給測試訊號用)。
 
@@ -113,13 +173,23 @@ class ArduinoKeyboard:
                 old = self._ser.timeout
                 self._ser.timeout = 0.6        # 韌體處理 + 回覆的餘裕
                 try:
-                    return self._ser.readline().decode(errors="replace").strip()
+                    # 【要跳過按鈕事件】板子可能剛好在這時上報 BTN:,那不是這筆指令的
+                    # 回應。讀到就交給 _feed 處理掉再繼續等真正的回應,否則測試訊號會
+                    # 顯示成 "BTN:STOP" 之類的東西而誤判成韌體壞掉。
+                    deadline = time.monotonic() + 0.6
+                    while time.monotonic() < deadline:
+                        line = self._ser.readline()
+                        if not line:
+                            break
+                        got = self._feed(line if line.endswith(b"\n") else line + b"\n")
+                        if got:
+                            return got[0]
+                    return ""
                 finally:
                     self._ser.timeout = old
             if ARDUINO_WAIT_ACK:
-                self._ser.readline()           # 等 OK/ERR（較可靠、較慢）
-            elif self._ser.in_waiting:
-                self._ser.read(self._ser.in_waiting)   # 射後不理：讀掉緩衝避免累積
+                self._feed(self._ser.readline())       # 等 OK/ERR（較可靠、較慢）
+            self._pump()                       # 射後不理：讀掉緩衝,順便收按鈕事件
         except Exception as e:
             print(f"[Arduino] 送出錯誤: {e}")
             self.connected = False
@@ -158,7 +228,14 @@ class ArduinoKeyboard:
         等效於用序列埠能負荷的速率送出「累加位移」，位移總量不變(韌體會自動
         切成 ±127 分段)。遇到非 MMOVE(按鍵/滑鼠鍵/滾輪)即停止合併，確保順序不變。"""
         while True:
-            cmd = self._q.get()
+            try:
+                # 【不能無限阻塞】原本是 _q.get():掛機沒送指令時 worker 就停在這裡,
+                # 序列埠沒人讀,實體按鈕按了也收不到(訊息堆在緩衝直到下一筆指令)。
+                # 加上逾時,空閒時輪詢序列埠 —— 序列埠仍然只有這條執行緒在讀。
+                cmd = self._q.get(timeout=0.05)
+            except queue.Empty:
+                self._pump()
+                continue
             if cmd is None:
                 break
             if self._dispatch_special(cmd):

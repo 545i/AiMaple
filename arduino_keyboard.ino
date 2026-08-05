@@ -18,14 +18,48 @@
  *
  * 名稱類指令不分大小寫；單一字元維持原樣。每個指令成功回 "OK"，否則 "ERR"。
  *
+ * === 實體按鈕（緊急停止）===
+ *   紅色按鈕接在 BTN_PIN 與 GND 之間（用內建上拉，不需外接電阻）。
+ *   按下時板子主動送出一行 "BTN:STOP"，PC 端收到就強制停止巡邏。
+ *   這是【單向上報】，不是指令的回應——PC 端解析序列埠時要能區分兩者。
+ *
  * 上傳此代碼到 Arduino Leonardo / Pro Micro。
  */
 
 #include <Keyboard.h>
 
+// ===== 實體按鈕 =====
+const int BTN_PIN = 2;            // 按鈕腳位（另一端接 GND）
+const unsigned long BTN_DEBOUNCE_MS = 50;   // 消抖：機械接點彈跳約幾十 ms
+const unsigned long BTN_REPEAT_MS = 500;    // 同一次按住不重複上報的最小間隔
+
+int btnLast = HIGH;               // 上一次讀到的電位（PULLUP：放開=HIGH、按下=LOW）
+unsigned long btnLastChange = 0;  // 電位變化的時間（消抖用）
+unsigned long btnLastSent = 0;    // 最後一次上報的時間（防連發）
+
 void setup() {
   Serial.begin(115200);
   Keyboard.begin();
+  pinMode(BTN_PIN, INPUT_PULLUP);
+}
+
+// 檢查實體按鈕：只在「放開→按下」的邊緣上報一次。
+// 【為什麼要自己消抖】機械按鈕放開/按下的瞬間電位會彈跳好幾次，直接用電位判斷會
+// 在一次按壓中送出好幾筆 BTN:STOP。停止巡邏本身是冪等的（重複停無害），但連發會
+// 塞滿序列埠、拖慢正在送的按鍵指令。
+void pollButton() {
+  int v = digitalRead(BTN_PIN);
+  unsigned long now = millis();
+  if (v != btnLast) {             // 電位變了 → 重新計時，等它穩定
+    btnLast = v;
+    btnLastChange = now;
+    return;
+  }
+  if (v != LOW) return;                             // 沒按著
+  if (now - btnLastChange < BTN_DEBOUNCE_MS) return; // 還沒穩定
+  if (now - btnLastSent < BTN_REPEAT_MS) return;     // 按住不放 → 不重複上報
+  btnLastSent = now;
+  Serial.println("BTN:STOP");
 }
 
 // 將指令字串對應到 HID keycode。回傳 0 表示不是已知的「具名鍵」。
@@ -85,6 +119,8 @@ int resolveKey(String tok) {
 }
 
 void loop() {
+  pollButton();       // 必須在下面的 early return 之前：沒有序列埠指令時也要能按
+
   if (Serial.available() <= 0) return;
 
   String cmd = Serial.readStringUntil('\n');

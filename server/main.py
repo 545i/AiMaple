@@ -167,6 +167,22 @@ async def lifespan(app):
             if not rune.trigger_solve(data):      # 沒接手 → 回 False → 暫停巡邏
                 navigator.pause_purple()
     minimap.set_event_hook(_on_minimap_event)
+
+    # Arduino 上的紅色實體按鈕 → 強制停止巡邏(緊急煞車)。
+    # 【為什麼要有實體的】中控頁的停止鍵要網路可達、頁面還活著才按得到;人就在機器
+    # 前面卻得先開網頁的情況下,這顆按鈕是最短路徑。停止後順手放開所有按鍵 ——
+    # 巡邏執行緒收尾本來就會放,但如果當下卡在別的狀態(例如解符文按著方向鍵),
+    # 只 stop 不放開會讓角色一直往某個方向走。
+    def _on_arduino_button(name):
+        if name != "STOP":
+            print(f"[Arduino] 未知的按鈕事件 {name},忽略")
+            return
+        was = navigator.status().get("running")
+        navigator.stop()
+        keyboard.release_all()
+        print(f"[Arduino] 紅色按鈕 → {'已停止巡邏' if was else '本來就沒在跑,已放開所有按鍵'}")
+    keyboard.set_button_hook(_on_arduino_button)
+
     # 死亡自動復活:巡邏每輪檢查有沒有跳出「確定要在當前地圖中復活嗎?」對話框
     revive.set_hooks(focus_fn=lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_round_hook(revive.check)
@@ -1054,6 +1070,10 @@ def arduino_status(token: str = Query("")):
     return JSONResponse({
         "connected": bool(getattr(keyboard, "connected", False)),
         "port": getattr(keyboard, "port", ""),
+        # 實體紅色按鈕:按過幾次、最後一次何時。按了沒反應時用這個分辨是
+        # 「板子沒送上來(接線/韌體)」還是「送上來了但停止沒生效」。
+        "button_n": getattr(keyboard, "btn_n", 0),
+        "button_last": getattr(keyboard, "btn_last", None),
         "ports": firmware.list_ports(),
         "guess": firmware.guess_port(),
         "firmware": firmware.firmware_info(),
