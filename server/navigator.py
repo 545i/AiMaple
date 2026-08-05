@@ -25,6 +25,7 @@ _keyboard = None
 _focus_fn = None
 _thread = None
 _stop = threading.Event()
+_user_stop = threading.Event()   # 使用者按下停止(有別於流程內部的 stop);見 stop()
 _op_lock = threading.Lock()
 _state = {"running": False, "phase": "idle", "target": None,
           "pos": None, "arrived": False, "error": "", "steps": 0,
@@ -1401,13 +1402,36 @@ def patrol_start(points_fn, attack_key="a", cast_mode="hold2s"):
         return True, "ok"
 
 
-def stop():
+def stop(user=False):
+    """停止導航/巡邏。
+
+    user=True 代表【使用者主動要求停止】(中控頁的停止鍵、Arduino 紅色按鈕),
+    這會另外豎起一支旗子。
+
+    【為什麼要區分】解符文流程一開始就會呼叫 stop() 把巡邏停掉,好自己接管走位;
+    它接著跑一個最多 3 輪、每輪含 8 秒等待的重試迴圈,中途還會再叫 move_to()。
+    使用者這時按停止,只停得掉當下那條導航執行緒 —— rune 的迴圈沒在看,下一輪
+    又把導航開起來,最後收場時甚至會接回巡邏,等於把使用者的停止推翻。
+    有了這支旗子,rune 才分得出「是我自己要停」還是「人要停」,後者立刻收手。"""
+    if user:
+        _user_stop.set()
     _stop.set()
     t = _thread
     if t and t is not threading.current_thread():
         t.join(timeout=3.0)
     _state["running"] = False
     return True
+
+
+def user_stopping():
+    """使用者是否要求停止(且還沒重新啟動)。長流程(解符文)每個等待點都該看它。"""
+    return _user_stop.is_set()
+
+
+def clear_user_stop():
+    """使用者重新啟動巡邏/導航時清掉。只由「使用者發起」的入口呼叫 ——
+    rune 內部的 move_to 不能清,否則它一走位就把人按下的停止抹掉。"""
+    _user_stop.clear()
 
 
 def pause_purple():

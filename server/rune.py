@@ -1213,9 +1213,12 @@ def _attempt_inner(px, py):
         print(f"[rune] 警告:離紫標 {final} 格(參考上限 {RADIUS_MAX}),仍嘗試按啟動鍵")
 
     for rnd in range(MAX_ROUNDS):
+        if _user_stopping():
+            return False
         if rnd:
             # 符文有冷卻(畫面顯示「暫時收不到效果」),重試前先等它退。
-            time.sleep(RETRY_WAIT)
+            if _sleep_or_stop(RETRY_WAIT):
+                return False
             # 只確保 worker 活著(逾時會殺掉它),【不再整個重開 + 暖身往返】——
             # 那是過度設計:session 膨脹已由 ask() 內的 RESTART_AFTER 處理,而每輪多跑
             # 一次暖身在 API 變慢時要 6~11s,純粹燒掉時間讓整條流程看起來卡住。
@@ -1265,6 +1268,27 @@ def _attempt_inner(px, py):
     return False
 
 
+def _user_stopping():
+    """使用者是否按了停止。navigator 沒掛載時回 False(手動測試路徑)。"""
+    try:
+        return bool(_navigator and _navigator.user_stopping())
+    except Exception:
+        return False
+
+
+def _sleep_or_stop(secs, step=0.25):
+    """可被使用者停止中斷的等待。中斷回 True,睡滿回 False。
+
+    解符文的等待動輒 8 秒(整體重試)或 6 秒(按錯後的冷卻),用 time.sleep 睡死的話,
+    人按下停止要等它睡完才有反應 —— 對「緊急煞車」來說那就等於沒反應。"""
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        if _user_stopping():
+            return True
+        time.sleep(min(step, max(0.0, end - time.monotonic())))
+    return _user_stopping()
+
+
 def _solve_flow(purple, resume=True):
     """外層重試迴圈:失敗就重來,直到成功 / 紫標消失 / 用完 MAX_ATTEMPTS。
 
@@ -1279,9 +1303,14 @@ def _solve_flow(purple, resume=True):
     try:
         _navigator.stop()                       # 先停巡邏,避免走位干擾
         for attempt in range(MAX_ATTEMPTS):
+            if _user_stopping():                # 人按了停止 → 立刻收手,別再開新導航
+                print("[rune] 使用者要求停止 → 中止解符文流程")
+                return
             if attempt:
                 print(f"[rune] 整體第 {attempt + 1} 次嘗試(先等 {ATTEMPT_GAP}s)")
-                time.sleep(ATTEMPT_GAP)
+                if _sleep_or_stop(ATTEMPT_GAP): # 這 8 秒要可中斷,否則停止鍵像沒反應
+                    print("[rune] 使用者要求停止 → 中止解符文流程")
+                    return
             marks = _purple_now()
             if marks is not None and not marks:  # 紫標不見了(已被解掉或消失)
                 print("[rune] 紫標已消失,不用再解")
@@ -1304,6 +1333,12 @@ def _solve_flow(purple, resume=True):
             except Exception:
                 pass
         try:
+            if _user_stopping():
+                # 【使用者的停止最大】底下不管成功或放棄都會接回巡邏,那會把人按下的
+                # 停止推翻 —— 實測就是「符文出現時按停止沒有用」的成因。這裡直接收手,
+                # 連 pause_purple 都不必(巡邏本來就已經停了)。
+                print("[rune] 使用者要求停止 → 不接回巡邏")
+                return
             if solved:
                 # 解掉了 → 放行標記作廢(同位置若再刷出符文要正常接手/暫停)
                 _giveup.update({"pos": None, "at": 0.0})

@@ -178,7 +178,7 @@ async def lifespan(app):
             print(f"[Arduino] 未知的按鈕事件 {name},忽略")
             return
         was = navigator.status().get("running")
-        navigator.stop()
+        navigator.stop(user=True)   # 實體按鈕就是「人要停」,解符文流程必須收手
         keyboard.release_all()
         print(f"[Arduino] 紅色按鈕 → {'已停止巡邏' if was else '本來就沒在跑,已放開所有按鍵'}")
     keyboard.set_button_hook(_on_arduino_button)
@@ -641,6 +641,7 @@ def nav_move_to(token: str = Query(""), x: int = Query(...), y: int = Query(...)
     if calib.is_running():
         raise HTTPException(status_code=409, detail="運動校準進行中")
     screen.ensure_started()
+    navigator.clear_user_stop()   # 使用者重新發起動作 → 撤掉先前的停止要求
     ok, msg = navigator.move_to(x, y)
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
@@ -707,6 +708,10 @@ def nav_patrol(token: str = Query(""), minutes: int = Query(-1)):
     # 時限只在【使用者按下開始巡邏】時設定一次。解符文完成後會再呼叫 _start_patrol_current
     # 接回巡邏,那條路徑刻意不重設期限,否則每解一次符文就把掛機時間往後延。
     navigator.set_patrol_deadline(mins * 60)
+    # 使用者重新按下開始巡邏 → 撤掉先前的停止要求。刻意放在這裡而不是
+    # _start_patrol_current:那個函式解符文接回巡邏時也會走,清在那裡等於讓自動流程
+    # 有機會抹掉人按下的停止。
+    navigator.clear_user_stop()
     ok, msg = _start_patrol_current()
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
@@ -736,7 +741,7 @@ def nav_stop(token: str = Query("")):
     注意不能把清除放進 navigator.stop():解符文流程一開始就會呼叫它,清掉的話
     解完接回巡邏會變成無限巡邏,設定的時限等於失效。"""
     _check_owner(token)
-    navigator.stop()
+    navigator.stop(user=True)      # user=True:解符文流程看到這支旗子才會收手
     navigator.set_patrol_deadline(None)
     return JSONResponse(navigator.status())
 
