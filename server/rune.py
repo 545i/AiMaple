@@ -1333,22 +1333,25 @@ def _solve_flow(purple, resume=True):
             except Exception:
                 pass
         try:
+            # 【這裡絕對不能 return】還在 finally 區塊內,return 會跳過底下的
+            # _busy.release() —— 那把鎖不放,之後每一次 trigger_solve 都會以為
+            # 「已經有流程在解」而直接回 True,main 的 hook 因此連 pause_purple
+            # 都不做:符文不會被解、巡邏也不會暫停,整個卡死。所以用 if/elif 分流。
             if _user_stopping():
                 # 【使用者的停止最大】底下不管成功或放棄都會接回巡邏,那會把人按下的
-                # 停止推翻 —— 實測就是「符文出現時按停止沒有用」的成因。這裡直接收手,
+                # 停止推翻 —— 那正是「符文出現時按停止沒有用」的成因。這裡什麼都不做,
                 # 連 pause_purple 都不必(巡邏本來就已經停了)。
                 print("[rune] 使用者要求停止 → 不接回巡邏")
-                return
-            if solved:
+            elif solved:
                 # 解掉了 → 放行標記作廢(同位置若再刷出符文要正常接手/暫停)
                 _giveup.update({"pos": None, "at": 0.0})
                 try:
                     _navigator.clear_purple_ignore()
                 except Exception:
                     pass
-            if solved and resume and _resume_fn:
-                _resume_fn()                    # 解掉了 → 接回巡邏
-            elif not solved:
+                if resume and _resume_fn:
+                    _resume_fn()                # 解掉了 → 接回巡邏
+            else:
                 # 【放棄後不再把人鎖在原地】記下位置 + 通知 navigator 放行,然後照常接回
                 # 巡邏。原本是 pause_purple() 停在那裡等人工,但紫標不會自己消失 ——
                 # 人重開巡邏,兜底看到同一個紫標又立刻停,實測就這樣整晚停擺。
