@@ -62,3 +62,25 @@ def test_negative_crops_do_not_overlap_capsule():
         assert disjoint, f"{fname} 的負樣本 {(x0, y0, x1, y1)} 疊到膠囊 {bx}"
         assert crop.shape[1] == (bx[2] - bx[0]) // 4, "負樣本寬度要等於一格箭頭"
     assert n > 300, f"負樣本只生出 {n} 個,不足以平衡五個類別"
+
+
+def test_rot_label_matches_project_direction_reader():
+    """rot90 的標籤變換必須與專案既有判向器一致。
+
+    不用人腦推導旋轉方向 —— 拿 rune_cv 自己的模板與判向器當裁判。
+    這是整個增強策略的地基:錯了就等於把 1408 支箭頭全部錯標成四倍。
+    """
+    import numpy as np
+    import rune_cv
+    assert rune_cv._TPL is not None, "判向模板沒載到,無法驗證"
+    up_mask = (rune_cv._TPL > 0.5).astype(np.uint8) * 255
+    for k in range(4):
+        rotated = np.ascontiguousarray(np.rot90(up_mask, k))
+        assert rune_cv._direction_tpl(rotated) == b.rot_label("up", k), \
+            f"k={k} 的標籤變換與判向器不一致"
+
+
+def test_rot_label_leaves_none_alone():
+    """負樣本轉了還是負樣本。"""
+    for k in range(4):
+        assert b.rot_label("none", k) == "none"

@@ -18,6 +18,22 @@ sys.path.insert(0, os.path.join(
 
 import rune_cv  # noqa: E402
 
+# 與 rune_nn.CLASSES 同序。前四項順時針,所以 np.rot90(逆時針 k 次)等於索引往回退 k。
+DIRS = ["up", "right", "down", "left"]
+
+
+def rot_label(label, k):
+    """影像經 np.rot90(img, k) 之後的新標籤。
+
+    np.rot90 是【逆時針】,而 DIRS 是順時針排列,所以索引往回退 k。
+    這個方向不要用推的 —— 見 test_rot_label_matches_project_direction_reader,
+    那個測試拿 rune_cv 自己的判向器當裁判驗過。
+    """
+    if label == "none":
+        return "none"
+    return DIRS[(DIRS.index(label) - k) % 4]
+
+
 DS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "rune_dataset")
 
