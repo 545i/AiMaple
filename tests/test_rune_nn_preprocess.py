@@ -6,7 +6,7 @@ import rune_nn
 def test_shape_dtype_and_range():
     crop = np.full((81, 82, 3), 128, np.uint8)
     x = rune_nn.preprocess(crop)
-    assert x.shape == (3, 32, 32)
+    assert x.shape == (3, rune_nn.IMG, rune_nn.IMG)
     assert x.dtype == np.float32
     assert 0.0 <= x.min() and x.max() <= 1.0
 
@@ -27,7 +27,7 @@ def test_channel_order_is_rgb():
 def test_batch_shape():
     crops = [np.full((81, 82, 3), 100, np.uint8) for _ in range(4)]
     x = rune_nn.preprocess_batch(crops)
-    assert x.shape == (4, 3, 32, 32)
+    assert x.shape == (4, 3, rune_nn.IMG, rune_nn.IMG)
     assert x.dtype == np.float32
 
 

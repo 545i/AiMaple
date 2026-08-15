@@ -86,7 +86,7 @@ def augment(crop_bgr, rng):
 
 # ---------- 模型 ----------
 class ArrowNet(nn.Module):
-    """32x32x3 → 5 類。約 25K 參數,ONNX 檔約 100KB。"""
+    """64x64x3 → 5 類。"""
 
     def __init__(self, n_cls=len(rune_nn.CLASSES)):
         super().__init__()
@@ -96,12 +96,12 @@ class ArrowNet(nn.Module):
                                  nn.BatchNorm2d(o), nn.ReLU(inplace=True),
                                  nn.MaxPool2d(2))
 
-        self.feat = nn.Sequential(blk(3, 16), blk(16, 32), blk(32, 64))
-        self.head = nn.Linear(64, n_cls)
+        self.feat = nn.Sequential(blk(3, 32), blk(32, 64), blk(64, 128))
+        self.head = nn.Linear(128, n_cls)
 
     def forward(self, x):
-        x = self.feat(x)                 # (N,64,4,4)
-        x = x.mean(dim=(2, 3))           # GAP → (N,64)
+        x = self.feat(x)                 # (N,128,8,8)
+        x = x.mean(dim=(2, 3))           # GAP → (N,128)
         return self.head(x)
 
 

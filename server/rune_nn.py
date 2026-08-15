@@ -16,7 +16,7 @@ import paths
 
 # 前四項與 rune_cv._TPL_DIRS 同序(順時針)。rot90 增強依賴這個順序,不要重排。
 CLASSES = ["up", "right", "down", "left", "none"]
-IMG = 32
+IMG = 64
 
 
 def preprocess(crop_bgr):
