@@ -1,5 +1,6 @@
 # Python
 venv/
+venv-train/
 __pycache__/
 *.pyc
 *.pyo
