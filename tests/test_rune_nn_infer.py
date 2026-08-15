@@ -10,15 +10,38 @@ pytestmark = pytest.mark.skipif(not rune_nn.available(),
 
 
 def test_onnx_matches_torch_reference():
-    """ONNX 的輸出必須與訓練當下的 torch 輸出一致(容差 1e-4)。
+    """兩條各自獨立的防線,合起來才敢說「上線的跟訓練的是同一個模型」:
 
-    這抓的是匯出/前處理不一致的經典 bug:模型照樣跑、照樣回答案,只是答案系統性
-    地偏掉,沒有任何錯誤訊息。有這個測試才敢說「上線的跟訓練的是同一個模型」。
+    1) 前處理漂移:rune_nn.preprocess_batch 對【訓練當下存下的原始 crop】重新算出
+       的 x,必須與訓練當下存的 x 一致(容差 1e-6)。抓的是 train/serve 前處理分岔
+       這種經典 bug —— 模型照樣跑、照樣回答案,只是答案系統性地偏掉,沒有任何錯誤
+       訊息。
+    2) 匯出漂移:ONNX session 對(第 1 條重新算出的)x 的輸出,必須與訓練當下的
+       torch 輸出一致(容差 1e-4)。抓的是匯出過程本身(算子精度、權重沒對齊等)
+       出的問題。
+
+    這兩條缺一不可:早先版本只做了第 2 條、卻直接餵 npz 裡存好的 x(從未呼叫
+    preprocess),docstring 卻宣稱涵蓋前處理 —— 把 preprocess 的 /255.0 拿掉,那個
+    版本照樣 PASSED。假承諾比沒有測試更糟,因為它讓人以為那條防線存在。
     """
     ref = np.load(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                "rune_arrow_ref.npz"))
-    got = rune_nn._session().run(["logits"], {"x": ref["x"]})[0]
-    assert np.abs(got - ref["logits"]).max() < 1e-4
+    n = ref["x"].shape[0]
+    crops = [ref[f"crop_{i}"] for i in range(n)]
+
+    x = rune_nn.preprocess_batch(crops)
+    diff_pre = float(np.abs(x - ref["x"]).max())
+    assert diff_pre < 1e-6, (
+        f"前處理漂移:rune_nn.preprocess_batch 對訓練當下存下的原始 crop 重新算出的 "
+        f"x,與訓練當下存的 x 差了 {diff_pre} —— 代表現在的 preprocess 跟訓練時用的"
+        f"不是同一份邏輯")
+
+    got = rune_nn._session().run(["logits"], {"x": x})[0]
+    diff_export = float(np.abs(got - ref["logits"]).max())
+    assert diff_export < 1e-4, (
+        f"匯出漂移:ONNX 對(重新算出的)x 的輸出,與訓練當下的 torch 輸出差了 "
+        f"{diff_export} —— 代表 ONNX 匯出過程本身出了問題,不是前處理造成的(上面那條"
+        f"已經先過了)")
 
 
 def test_predict_returns_per_slot_class_and_prob():

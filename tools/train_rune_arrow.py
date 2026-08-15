@@ -171,11 +171,18 @@ def main():
 
     # 匯出後把驗證集的 torch 輸出存下來,Task 6 要拿它比對 ONNX 是否一致。
     # 放 tests/ 不放 server/ —— 它是測試夾具,不是執行期資源,不該混進打包目錄。
+    #
+    # 同時存一份【未經前處理的原始 crop】(BGR uint8,尺寸可能逐張差 1px,所以不能
+    # 疊成單一 ndarray,用 crop_0..crop_63 個別鍵存)。少了這個,一致性測試只能拿
+    # 已經前處理好的 x 去餵 ONNX,永遠測不到 preprocess 本身是否跟訓練時是同一份 ——
+    # 那正是「防前處理漂移」這句 docstring 曾經是假承諾的原因。
     with torch.no_grad():
         ref = model(xv[:64]).numpy()
+    crop_kv = {f"crop_{i}": val_items[i]["crop"] for i in range(64)}
     np.savez(os.path.join(ROOT, "tests", "rune_arrow_ref.npz"),
-             x=xv[:64].numpy(), logits=ref)
-    print("已存 tests/rune_arrow_ref.npz(供 ONNX 一致性測試)")
+             x=xv[:64].numpy(), logits=ref, **crop_kv)
+    print("已存 tests/rune_arrow_ref.npz(供 ONNX 一致性測試;"
+          "crop_0..crop_63 是對應的原始 BGR crop)")
 
 
 if __name__ == "__main__":
