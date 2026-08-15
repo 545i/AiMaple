@@ -7,8 +7,12 @@
 【前處理只能有一份】訓練腳本 import 這裡的 preprocess。train/serve 各寫一份是這類
 專案最經典的 bug:不會報錯,只會讓分數莫名其妙掉一截。
 """
+import os
+
 import cv2
 import numpy as np
+
+import paths
 
 # 前四項與 rune_cv._TPL_DIRS 同序(順時針)。rot90 增強依賴這個順序,不要重排。
 CLASSES = ["up", "right", "down", "left", "none"]
@@ -28,3 +32,51 @@ def preprocess_batch(crops):
     if not crops:
         return np.zeros((0, 3, IMG, IMG), np.float32)
     return np.stack([preprocess(c) for c in crops]).astype(np.float32)
+
+
+MODEL_PATH = paths.srv_res("rune_arrow.onnx")
+# 守門門檻。Task 8 用驗證集校準後回來改這個數字。
+# 【方向要記住】誤判的代價不是漏一次,而是拿雜訊當箭頭去按方向鍵、白燒一次符文
+# 冷卻,所以門檻一律往「寧可退線給 2 線」那一側調。
+MIN_PROB = 0.90
+
+_sess = None
+_sess_tried = False
+
+
+def _session():
+    """惰性建立 ONNX session。載不起來就永久回 None(不重試,免得每幀都在試)。"""
+    global _sess, _sess_tried
+    if _sess_tried:
+        return _sess
+    _sess_tried = True
+    try:
+        import onnxruntime as ort
+        if os.path.exists(MODEL_PATH):
+            _sess = ort.InferenceSession(
+                MODEL_PATH, providers=["CPUExecutionProvider"])
+            print(f"[rune_nn] 已載入 {os.path.basename(MODEL_PATH)}")
+        else:
+            print(f"[rune_nn] 找不到 {MODEL_PATH},退回色度分割")
+    except Exception as e:
+        print(f"[rune_nn] 載入失敗({e!r}),退回色度分割")
+        _sess = None
+    return _sess
+
+
+def available():
+    return _session() is not None
+
+
+def predict(crops):
+    """每格 BGR 小圖 → (類別 list, 最高機率 list)。模型不可用回 ([], [])。"""
+    sess = _session()
+    if sess is None or not crops:
+        return [], []
+    x = preprocess_batch(crops)
+    logits = sess.run(["logits"], {"x": x})[0]
+    e = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs = e / e.sum(axis=1, keepdims=True)
+    idx = probs.argmax(axis=1)
+    return ([CLASSES[i] for i in idx],
+            [float(probs[r, i]) for r, i in enumerate(idx)])
