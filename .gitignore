@@ -61,6 +61,9 @@ rune_dataset/*
 !rune_dataset/index.jsonl
 # 膠囊定位真值(tools/gen_box_truth.py 產生,純文字 34KB):改進定位時的評估基準
 !rune_dataset/box_truth.json
+# 現行色度分割閘門的切分快取(tools/bench_arrow_baseline.py 產生):驗收條件的分母,
+# 固化後不得重算,必須進版控才能複驗
+!rune_dataset/gate_split.json
 
 # SDD 工作區(ledger/briefs/reports),不進版控
 .superpowers/
