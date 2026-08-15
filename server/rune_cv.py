@@ -461,12 +461,47 @@ def read_dirs(frame_bgr, strict=True):
 
     回 (dirs, err)。dirs 是長度 4 的 list,讀不到的位置是 None;判定不是膠囊時回 []。
 
+    【判向走 CNN,分割已經退休】實測:膠囊定位零誤差、模板判向在乾淨輸入上 97.5%,
+    但整體只有 41% —— 差距全在 _chroma_map/_seg 被怪物與技能特效污染。所以模型取代
+    的是分割那一段,不是判向。模型不在時整條退回舊路徑(見 _read_dirs_chroma)。
+
     strict=True 會做「這真的是膠囊嗎」的驗證。**不要為了提高偵測率把它關掉**:
     誤判的代價不是漏一次,而是拿背景雜訊當箭頭去按方向鍵,白燒一次符文冷卻。
-    預覽用 strict=False 才看得到「抓到什麼」以便診斷。"""
+    預覽用 strict=False 才看得到「抓到什麼」以便診斷。
+    """
+    import rune_nn
     box = find_capsule(frame_bgr)
     if box is None:
         return [], "找不到謎題膠囊(還沒開謎題?)"
+    if not rune_nn.available():
+        return _read_dirs_chroma(frame_bgr, box, strict)
+
+    crops = []
+    for x0, y0, x1, y1 in slots(box, 4):
+        c = frame_bgr[y0:y1, x0:x1]
+        if c.size == 0:
+            return [], "膠囊區域為空"
+        crops.append(c)
+    dirs, probs = rune_nn.predict(crops)
+    if len(dirs) != 4:
+        return _read_dirs_chroma(frame_bgr, box, strict)
+    if not strict:
+        return [d if d != "none" else None for d in dirs], ""
+    # 守門取代舊的四格面積閘門:任一格是 none、或最低信心度不足,就整組退線。
+    if "none" in dirs:
+        return [], f"不像謎題膠囊(第 {dirs.index('none') + 1} 格判為非箭頭)"
+    lo = min(probs)
+    if lo < rune_nn.MIN_PROB:
+        return [], (f"信心不足(最低 {lo:.2f} < {rune_nn.MIN_PROB:.2f}),"
+                    f"暫定 {dirs}")
+    return dirs, ""
+
+
+def _read_dirs_chroma(frame_bgr, box, strict):
+    """舊路徑:色度分割 + 模板判向。模型不在時的完整退路。
+
+    【不要刪掉】沒帶模型的打包版、以及模型載入失敗時,整條流程都靠它。
+    """
     cap = frame_bgr[box[1]:box[3], box[0]:box[2]]
     if cap.size == 0:
         return [], "膠囊區域為空"
