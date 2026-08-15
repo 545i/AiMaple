@@ -61,3 +61,6 @@ rune_dataset/*
 !rune_dataset/index.jsonl
 # 膠囊定位真值(tools/gen_box_truth.py 產生,純文字 34KB):改進定位時的評估基準
 !rune_dataset/box_truth.json
+
+# SDD 工作區(ledger/briefs/reports),不進版控
+.superpowers/
