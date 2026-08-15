@@ -41,6 +41,9 @@ datas = [
     (os.path.join(ROOT, "firmware", "arduino_kbm"), os.path.join("firmware", "arduino_kbm")),
     (os.path.join(SRV, "rune_arrow_tpl.png"), "."),
     (os.path.join(SRV, "rune_capsule_tpl.png"), "."),
+    # rune_arrow.onnx【刻意不打包】:CNN 判向驗收未過(41% vs 12.8%,見 DEV_LOG.md
+    # 符文章節),`server/rune_nn.py` 的 ENABLED 預設關閉。打包版就算設
+    # MAPLE_RUNE_NN=1 也會因為找不到模型檔而退回色度分割 —— 這是預期行為,不是漏帶。
 ]
 # km.dll 用 ctypes 載入,PyInstaller 掃不到 → 必須手動列為 binaries
 binaries = []
@@ -65,6 +68,11 @@ excludes = [
     # 打包用不到卻很肥的東西。torch 是先前試本地 VLM 留下的,已移除但保險起見排除。
     "torch", "transformers", "matplotlib", "tkinter", "PIL.ImageTk",
     "pytest", "IPython", "notebook",
+    # onnxruntime(45MB):rune_nn.py 的 `import onnxruntime` 在函式內、try/except
+    # 裡,PyInstaller 的 bytecode 掃描仍會抓到並整包塞進 exe。但 CNN 判向驗收未過、
+    # 預設關閉(見上面 rune_arrow.onnx 那則註解),排除掉只會讓 _session() 走
+    # except 分支回 None,等同原本的「模型不在」退路,行為不變、少解壓 45MB。
+    "onnxruntime",
 ]
 
 a = Analysis(

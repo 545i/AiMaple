@@ -2,9 +2,14 @@
 
 驗收條件第 2 條(原本就過閘門那組 >= 97%)需要分組數字,所以這支腳本讀**已固化**
 的 rune_dataset/gate_split.json(bench_arrow_baseline.split_by_current_gate,只讀
-檔不重算 —— 那個切分是「現行色度分割閘門」的切分,read_dirs 已經改走 CNN,重算會
-讓分母在腳下悄悄變掉),對每張正樣本跑**當前**的 rune_cv.read_dirs(img, strict=True),
-分「原本就過閘門」「原本被擋下」「整體」三組報單支正確率。
+檔不重算 —— 那個切分是「現行色度分割閘門」的切分,重算會讓分母在腳下悄悄變掉),
+對每張正樣本跑**當前**的 rune_cv.read_dirs(img, strict=True),分「原本就過閘門」
+「原本被擋下」「整體」三組報單支正確率。
+
+【量的是哪條路徑】read_dirs 內部走哪條路徑取決於 rune_nn.available()(即
+MAPLE_RUNE_NN 環境變數):CNN 驗收沒過、預設關閉,預設環境下這支腳本量到的其實是
+**色度分割**,不是 CNN。跑之前會先印出目前量的是哪一條,避免把色度分割的分數
+誤讀成 CNN 的分數。
 
 【被守門擋下的樣本怎麼算】read_dirs 回 [] 時,那張圖的 4 支箭頭全部算錯 —— 不是
 跳過不計。這樣算出來的數字才誠實,不會因為「模型自己不敢答的都不算」而虛胖。
@@ -23,6 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "server"))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 import rune_cv  # noqa: E402
+import rune_nn  # noqa: E402
 import rune_dataset_build as b  # noqa: E402
 import bench_arrow_baseline as baseline  # noqa: E402
 
@@ -79,6 +85,12 @@ def eval_negatives():
 
 
 def main():
+    if rune_nn.available():
+        print("[eval_arrow] MAPLE_RUNE_NN=1:目前量的是 CNN 判向路徑。")
+    else:
+        print("[eval_arrow] rune_nn 預設關閉(驗收未過)——目前量的是色度分割路徑,"
+              "不是 CNN。要評 CNN 請設環境變數 MAPLE_RUNE_NN=1 再跑。")
+
     passed, gated = baseline.split_by_current_gate()
     recs_by_file = {r["file"]: r for r in b.records(b.DS_DIR)
                     if not r.get("negative")}

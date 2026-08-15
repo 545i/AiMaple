@@ -18,6 +18,9 @@ import rune_nn  # noqa: E402
 
 
 def main():
+    if not rune_nn.available():
+        sys.exit("rune_nn 預設關閉(驗收未過)。要校準門檻請設 MAPLE_RUNE_NN=1 再跑。")
+
     per_sample = {}
     for fname, crop, truth, k in b.iter_arrow_crops():
         per_sample.setdefault(fname, []).append((crop, truth, k))
