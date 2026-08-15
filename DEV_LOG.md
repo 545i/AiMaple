@@ -162,8 +162,17 @@
 
 三次的 `located` 都是 false(CV 定位失敗)，全靠**退路框**完成 —— 再次確認定位器只是最佳化。
 - **接線**：`main._on_minimap_event` 紫標 → `rune.trigger_solve(data)`；沒接手(關閉/沒座標/
-  正在解)回 False → 沿用 `navigator.pause_purple()`。端點 `/rune/{status,enable,warmup,detect,test}`，
+  正在解)回 False → 沿用 `navigator.pause_purple()`。端點 `/rune/{status,enable,line,warmup,detect,test}`，
   前端巡邏 tab 有開關 + 🔎測試辨識 + 🎯站符文上測試。
+
+**兩條辨識線路可各自獨立開關**(`rune.set_lines` / `POST /rune/line?cv=&claude=`，前端兩個勾選框)：
+- 1 線 = 純 CV(`rune_cv`，本機數毫秒)、2 線 = claude CLI(雲端 6~11s)。
+- 兩條都開 = 原本的 auto：1 線先跑、要兩幀一致才採用，讀不到才退 2 線。只開一條就只走那條、不銜接。
+- **兩條都關會被擋下**：那不等於關閉功能，而是留著「自動解除：開」的假象 —— 紫標照樣被接手、
+  角色照樣走過去開謎題，然後辨識必定回空、白燒一次符文冷卻。要全關請關 `/rune/enable`。
+- 2 線關掉時 `worker_warmup()` 直接略過(不為用不到的後端付 5 秒冷啟)，並停掉常駐子行程。
+- `MAPLE_RUNE_LINE`(auto|cv|claude)退化成**開機預設**，執行中以 `set_lines` 為準；不持久化，
+  跟 `/rune/enable` 一致。
 
 **失敗要能自己重試 → `_solve_flow` 外層重試迴圈**：拆成 `_attempt()`(單次完整嘗試,回 bool)
 + `_solve_flow()`(外層重試)。**這層是必要的**，因為兩個機制會讓「一次失敗 = 永久卡死」：

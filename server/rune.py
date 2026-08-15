@@ -145,8 +145,16 @@ ATTEMPT_GAP = 8.0                      # 整體重試之間的間隔
 # 1 線 純 CV(rune_cv):定位膠囊金色描邊 → 四等分 → 逐支判向。完整幀約 6ms。
 #        20 張真實符文圖實測 全對 19/20、單支 79/80。離線、無變異、無額度。
 # 2 線 claude CLI:1 線讀不到時才走(沒開謎題、膠囊被擋、畫面尺寸不同…)。
-# MAPLE_RUNE_LINE = auto(預設,1→2) | cv(只走 1 線) | claude(只走 2 線)
+#
+# 兩條線【各自獨立開關】,執行中可改(set_lines)。兩條都開 = 原本的 auto:1 線先跑、
+# 讀不到才退 2 線;只開一條就只走那條,不做銜接。
+# MAPLE_RUNE_LINE 只當【開機預設】:auto(兩條都開) | cv(只 1 線) | claude(只 2 線)。
 LINE = os.environ.get("MAPLE_RUNE_LINE", "auto")
+if LINE not in ("auto", "cv", "claude"):     # 打錯字不能變成「兩條都關」= 永遠解不掉
+    print(f"[rune] MAPLE_RUNE_LINE={LINE!r} 無效,改用 auto")
+    LINE = "auto"
+_line_cv = LINE in ("auto", "cv")
+_line_claude = LINE in ("auto", "claude")
 
 # 1 線可以重試:它只花數毫秒,而【每次重試都是新的一幀】—— 箭頭顏色在循環動畫、
 # 怪物與技能特效在移動,上一幀被擋住的箭頭下一幀可能就乾淨了。重試 5 次的總成本
@@ -425,10 +433,39 @@ def set_enabled(on):
         threading.Thread(target=worker_warmup, daemon=True).start()   # 先真預熱
 
 
+def set_lines(cv=None, claude=None):
+    """獨立開關兩條辨識線路。回 (ok, msg)。
+
+    【為什麼擋下「兩條都關」】那不等於關閉符文功能,而是留著「自動解除:開」的假象:
+    紫標照樣被接手、角色照樣走過去開謎題,然後辨識必定回空、解不掉、白燒一次冷卻。
+    要全關請關掉 set_enabled(False),紫標才會回到「暫停巡邏 + 通知」的原本行為。"""
+    global _line_cv, _line_claude
+    new_cv = _line_cv if cv is None else bool(cv)
+    new_claude = _line_claude if claude is None else bool(claude)
+    if not new_cv and not new_claude:
+        return False, "至少要留一條辨識線路;要全關請關閉「符文自動解除」"
+    was_claude = _line_claude
+    _line_cv, _line_claude = new_cv, new_claude
+    print(f"[rune] 辨識線路:1 線 CV {'開' if _line_cv else '關'}、"
+          f"2 線 claude {'開' if _line_claude else '關'}")
+    if _enabled and _line_claude and not was_claude:
+        # 剛把 2 線接回來:它有 5~6 秒冷啟,不先預熱的話第一顆符文就會吃掉整個謎題窗
+        threading.Thread(target=worker_warmup, daemon=True).start()
+    if not _line_claude:
+        _w().stop()                # 用不到就別佔著子行程
+    return True, "已更新"
+
+
+def _line_str():
+    """把兩個布林壓回舊的 auto/cv/claude 字串(相容既有前端與紀錄)。"""
+    return "auto" if _line_cv and _line_claude else ("cv" if _line_cv else "claude")
+
+
 def status():
     return {"enabled": _enabled, "busy": _busy.locked(),
             "worker": "ready" if _w().alive() else "stopped",
-            "warm": _w().warm(), "line": LINE,
+            "warm": _w().warm(), "line": _line_str(),
+            "lines": {"cv": _line_cv, "claude": _line_claude},
             "model": MODEL, "radius": [RADIUS_MIN, RADIUS_MAX],
             "approach_dx": APPROACH_DX, "last": dict(_last),
             "stats": _stats_summary()}
@@ -486,9 +523,9 @@ def worker_warmup(fresh=True):
     fresh=True 會先關掉舊 session:同一 session 塞過遊戲截圖後會越問越慢,所以每次要解
     符文之前都開新的。這 ~5s 成本發生在「走去符文」的路上,不佔謎題窗。回 (ok,msg)。
 
-    只走 1 線時直接略過 —— 1 線是純 CV,沒有冷啟成本,沒必要為用不到的後端付 5 秒。"""
-    if LINE == "cv":
-        return True, "只走 1 線(CV),無需預熱"
+    2 線關掉時直接略過 —— 1 線是純 CV,沒有冷啟成本,沒必要為用不到的後端付 5 秒。"""
+    if not _line_claude:
+        return True, "2 線(claude)未開啟,無需預熱"
     t0 = time.perf_counter()
     if fresh:
         _w().stop()
@@ -762,7 +799,8 @@ def _detect():
 
     line, cv_err = "", ""
     dirs = []
-    if LINE in ("auto", "cv"):
+    _last["cv_tries"] = 0          # 1 線關掉時要歸零,否則狀態頁一直掛著上一輪的次數
+    if _line_cv:
         dirs, cv_err, tried, hit_frame = _cv_read(frame)
         _last["cv_tries"] = tried
         if dirs:
@@ -770,13 +808,14 @@ def _detect():
             _detect_frame = hit_frame   # 存進資料集的必須是產生這個答案的那一幀
         else:
             _stat("cv_miss")
-            if LINE == "cv":
+            if not _line_claude:        # 沒有第二條線可退,就到此為止
                 ms = int((time.perf_counter() - t0) * 1000)
-                _last.update({"ts": time.time(), "dirs": [], "err": cv_err,
+                err = f"{cv_err or '1 線讀不到'}(2 線未開啟,無法退線)"
+                _last.update({"ts": time.time(), "dirs": [], "err": err,
                               "ms": ms, "line": "cv"})
-                return [], cv_err or "1 線讀不到", ms
+                return [], err, ms
 
-    if not dirs and LINE in ("auto", "claude"):
+    if not dirs and _line_claude:
         path, werr = _write_crop(frame)
         if werr:
             return [], werr, int((time.perf_counter() - t0) * 1000)

@@ -384,6 +384,15 @@
      <input type="checkbox" id="runeEnable"> 🔮 符文自動解除
      <span style="font-size:11px;color:#8a8f99">（僅巡邏中生效）</span>
    </label>
+   <!-- 辨識線路：兩條都勾＝1 線讀不到才退給 2 線；只勾一條就只走那條。至少要留一條 -->
+   <div style="display:flex;gap:12px;margin:6px 0 0 20px;font-size:12px;color:#cfd3db">
+     <label style="display:flex;align-items:center;gap:5px">
+       <input type="checkbox" id="runeLineCv"> 1 線 CV<span style="color:#8a8f99">（本機・數毫秒）</span>
+     </label>
+     <label style="display:flex;align-items:center;gap:5px">
+       <input type="checkbox" id="runeLineClaude"> 2 線 claude<span style="color:#8a8f99">（雲端・6~11 秒）</span>
+     </label>
+   </div>
    <div style="display:flex;gap:6px;margin-top:6px">
      <div class="mbtn" id="runeDetectBtn" style="flex:1">🔎 測試辨識</div>
      <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
@@ -1572,8 +1581,28 @@ async function refreshRuneStatus(){
   try{
     const s = await (await fetch(`/rune/status?token=${encodeURIComponent(token)}`)).json();
     $("#runeEnable").checked = !!s.enabled;
+    applyRuneLines(s);
   }catch(_){}
 }
+function applyRuneLines(s){
+  const ln = s.lines || {};
+  $("#runeLineCv").checked     = ln.cv !== false;
+  $("#runeLineClaude").checked = ln.claude !== false;
+}
+// 後端可能拒絕（兩條都關），所以要拿回傳的實際狀態覆蓋回去，不能相信勾選框
+async function setRuneLine(which, on){
+  try{
+    const j = await (await fetch(
+      `/rune/line?${which}=${on?1:0}&token=${encodeURIComponent(token)}`,
+      { method:"POST" })).json();
+    applyRuneLines(j);
+    if(j.ok === false){ toast(j.msg || "設定失敗", false); return; }
+    const name = which === "cv" ? "1 線 CV" : "2 線 claude";
+    toast(`${name}：${on ? "開" : "關"}`);
+  }catch(_){ refreshRuneStatus(); toast("設定失敗（連線？）", false); }
+}
+$("#runeLineCv").onchange     = (e)=> setRuneLine("cv", e.target.checked);
+$("#runeLineClaude").onchange = (e)=> setRuneLine("claude", e.target.checked);
 $("#runeEnable").onchange = async (e)=>{
   const on = e.target.checked ? 1 : 0;
   try{

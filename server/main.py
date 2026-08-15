@@ -761,6 +761,15 @@ def rune_enable(token: str = Query(""), on: int = Query(...)):
     return JSONResponse(rune.status())
 
 
+@app.post("/rune/line")
+def rune_line(token: str = Query(""), cv: int = Query(None), claude: int = Query(None)):
+    """獨立開關兩條辨識線路(1 線 CV / 2 線 claude)。兩條都開 = 1 線先跑、讀不到才退 2 線。
+    只帶其中一個參數就只改那條。兩條都關會被擋下(回 ok:false)。"""
+    _check_owner(token)
+    ok, msg = rune.set_lines(cv=cv, claude=claude)
+    return JSONResponse({"ok": ok, "msg": msg, **rune.status()})
+
+
 @app.post("/rune/warmup")
 def rune_warmup(token: str = Query("")):
     """預熱 claude worker(第一次 ~6s,之後每次辨識降到 2.5~4.8s)。"""
