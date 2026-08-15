@@ -35,10 +35,13 @@ def preprocess_batch(crops):
 
 
 MODEL_PATH = paths.srv_res("rune_arrow.onnx")
-# 守門門檻。Task 8 用驗證集校準後回來改這個數字。
+# 守門門檻。tools/calib_arrow_threshold.py 在全部 352 筆正樣本(含訓練集,偏樂觀)
+# 上以 0.01 解析度掃過:錯判在 min-prob=0.9733 處消失,0.98 起「其中錯的」= 0
+# (82/352 = 23.3% 接受)。往上取一階留一階餘裕給沒見過的畫面 → 0.99(49/352 =
+# 13.9% 接受,錯的仍是 0)。
 # 【方向要記住】誤判的代價不是漏一次,而是拿雜訊當箭頭去按方向鍵、白燒一次符文
 # 冷卻,所以門檻一律往「寧可退線給 2 線」那一側調。
-MIN_PROB = 0.90
+MIN_PROB = 0.99
 
 _sess = None
 _sess_tried = False
