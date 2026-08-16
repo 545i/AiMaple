@@ -159,3 +159,69 @@ def render_jpeg(frame_bgr, gt_boxes, fn, idx, total):
     if not ok:
         raise RuntimeError("JPEG 編碼失敗")
     return buf.tobytes()
+
+
+def _no_gt_summary(summary):
+    """`viz_rune_detect.draw()` 的摘要句尾『判向對 X/4』是拿 gt_boxes 逐支比對
+    算出來的。即時預覽沒有真值可比(呼叫端傳 gt_boxes=None),draw() 內部把每支
+    的真值都當 None,結果『判向對』恆為 0/4——不是偵測真的全錯,是無真值可比這
+    件事的副作用,原樣顯示會誤導人。這裡只是砍掉句尾那一段,不碰 draw() 本身。"""
+    return summary.split(",判向對")[0]
+
+
+def _encode_jpeg(img):
+    ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    if not ok:
+        raise RuntimeError("JPEG 編碼失敗")
+    return buf.tobytes()
+
+
+def render_live_jpeg(scale=1):
+    """即時偵測預覽:抓【當前遊戲畫面】一幀,跑一次偵測,畫出所有候選框+信心
+    分數(灰)、幾何選擇挑中的 4 支(即時預覽沒有真值可比對錯,固定一色)、每支
+    判到的方向,回 JPEG bytes。取代舊的 1 線膠囊預覽(`rune.capsule_preview_jpeg`)
+    ——1 線現在只是 RT-DETR 不可用時的退路,不再是主路徑,除錯應該看主路徑在
+    做什麼。
+
+    只抓一幀就回,不做多幀輪詢——這是給人看的即時預覽,不能每次卡好幾秒。
+
+    兩種「沒有正常結果」的狀況都不回 None/丟例外,一律回一張帶說明文字的圖:
+      - 拿不到遊戲畫面(遊戲沒開/被切到背景):回說明圖,不是 503。
+        照抄 `rune_cv.preview()` 對「找不到膠囊」的處理慣例(理由見其
+        docstring)——前端要能分辨「遊戲沒開」跟「偵測壞了」,破圖或 503 都
+        做不到這件事。
+      - RT-DETR 不可用(模型沒載入):不直接失敗,改用既有的 `rune_cv.preview()`
+        內容(1 線退路實際在做的事),圖上另外標明現在看到的是哪一條路徑。
+    """
+    import minimap
+    t0 = time.time()
+    frame = minimap._grab_window()
+    if frame is None:
+        vis = np.zeros((140, 640, 3), np.uint8)
+        cv2.putText(vis, "拿不到 MapleStory 視窗影格", (14, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (60, 60, 240), 2, cv2.LINE_AA)
+        cv2.putText(vis, "(遊戲開著嗎？)", (14, 92),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (210, 210, 210), 1, cv2.LINE_AA)
+        return _encode_jpeg(vis)
+
+    if not rune_detr.available():
+        vis = rune_cv.preview(frame, scale=max(1, scale))
+        elapsed_ms = round((time.time() - t0) * 1000, 1)
+        bar = np.zeros((26, vis.shape[1], 3), np.uint8)
+        cv2.putText(bar,
+                    f"模型未載入，顯示的是色度分割路徑（find_capsule 退路，非 RT-DETR）   {elapsed_ms}ms",
+                    (8, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.46, (60, 200, 240), 1, cv2.LINE_AA)
+        out = np.vstack([bar, vis])
+        return _encode_jpeg(out)
+
+    vis, summary = viz_rune_detect.draw(frame, None, MIN_SCORE)
+    elapsed_ms = round((time.time() - t0) * 1000, 1)
+    s = max(1, min(3, scale))
+    if s != 1:
+        vis = cv2.resize(vis, (int(vis.shape[1] * s), int(vis.shape[0] * s)),
+                          interpolation=cv2.INTER_LINEAR)
+    bar = np.zeros((28, vis.shape[1], 3), np.uint8)
+    cv2.putText(bar, f"{_no_gt_summary(summary)}   {elapsed_ms}ms", (8, 20),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
+    out = np.vstack([bar, vis])
+    return _encode_jpeg(out)

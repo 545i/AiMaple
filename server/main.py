@@ -815,6 +815,21 @@ def rune_capsule(token: str = Query(""), scale: int = Query(3)):
                     headers={"Cache-Control": "no-store"})
 
 
+@app.get("/rune/live")
+def rune_live(token: str = Query(""), scale: int = Query(1)):
+    """即時偵測預覽 JPEG:抓一幀當前遊戲畫面,跑一次現行主路徑(RT-DETR 偵測
+    箭頭 + 幾何選擇),畫出所有候選框+信心分數(灰)、幾何選擇挑中的 4 支
+    (即時預覽沒有真值可比對錯,固定一色)、每支判到的方向,取代已過時的
+    /rune/capsule(那是為除錯已被取代的 1 線 find_capsule 做的,1 線現在只是
+    模型不可用時的退路)。模型未載入時不失敗,改標明並顯示 1 線退路的內容。
+    拿不到遊戲畫面時回帶說明文字的圖,不是 503(前端要能分辨「遊戲沒開」與
+    「偵測壞了」)。只抓一幀就回,不做多幀輪詢。"""
+    _check_owner(token)
+    jpg = rune_viz.render_live_jpeg(scale=max(1, min(6, scale)))
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
 # ===== 符文箭頭偵測測試器(離線資料集,不碰遊戲/角色)=====
 @app.get("/rune/viz")
 def rune_viz_img(token: str = Query(""), src: str = Query("real"), i: int = Query(0)):

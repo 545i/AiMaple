@@ -398,11 +398,14 @@
      <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
    </div>
    <div id="runeMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
-   <div class="mbtn" id="capBtn" style="margin-top:6px">💊 膠囊預覽：關</div>
-   <div id="capBox" style="display:none;margin-top:6px">
-     <img id="capImg" alt="膠囊預覽"
+   <div class="mbtn" id="liveBtn" style="margin-top:6px">🎯 即時偵測預覽：關</div>
+   <div id="liveBox" style="display:none;margin-top:6px">
+     <img id="liveImg" alt="即時偵測預覽"
           style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
-     <div id="capInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div id="liveInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div style="font-size:11px;color:#6a6f79;margin-top:2px">
+       灰框＝候選框＋信心分數　紅框＝幾何選擇挑中的 4 支（沒有真值可比對錯，固定用紅色）　框下方文字＝判到的方向
+     </div>
    </div>
 
    <!-- 偵測測試器：離線資料集(真實/合成)一鍵重跑偵測，看候選框/幾何選擇/判向對錯 -->
@@ -800,7 +803,7 @@ function showView(name){
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
   if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
   if(name !== "dash" && faceTimer){ clearInterval(faceTimer); faceTimer = null; }  // 停方向輪詢
-  if(name !== "dash" && typeof stopCapPreview === "function") stopCapPreview();  // 離開儀表板停膠囊預覽
+  if(name !== "dash" && typeof stopLivePreview === "function") stopLivePreview();  // 離開儀表板停即時偵測預覽
   if(name !== "dash" && typeof stopVizTester === "function") stopVizTester();  // 離開儀表板停偵測測試器
   if(name !== "dash" && typeof watchDetect === "function") watchDetect(0);  // 撤銷背景偵測需求
 }
@@ -1658,34 +1661,36 @@ $("#runeDetectBtn").onclick = ()=>
 $("#runeTestBtn").onclick = ()=>
   runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
 
-// ---- 膠囊預覽：1 線(CV)的定位與判向即時檢查 ----
-// 每秒抓一張 /rune/capsule（伺服器端定位＋標註）。橘框＝膠囊，直線＝四等分，
-// 下方色帶＝每格判到的方向。頂部兩行是【原始影格座標】，用來二次確認到底切在哪。
-// 沒開謎題時伺服器回整幀縮圖＋畫出搜尋範圍框，看得出是沒找到還是膠囊落在範圍外。
-let capOn = false, capTimer = null;
-function capTick(){
-  const im = $("#capImg");
-  im.onerror = ()=>{ $("#capInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
-  im.onload  = ()=>{ $("#capInfo").textContent =
-    "頂部：綠 capsule＝實際切出的框、橘 search＝允許範圍（皆為原始影格座標）　橘框＝膠囊　直線＝四等分　下方＝1 線判到的方向"; };
-  im.src = `/rune/capsule?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+// ---- 即時偵測預覽：現行主路徑（RT-DETR 偵測箭頭＋幾何選擇）的即時檢查 ----
+// 每秒抓一張 /rune/live（伺服器端跑一次偵測＋標註）。灰框＝候選框＋信心分數，
+// 紅框＝幾何選擇挑中的 4 支（即時預覽沒有真值可比對錯，固定一色），框下方文字
+// ＝每支判到的方向。頂部色帶是候選/選出數量與耗時摘要。
+// 取代舊的「膠囊預覽」——那是為除錯已被取代的 1 線 find_capsule 做的，1 線
+// 現在只是模型不可用時的退路，不再是主路徑。
+let liveOn = false, liveTimer = null;
+function liveTick(){
+  const im = $("#liveImg");
+  im.onerror = ()=>{ $("#liveInfo").textContent = "❌ 拿不到即時預覽（伺服器沒回應？）"; };
+  im.onload  = ()=>{ $("#liveInfo").textContent =
+    "頂部色帶＝候選數／選出數／耗時摘要（拿不到遊戲畫面或模型未載入時，圖上會直接寫明原因）"; };
+  im.src = `/rune/live?token=${encodeURIComponent(token)}&_=${Date.now()}`;
 }
-function stopCapPreview(){
-  if(capTimer){ clearInterval(capTimer); capTimer = null; }
-  capOn = false;
-  $("#capBox").style.display = "none";
-  $("#capImg").removeAttribute("src");
-  $("#capBtn").classList.remove("on");
-  $("#capBtn").textContent = "💊 膠囊預覽：關";
+function stopLivePreview(){
+  if(liveTimer){ clearInterval(liveTimer); liveTimer = null; }
+  liveOn = false;
+  $("#liveBox").style.display = "none";
+  $("#liveImg").removeAttribute("src");
+  $("#liveBtn").classList.remove("on");
+  $("#liveBtn").textContent = "🎯 即時偵測預覽：關";
 }
-$("#capBtn").onclick = ()=>{
-  if(capOn){ stopCapPreview(); return; }
-  capOn = true;
-  $("#capBox").style.display = "block";
-  $("#capBtn").classList.add("on");
-  $("#capBtn").textContent = "💊 膠囊預覽：開（每秒更新）";
-  capTick();
-  capTimer = setInterval(capTick, 1000);
+$("#liveBtn").onclick = ()=>{
+  if(liveOn){ stopLivePreview(); return; }
+  liveOn = true;
+  $("#liveBox").style.display = "block";
+  $("#liveBtn").classList.add("on");
+  $("#liveBtn").textContent = "🎯 即時偵測預覽：開（每秒更新）";
+  liveTick();
+  liveTimer = setInterval(liveTick, 1000);
 };
 
 // ---- 偵測測試器：對 rune_dataset(真實)/rune_synth(合成 a/c/d/e)離線樣本重跑一次
