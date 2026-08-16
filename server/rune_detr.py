@@ -130,6 +130,19 @@ SELECT_PARAMS = dict(
     sigma_size=22.0,
     max_candidates_before_prefilter=12,   # 純效能安全閥,不是建模選擇
     prefilter_nms_iou=0.6,
+    # 【誤判防線,2026-08 補】原本 select_arrows 只在候選不足 4 個時回 None,
+    # 也就是【永遠會從雜訊裡挑出最好的 4 個】,不管那 4 個多爛。實測在沒有謎題的
+    # 畫面上照樣回 4 支並判出方向(負樣本 neg0 回 ['left','up','left','left'],
+    # err 還是空的)—— 舊的色度分割路徑靠 strict 面積閘門擋掉這種,新路徑把那道
+    # 防線弄丟了。代價不是漏一次,是拿背景雜訊去按方向鍵、白燒一次符文冷卻。
+    #
+    # 門檻怎麼定的:量 120 張正樣本的最佳組合分數,p1=-3.67、p5=4.21、p50=13.65;
+    # 兩個負樣本是 -25.94 與 4.61。-10 擋得掉明顯離群的 neg0,而且低於正樣本 p1,
+    # 幾乎不會誤擋真符文。
+    # 【已知不足】neg1(4.61)比 5% 的真符文分數還高,這道防線擋不掉它 —— 資料集
+    # 只有 2 個負樣本,調不出更好的門檻。要真的解決得先收集更多負樣本
+    # (畫面上沒有謎題的幀),再重新校準。這是保守的止血,不是完整解法。
+    min_goodness=-10.0,
 )
 
 
@@ -245,6 +258,11 @@ def select_arrows(boxes, scores, params=None):
         if best is None or sc > best[0]:
             best = (sc, bs_sorted)
     if best is None:
+        return None
+    # 誤判防線:最佳組合也得夠好才採用。沒有這道,雜訊畫面照樣會回 4 支
+    # (見 SELECT_PARAMS 裡 min_goodness 的說明與量測)。寧可回 None 退給 2 線,
+    # 也不要拿背景雜訊去按方向鍵。
+    if best[0] < p["min_goodness"]:
         return None
     return best[1]
 
