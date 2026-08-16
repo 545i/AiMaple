@@ -135,6 +135,16 @@ def main():
     ap.add_argument("--max-minutes", type=float, default=None,
                     help="牆鐘時間預算,超過就存 checkpoint 提早結束(分段接續用)")
     ap.add_argument("--out-dir", default=OUT_DIR)
+    ap.add_argument("--img-height", type=int, default=640,
+                    help="RTDetrImageProcessor 輸入高度。預設 640 與原本行為(正方形"
+                         "640x640 squash)完全相同,不影響既有對照組。等比實驗改這個 "
+                         "+ --img-width 為非正方,例如 384/1344(見 detr-aspect.md)。")
+    ap.add_argument("--img-width", type=int, default=640,
+                    help="RTDetrImageProcessor 輸入寬度,見 --img-height。")
+    ap.add_argument("--ann", default=None,
+                    help="標註檔路徑,預設 rune_dataset/detr_annotations.json"
+                         "(blob_n>=10, 246 張)。額外實驗可指定 detr_annotations_full.json"
+                         "(blob_n>=0, 364 張)。")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -144,13 +154,37 @@ def main():
         sys.exit(1)
 
     from transformers import RTDetrImageProcessor
-    processor = RTDetrImageProcessor.from_pretrained(MODEL_ID)
+    # {"height": h, "width": w}(非 shortest_edge/longest_edge)是 RTDetrImageProcessor
+    # 唯一「精確縮到這個尺寸、不保留長寬比」的模式;預設 640x640 就是這樣把 3.94:1
+    # 的搜尋帶硬壓成正方形。等比實驗把 h/w 設成資料集本身的長寬比(例如 384x1344,
+    # 3.5:1),讓縮放接近等比 —— 這裡刻意不用 shortest_edge/longest_edge + pad,因為
+    # 那條路徑預設會把長邊也頂到跟短邊同一個正方形畫布,還是要另外驗證是否等比;
+    # 直接給資料集比例的精確 (h, w) 更直接、也更容易驗證(見下面 batch shape 印出)。
+    processor = RTDetrImageProcessor.from_pretrained(
+        MODEL_ID, size={"height": args.img_height, "width": args.img_width})
+    print(f"image processor size = {processor.size}")
 
-    train_recs, val_recs = load_split()
+    train_recs, val_recs = load_split(ann_path=args.ann)
     print(f"train {len(train_recs)} / val {len(val_recs)} 張圖")
     train_ds = RuneArrowDataset(train_recs, DS_DIR, augment=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               collate_fn=make_collate(processor), num_workers=0)
+
+    # ---- 驗證輸入沒有被壓扁(這個實驗的核心前提,不能跳過) ----
+    _pv, _labels = next(iter(train_loader))
+    print(f"[驗證] 一個 batch 的 pixel_values.shape = {tuple(_pv.shape)}")
+    _bws, _bhs = [], []
+    for _t in _labels:
+        for _b in _t["boxes"]:
+            _cx, _cy, _bw, _bh = _b.tolist()
+            _bws.append(_bw * args.img_width)
+            _bhs.append(_bh * args.img_height)
+    if _bws:
+        import statistics as _st
+        _mw, _mh = _st.mean(_bws), _st.mean(_bhs)
+        print(f"[驗證] 這個 batch 裡箭頭框在輸入尺度下的平均像素大小約 "
+              f"{_mw:.1f}x{_mh:.1f}(長寬比 {_mw / _mh:.2f}),"
+              f"原始資料集箭頭長寬比約 0.96(27x28)—— 應該接近,不應該被壓成 <0.5 或 >2。")
 
     ckpt_path = os.path.join(args.out_dir, "checkpoint.pt")
     start_epoch = 0
@@ -163,6 +197,18 @@ def main():
             param_groups(model, args.head_lr, args.backbone_lr),
             weight_decay=args.weight_decay)
         optimizer.load_state_dict(ckpt["optimizer"])
+        # 已知的 PyTorch 坑:optimizer.load_state_dict 會把上一輪跑到最後、已經
+        # 退火到 ~0 的 'lr'(以及 'initial_lr')原封不動地載回來。CosineAnnealingLR
+        # 在 last_epoch==0 時的 get_lr() 是直接回傳「目前」group['lr'](不是
+        # base_lr)—— 新 scheduler 一建構就會把這個已經是 0 的值當成整條新排程的
+        # 起點,之後每一步都從 0 累加,導致接續訓練的 LR 永遠卡在 0(已實測發生,
+        # epoch 151~200 那一段等於白訓,loss 沒有真的在下降)。這裡強制把兩個
+        # param group 的 'lr' / 'initial_lr' 重設回這次呼叫的 --head-lr /
+        # --backbone-lr,讓新排程從正確的基準重新起算。
+        optimizer.param_groups[0]["lr"] = args.backbone_lr
+        optimizer.param_groups[0]["initial_lr"] = args.backbone_lr
+        optimizer.param_groups[1]["lr"] = args.head_lr
+        optimizer.param_groups[1]["initial_lr"] = args.head_lr
         start_epoch = ckpt["epoch"] + 1
         print(f"從 checkpoint 接續:epoch {start_epoch}")
     else:
