@@ -25,14 +25,17 @@
 `server/rune.py::save_sample` 的存檔邏輯),模型只看過這個尺度的輸入。
 
 --------------------------------------------------------------------------
-執行期依賴:torch(CUDA),強制 GPU
+執行期依賴:torch,優先 GPU
 --------------------------------------------------------------------------
-【設定要求:本系統一律用 GPU 推論,不得用 CPU】所以 CUDA 不可用時不是降級跑
-CPU,而是整個停用本模組(`available()` 回 False),讓 read_dirs 走現行的
-find_capsule + 色度分割。那是驗證過的既有行為,比偷偷在 CPU 上跑安全,也不會讓
-「以為在用 GPU」默默失真。
+優先用 CUDA,不可用才退回 CPU —— 但退回時會【明確印在日誌裡】。靜默降級才是
+真正的危險(onnxruntime-gpu 在這台機器上就是指定 CUDA 卻默默用 CPU 跑)。
 
-實測(RTX 5070):GPU 偵測 26ms/張,端到端驗證 89.5% / 72.3%
+實測(RTX 5070):GPU 27.8ms/張、CPU 95ms,兩者都遠低於 10~14 秒的謎題窗,
+所以退回 CPU 仍然完全可用。GPU 對【旋轉箭頭】才是必要的(0.5 秒停頓內
+GPU 約 18 幀、CPU 只有 5 幀)。顯存佔用實測約 430 MiB(權重 186 + 活化 246),
+與訓練的 6.4GB 不同量級,不會影響遊戲。
+
+端到端驗證 89.5% / 72.3%
 (與下面 ONNX CPU 版量到的 89.6% / 72.3% 一致 —— 前處理/後處理是手刻的 numpy,
 與後端無關,換後端不影響數值)。
 
@@ -257,10 +260,16 @@ def _session():
     """惰性載入模型,回 (model, device) 或 None。ENABLED=False 時永遠回 None。
     載不起來也永久回 None(不重試,免得每幀都在試)。
 
-    【強制 GPU,不得退回 CPU】使用者要求本系統一律用 GPU 推論。所以 CUDA 不可用
-    時【不是】降級跑 CPU,而是整個停用本模組,讓 rune_cv.read_dirs 走現行的
-    find_capsule + 色度分割 —— 那條路是驗證過的既有行為,比偷偷在 CPU 上跑安全,
-    也不會讓「以為在用 GPU」這件事默默失真。
+    【優先 GPU,CUDA 不可用才退回 CPU】實測(RTX 5070)GPU 27.8ms、CPU 95ms,
+    兩者都遠低於 10~14 秒的謎題窗,所以退回 CPU 仍然完全可用,沒有理由因為沒有
+    GPU 就整個停用、白白掉回 41%。
+
+    但退回時會【明確印出來】—— 靜默降級才是真正的危險:onnxruntime-gpu 在這台
+    機器上就是指定了 CUDA 卻默默用 CPU 跑,不去查 `get_providers()` 根本不會發現。
+    所以這裡不只選裝置,還會把實際用的裝置寫進日誌。
+
+    (GPU 對【旋轉箭頭】才是必要的:那需要在 0.5 秒的停頓內抓多幀做停留分析,
+     27.8ms 等於每秒 36 幀、0.5 秒約 18 幀夠用;CPU 95ms 只有每秒 10 幀。)
 
     【為什麼是 torch 而不是 onnxruntime】原本走 ONNX(CPU 88.7ms,見檔頭)。改成
     強制 GPU 之後試過 onnxruntime-gpu,在這台 Windows 機器上三種方法都失敗、而且
@@ -282,16 +291,24 @@ def _session():
         return None
     try:
         import torch
-        if not torch.cuda.is_available():
-            print("[rune_detr] CUDA 不可用 —— 依設定不得用 CPU 推論,"
-                  "停用本模組,退回 find_capsule+色度分割")
-            return None
         from transformers import RTDetrForObjectDetection
-        device = torch.device("cuda")
+        device = where = None
+        try:
+            # 【不能只看 is_available()】實測 CUDA_VISIBLE_DEVICES="" 時它仍回 True,
+            # 但 get_device_name(0) 會拋 AssertionError('Invalid device id')。
+            # 只憑 is_available() 判斷會讓整個模組因為例外而停用,而不是退回 CPU。
+            if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                name = torch.cuda.get_device_name(0)      # 真的探一次才算數
+                device, where = torch.device("cuda"), f"GPU ({name})"
+        except Exception as e:
+            print(f"[rune_detr] CUDA 探測失敗({e!r}),改用 CPU")
+        if device is None:
+            # 不是靜默降級:印清楚,免得「以為在用 GPU」而實際上不是。
+            device = torch.device("cpu")
+            where = "CPU(CUDA 不可用 —— 仍可用,但慢約 3.4 倍;旋轉箭頭功能會不夠快)"
         model = RTDetrForObjectDetection.from_pretrained(HF_MODEL_DIR).to(device).eval()
         _sess = (model, device)
-        print(f"[rune_detr] 已載入 {HF_MODEL_DIR} 於 GPU "
-              f"({torch.cuda.get_device_name(0)})")
+        print(f"[rune_detr] 已載入 {HF_MODEL_DIR} 於 {where}")
     except Exception as e:
         print(f"[rune_detr] 載入失敗({e!r}),退回 find_capsule+色度分割")
         _sess = None

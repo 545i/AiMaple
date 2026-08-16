@@ -5,11 +5,11 @@ pyserial          # Arduino 鍵盤 (序列埠)
 mss               # 螢幕擷取
 opencv-python     # JPEG 編碼 / 縮放
 numpy
-torch             # 符文箭頭偵測 RT-DETR 推論。【必須是 CUDA 版】:
+torch             # 符文箭頭偵測 RT-DETR 推論。【建議裝 CUDA 版】:
                   #   pip install --index-url https://download.pytorch.org/whl/cu128 torch
-                  #   本系統設定為一律 GPU 推論,CUDA 不可用時 server/rune_detr.py 會
-                  #   停用自己並退回 find_capsule+色度分割,不會偷偷用 CPU。
-                  #   (試過 onnxruntime-gpu,在 Windows 上會靜默退回 CPU,見
+                  #   優先用 GPU(27.8ms),CUDA 不可用會退回 CPU(95ms,仍可用,
+                  #   但旋轉箭頭功能會不夠快)。退回時日誌會明講,不是靜默降級。
+                  #   (試過 onnxruntime-gpu,在 Windows 上會【靜默】退回 CPU,見
                   #    server/rune_detr.py 開頭說明。)
 transformers      # 同上,載入 RT-DETR 權重用
 onnxruntime       # 舊的符文 CNN 判向器(server/rune_nn.py,驗收未過、預設關閉),
