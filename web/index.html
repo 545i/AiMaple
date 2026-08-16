@@ -403,8 +403,11 @@
      <img id="liveImg" alt="即時偵測預覽"
           style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
      <div id="liveInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div id="liveDetail" style="font-size:12px;margin-top:4px;display:flex;flex-wrap:wrap;gap:6px"></div>
      <div style="font-size:11px;color:#6a6f79;margin-top:2px">
-       灰框＝候選框＋信心分數　紅框＝幾何選擇挑中的 4 支（沒有真值可比對錯，固定用紅色）　框下方文字＝判到的方向
+       灰框＝候選框＋信心分數　紅框＝幾何選擇挑中的 4 支（沒有真值可比對錯，固定用紅色）。
+       大字結果帶是跨多次呼叫累積判定的結果（旋轉款符文單幀讀不出答案，見帶內圖例）：
+       綠＝靜止已定案，橙＝旋轉已定案，灰？＝觀察中。全自動更新，不需要按按鈕。
      </div>
    </div>
 
@@ -1662,24 +1665,60 @@ $("#runeTestBtn").onclick = ()=>
   runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
 
 // ---- 即時偵測預覽：現行主路徑（RT-DETR 偵測箭頭＋幾何選擇）的即時檢查 ----
-// 每秒抓一張 /rune/live（伺服器端跑一次偵測＋標註）。灰框＝候選框＋信心分數，
-// 紅框＝幾何選擇挑中的 4 支（即時預覽沒有真值可比對錯，固定一色），框下方文字
-// ＝每支判到的方向。頂部色帶是候選/選出數量與耗時摘要。
+// 每次抓 /rune/live（伺服器端全速連拍～0.5 秒＋偵測＋標註，見 rune_viz.render_live_jpeg），
+// 灰框＝候選框＋信心分數，紅框＝幾何選擇挑中的 4 支（即時預覽沒有真值可比對錯，固定一色）。
+// 頂部大字結果帶是伺服器端跨呼叫累積判定的結果（旋轉款符文單幀讀不出答案，答案是箭頭
+// 晃動的方向，要跨多次呼叫累積觀測才判得出來，見 server/rune_live_state.py）：
+// 靜止的箭頭第一次呼叫就可能定案，旋轉的箭頭定案前顯示「觀察中」，全自動、不需要按鈕。
+//
+// 【一次一發，不塞車】每次呼叫要 0.5~1 秒（連拍本身就要這麼久），所以不用固定
+// setInterval——那樣前一發還沒回來，下一發就已經發出去了，會塞車。改成每次收到
+// 回應（不論成功失敗）之後才排下一次。
 // 取代舊的「膠囊預覽」——那是為除錯已被取代的 1 線 find_capsule 做的，1 線
 // 現在只是模型不可用時的退路，不再是主路徑。
-let liveOn = false, liveTimer = null;
+let liveOn = false, liveTimeoutId = null;
+const RUNE_LIVE_REASON_LABEL = {no_frame: "拿不到遊戲畫面", no_model: "模型未載入",
+                                 no_boxes: "偵測不到 4 支箭頭"};
+function renderLiveDetail(info){
+  const box = $("#liveDetail");
+  if(!info || !info.arrows){ box.innerHTML = ""; return; }
+  if(info.n_boxes_detected !== 4){
+    box.innerHTML = `<span style="color:#8a8f99">${RUNE_LIVE_REASON_LABEL[info.reason] || "偵測不到 4 支箭頭"}</span>`;
+    return;
+  }
+  box.innerHTML = info.arrows.map((a, i)=>{
+    let col = "#9aa0a8", txt;
+    if(a.motion === "static" && a.settled){ col = "#5ae65a"; txt = `靜止：${RUNE_ARROW[a.direction]||a.direction}`; }
+    else if(a.motion === "rotating" && a.settled){ col = "#ffa540"; txt = `旋轉：${RUNE_ARROW[a.direction]||a.direction}（已抓${a.n_wobbles}次晃動）`; }
+    else if(a.motion === "unknown"){ txt = `觀察中（${a.n_samples} 幀）`; }
+    else{ const ang = a.angle != null ? Math.round(a.angle) + "°" : "?"; txt = `旋轉中…目前 ${ang}，等晃動`; }
+    return `<span style="padding:2px 7px;border-radius:6px;background:#1c1f26;color:${col}">#${i+1} ${txt}</span>`;
+  }).join("");
+}
 function liveTick(){
+  if(!liveOn) return;
   const im = $("#liveImg");
-  im.onerror = ()=>{ $("#liveInfo").textContent = "❌ 拿不到即時預覽（伺服器沒回應？）"; };
-  im.onload  = ()=>{ $("#liveInfo").textContent =
-    "頂部色帶＝候選數／選出數／耗時摘要（拿不到遊戲畫面或模型未載入時，圖上會直接寫明原因）"; };
+  const done = async ()=>{
+    try{
+      const info = await (await fetch(`/rune/live/info?token=${encodeURIComponent(token)}`)).json();
+      $("#liveInfo").textContent =
+        `累積 ${info.n_frames} 幀／${info.session_age_sec}s 觀測窗`
+        + (info.reset ? "（緩衝剛重置，開始重新觀察）" : "")
+        + (info.all_settled ? "　全部已定案" : "");
+      renderLiveDetail(info);
+    }catch(_){ /* info 拿不到不影響圖片本身，沿用上一輪文字即可 */ }
+    if(liveOn) liveTimeoutId = setTimeout(liveTick, 150);
+  };
+  im.onerror = ()=>{ $("#liveInfo").textContent = "❌ 拿不到即時預覽（伺服器沒回應？）"; done(); };
+  im.onload  = done;
   im.src = `/rune/live?token=${encodeURIComponent(token)}&_=${Date.now()}`;
 }
 function stopLivePreview(){
-  if(liveTimer){ clearInterval(liveTimer); liveTimer = null; }
   liveOn = false;
+  if(liveTimeoutId){ clearTimeout(liveTimeoutId); liveTimeoutId = null; }
   $("#liveBox").style.display = "none";
   $("#liveImg").removeAttribute("src");
+  $("#liveDetail").innerHTML = "";
   $("#liveBtn").classList.remove("on");
   $("#liveBtn").textContent = "🎯 即時偵測預覽：關";
 }
@@ -1688,9 +1727,8 @@ $("#liveBtn").onclick = ()=>{
   liveOn = true;
   $("#liveBox").style.display = "block";
   $("#liveBtn").classList.add("on");
-  $("#liveBtn").textContent = "🎯 即時偵測預覽：開（每秒更新）";
+  $("#liveBtn").textContent = "🎯 即時偵測預覽：開（全自動）";
   liveTick();
-  liveTimer = setInterval(liveTick, 1000);
 };
 
 // ---- 偵測測試器：對 rune_dataset(真實)/rune_synth(合成 a/c/d/e)離線樣本重跑一次

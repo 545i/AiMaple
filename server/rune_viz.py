@@ -161,14 +161,6 @@ def render_jpeg(frame_bgr, gt_boxes, fn, idx, total):
     return buf.tobytes()
 
 
-def _no_gt_summary(summary):
-    """`viz_rune_detect.draw()` 的摘要句尾『判向對 X/4』是拿 gt_boxes 逐支比對
-    算出來的。即時預覽沒有真值可比(呼叫端傳 gt_boxes=None),draw() 內部把每支
-    的真值都當 None,結果『判向對』恆為 0/4——不是偵測真的全錯,是無真值可比這
-    件事的副作用,原樣顯示會誤導人。這裡只是砍掉句尾那一段,不碰 draw() 本身。"""
-    return summary.split(",判向對")[0]
-
-
 def _encode_jpeg(img):
     ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
@@ -180,6 +172,15 @@ def _encode_jpeg(img):
 # Hershey 字型,只吃 ASCII —— 印不出 ←↑→↓,而 "left/right" 這種英文字在手機上
 # 一眼掃過去遠不如箭頭好認。
 _GLYPH_DXY = {"right": (1, 0), "left": (-1, 0), "up": (0, -1), "down": (0, 1)}
+
+# 旋轉款符文的逐支狀態顏色(BGR)。刻意跟舊的 _result_banner 綠/紅二分開一組新的,
+# 因為這裡要能分辨三種狀態(靜止已定/旋轉已定/觀察中),不是只有對錯兩色。
+# 框標籤(_draw_live_boxes)跟大字結果條(_wheel_banner)共用同一組顏色常數 ——
+# 兩處畫的是【同一個判定結果】的兩種呈現,顏色一致才看得出是同一組答案。
+_COL_STATIC = (90, 230, 90)     # 綠:靜止,已定案
+_COL_ROTATING = (0, 165, 255)   # 橙:旋轉,已抓到晃動、已定案
+_COL_OBSERVING = (160, 160, 160)  # 灰:觀察中(樣本不足 / 旋轉中但還沒抓到晃動)
+_COL_CAND = (140, 140, 140)     # 灰:候選框(沿用 viz_rune_detect 原本的配色)
 
 
 def _draw_glyph(img, cx, cy, r, d, color):
@@ -200,49 +201,139 @@ def _draw_glyph(img, cx, cy, r, d, color):
              max(3, r // 4), cv2.LINE_AA)
 
 
-def _result_banner(dirs, width, h=96):
-    """最上層的大字結果條:把判到的 4 個方向畫成大箭頭,手機上也一眼看得到。
+def _draw_live_boxes(frame_bgr, boxes4, arrows, min_score=MIN_SCORE):
+    """畫即時預覽用的偵測框,回 (畫好的圖, 候選數)。
 
-    這是使用者明確要求的 —— 小字標在每個框旁邊,在手機上根本看不清楚結果。
-    """
+    灰框+信心分數是全部候選(呼叫 `viz_rune_detect.raw_detections` 拿資料,
+    不重刻偵測本身,不碰 tools/viz_rune_detect.py)。粗框是幾何選擇挑中的 4 支,
+    標籤刻意跟上方 `_wheel_banner` 畫的【同一組判定結果】(`arrows`,即
+    `rune_live_state` 累積判定的 per-arrow 狀態)——已定案顯示那個方向、
+    觀察中顯示「?」,顏色也共用同一組常數。
+
+    【為什麼不能沿用 viz_rune_detect.draw() 畫框】那支函式畫框的同時,標籤放的
+    是 `rune_cv._read_dirs_detr()` 的單幀模板判讀結果,旋轉中途跟這裡的累積
+    判定必然不同——同一支箭頭兩個地方各報一個不同方向,使用者看到的是兩組
+    互相矛盾的答案(這是使用者實際回報過的問題)。改成這裡自己畫框,兩處就是
+    同一個判定結果的兩種呈現,不會再對不上。"""
+    vis = frame_bgr.copy()
+    boxes, scores, _by0 = viz_rune_detect.raw_detections(frame_bgr)
+    n_candidates = 0
+    if boxes is not None:
+        keep = [i for i in range(len(scores)) if scores[i] >= min_score]
+        n_candidates = len(keep)
+        for i in keep:
+            x0, y0, x1, y1 = (int(v) for v in boxes[i])
+            cv2.rectangle(vis, (x0, y0), (x1, y1), _COL_CAND, 1)
+            cv2.putText(vis, f"{scores[i]:.3f}", (x0, y0 - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, _COL_CAND, 1, cv2.LINE_AA)
+
+    if boxes4:
+        for i, bx in enumerate(boxes4):
+            a = arrows[i] if arrows and i < len(arrows) else None
+            motion = a["motion"] if a else "unknown"
+            settled = bool(a and a["settled"])
+            direction = a["direction"] if a else None
+            if motion == "static" and settled:
+                col = _COL_STATIC
+            elif motion == "rotating" and settled:
+                col = _COL_ROTATING
+            else:
+                col = _COL_OBSERVING
+            label = direction if settled else "?"
+            x0, y0, x1, y1 = (int(v) for v in bx)
+            cv2.rectangle(vis, (x0, y0), (x1, y1), col, 2)
+            cv2.putText(vis, str(label), (x0, y1 + 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
+    return vis, n_candidates
+
+
+def _wheel_banner(status, width, h=140):
+    """旋轉款符文的即時累積結果條 —— 取代舊版單幀瞬間讀值的大字結果帶,因為
+    單幀讀到的只是「箭頭這一瞬間剛好指哪」,旋轉中不是答案(見 rune_live_state.py
+    開頭說明)。這裡改畫 `rune_live_state.observe()` 累積後的逐支狀態:
+
+        綠 = 靜止,已定案(第一次呼叫就可能出現)
+        橙 = 旋轉,已抓到晃動、已定案
+        灰「?」= 觀察中 —— 樣本還不夠判斷靜止/旋轉,或已知在轉但還沒抓到晃動
+
+    圖例畫在圖上(不是只寫在網頁文字裡),因為這是使用者要求的重點:靜止與
+    旋轉要能一眼分辨。"""
     bar = np.full((h, width, 3), 22, np.uint8)
-    if not dirs:
-        cv2.putText(bar, "no result", (16, h // 2 + 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (120, 120, 120), 2, cv2.LINE_AA)
+    cv2.putText(bar, "legend  green=static settled   orange=rotating settled   gray ?=observing",
+                (10, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
+
+    arrows = status.get("arrows") or []
+    if status.get("n_boxes_detected", 0) != 4 or len(arrows) != 4:
+        reason = status.get("reason") or ""
+        msg = {"no_frame": "拿不到遊戲畫面", "no_model": "模型未載入",
+               "no_boxes": "偵測不到 4 支箭頭"}.get(reason, "偵測不到 4 支箭頭")
+        cv2.putText(bar, msg, (16, h // 2 + 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (120, 120, 120), 2, cv2.LINE_AA)
         return bar
-    n = len(dirs)
+
+    n = len(arrows)
     slot = width / max(1, n)
-    r = min(int(h * 0.32), int(slot * 0.22))
-    for i, d in enumerate(dirs):
+    r = min(22, int(slot * 0.16))
+    cy = 42
+    for i, a in enumerate(arrows):
         cx = int(slot * (i + 0.5))
-        col = (90, 230, 90) if d else (90, 90, 240)      # 讀不出來的用紅色
-        _draw_glyph(bar, cx, h // 2 - 6, r, d, col)
-        cv2.putText(bar, str(d or "?"), (cx - 26, h - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, col, 2, cv2.LINE_AA)
+        motion, settled, d = a["motion"], a["settled"], a["direction"]
+        if motion == "static" and settled:
+            col = _COL_STATIC
+        elif motion == "rotating" and settled:
+            col = _COL_ROTATING
+        else:
+            col = _COL_OBSERVING
+        _draw_glyph(bar, cx, cy, r, d, col)
+        cv2.putText(bar, str(d or "?"), (cx - 14, cy + r + 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+
+        if motion == "unknown":
+            sub = f"觀察中 {a['n_samples']}幀"
+        elif motion == "static":
+            sub = f"靜止 {round(a['angle'])}deg" if a["angle"] is not None else "靜止"
+        elif settled:
+            sub = f"旋轉 已抓{a['n_wobbles']}次晃動"
+        else:
+            ang_txt = f"{round(a['angle'])}deg" if a["angle"] is not None else "?"
+            sub = f"旋轉中 目前{ang_txt} 等晃動"
+        cv2.putText(bar, sub, (max(2, cx - int(slot * 0.46)), cy + r + 38),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, col, 1, cv2.LINE_AA)
     return bar
 
 
 def render_live_jpeg(scale=1):
-    """即時偵測預覽:抓【當前遊戲畫面】一幀,跑一次偵測,畫出所有候選框+信心
-    分數(灰)、幾何選擇挑中的 4 支(即時預覽沒有真值可比對錯,固定一色)、每支
-    判到的方向,回 JPEG bytes。取代舊的 1 線膠囊預覽(`rune.capsule_preview_jpeg`)
-    ——1 線現在只是 RT-DETR 不可用時的退路,不再是主路徑,除錯應該看主路徑在
-    做什麼。
+    """即時偵測預覽:抓【當前遊戲畫面】+一小段連拍(~0.5 秒,見
+    `rune_live_state.BURST_SECS`),跑一次偵測,畫出所有候選框+信心分數(灰,
+    `_draw_live_boxes`)、幾何選擇挑中的 4 支(粗框),回 JPEG bytes。取代舊的
+    1 線膠囊預覽(`rune.capsule_preview_jpeg`)——1 線現在只是 RT-DETR 不可用
+    時的退路,不再是主路徑,除錯應該看主路徑在做什麼。
 
-    只抓一幀就回,不做多幀輪詢——這是給人看的即時預覽,不能每次卡好幾秒。
+    【框標籤與大字結果條是同一組答案】兩處都畫 `rune_live_state` 的【跨呼叫
+    累積判定】(見該模組 docstring),不是單幀瞬間讀值——旋轉款符文單幀讀到的
+    只是箭頭那一瞬間剛好指哪,不是答案,答案是箭頭晃動(角速度反轉)的方向,
+    要跨多次呼叫累積才判得出來。每次呼叫都用目前累積的資料算出當下最好的
+    判定:靜止的箭頭第一次呼叫就可能定案,旋轉的箭頭要等觀察到晃動(約 1~3
+    秒,即連續呼叫數次)才定案,定案前框標籤與大字帶都顯示「觀察中/?」
+    (不再各自顯示不同答案——這是先前版本的已知問題,使用者實際回報過)。
 
-    兩種「沒有正常結果」的狀況都不回 None/丟例外,一律回一張帶說明文字的圖:
+    兩種「沒有正常結果」的狀況都不回 None/丟例外,一律回一張帶說明文字的圖,
+    並把 `rune_live_state` 的累積緩衝重置(這兩種情況代表接下來看到的很可能
+    是不同一顆符文,不能讓舊觀測混進去):
       - 拿不到遊戲畫面(遊戲沒開/被切到背景):回說明圖,不是 503。
         照抄 `rune_cv.preview()` 對「找不到膠囊」的處理慣例(理由見其
         docstring)——前端要能分辨「遊戲沒開」跟「偵測壞了」,破圖或 503 都
         做不到這件事。
       - RT-DETR 不可用(模型沒載入):不直接失敗,改用既有的 `rune_cv.preview()`
-        內容(1 線退路實際在做的事),圖上另外標明現在看到的是哪一條路徑。
+        內容(1 線退路實際在做的事,單幀、無法判旋轉),圖上另外標明現在看到
+        的是哪一條路徑。
     """
     import minimap
+    import rune_live_state
     t0 = time.time()
     frame = minimap._grab_window()
     if frame is None:
+        rune_live_state.observe(None, None, reason="no_frame")
         vis = np.zeros((140, 640, 3), np.uint8)
         cv2.putText(vis, "拿不到 MapleStory 視窗影格", (14, 55),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.75, (60, 60, 240), 2, cv2.LINE_AA)
@@ -251,6 +342,7 @@ def render_live_jpeg(scale=1):
         return _encode_jpeg(vis)
 
     if not rune_detr.available():
+        rune_live_state.observe(None, None, reason="no_model")
         vis = rune_cv.preview(frame, scale=max(1, scale))
         elapsed_ms = round((time.time() - t0) * 1000, 1)
         bar = np.zeros((26, vis.shape[1], 3), np.uint8)
@@ -260,14 +352,29 @@ def render_live_jpeg(scale=1):
         out = np.vstack([bar, vis])
         return _encode_jpeg(out)
 
-    vis, summary, dirs = viz_rune_detect.draw(frame, None, MIN_SCORE)
+    # 幾何選擇挑中的 4 支框,交給 rune_live_state 全速連拍一小段、累積進緩衝。
+    boxes4 = rune_detr.detect_arrows(frame)
+    live_status = rune_live_state.observe(frame, boxes4, reason="" if boxes4 else "no_boxes")
+
+    vis, n_candidates = _draw_live_boxes(frame, boxes4, live_status.get("arrows"))
+    if boxes4:
+        summary = f"候選 {n_candidates} 個 → 選出 {len(boxes4)} 支"
+    else:
+        summary = f"候選 {n_candidates} 個,幾何選擇【選不出 4 支】→ 退給 2 線"
     elapsed_ms = round((time.time() - t0) * 1000, 1)
     s = max(1, min(3, scale))
     if s != 1:
         vis = cv2.resize(vis, (int(vis.shape[1] * s), int(vis.shape[0] * s)),
                           interpolation=cv2.INTER_LINEAR)
+    legend_bar = np.zeros((20, vis.shape[1], 3), np.uint8)
+    cv2.putText(legend_bar,
+                "灰框＝候選＋信心分數　粗框＝選中4支，標籤＝判定結果（與上方大字帶同一組）",
+                (8, 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
     bar = np.zeros((28, vis.shape[1], 3), np.uint8)
-    cv2.putText(bar, f"{_no_gt_summary(summary)}   {elapsed_ms}ms", (8, 20),
+    extra = f"  累積{live_status['n_frames']}幀/{live_status['session_age_sec']}s"
+    if live_status.get("reset"):
+        extra += "（緩衝已重置）"
+    cv2.putText(bar, f"{summary}   {elapsed_ms}ms{extra}", (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-    out = np.vstack([_result_banner(dirs, vis.shape[1]), bar, vis])
+    out = np.vstack([_wheel_banner(live_status, vis.shape[1]), legend_bar, bar, vis])
     return _encode_jpeg(out)

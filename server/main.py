@@ -817,17 +817,40 @@ def rune_capsule(token: str = Query(""), scale: int = Query(3)):
 
 @app.get("/rune/live")
 def rune_live(token: str = Query(""), scale: int = Query(1)):
-    """即時偵測預覽 JPEG:抓一幀當前遊戲畫面,跑一次現行主路徑(RT-DETR 偵測
-    箭頭 + 幾何選擇),畫出所有候選框+信心分數(灰)、幾何選擇挑中的 4 支
-    (即時預覽沒有真值可比對錯,固定一色)、每支判到的方向,取代已過時的
-    /rune/capsule(那是為除錯已被取代的 1 線 find_capsule 做的,1 線現在只是
-    模型不可用時的退路)。模型未載入時不失敗,改標明並顯示 1 線退路的內容。
-    拿不到遊戲畫面時回帶說明文字的圖,不是 503(前端要能分辨「遊戲沒開」與
-    「偵測壞了」)。只抓一幀就回,不做多幀輪詢。"""
+    """即時偵測預覽 JPEG:抓當前遊戲畫面 + 一小段連拍(~0.5 秒,見
+    `rune_live_state.BURST_SECS`),跑一次現行主路徑(RT-DETR 偵測箭頭 + 幾何
+    選擇),畫出所有候選框+信心分數(灰)、幾何選擇挑中的 4 支(即時預覽沒有
+    真值可比對錯,固定一色),取代已過時的 /rune/capsule(那是為除錯已被取代
+    的 1 線 find_capsule 做的,1 線現在只是模型不可用時的退路)。
+
+    最上層大字結果條是【跨呼叫累積判定】(見 `rune_live_state.py`),不是單幀
+    瞬間讀值:旋轉款符文(解放輪)單幀讀到的只是箭頭那一瞬間剛好指哪,不是
+    答案,答案是箭頭晃動(角速度反轉)的方向,要靠使用者連續打開預覽、伺服器
+    跨多次呼叫累積觀測才判得出來。靜止的箭頭第一次呼叫就可能定案;旋轉的箭頭
+    定案前顯示「觀察中」與目前角度,約 1~3 秒(連續呼叫數次)後補上答案。
+    每支各自獨立判斷(同一顆符文可能同時有幾支靜止、幾支在轉)。
+
+    模型未載入時不失敗,改標明並顯示 1 線退路的內容(這種情況判不了旋轉,
+    也會重置累積緩衝)。拿不到遊戲畫面時回帶說明文字的圖,不是 503(前端要
+    能分辨「遊戲沒開」與「偵測壞了」),同樣會重置累積緩衝。累積緩衝的詳細
+    JSON 見 GET /rune/live/info。"""
     _check_owner(token)
     jpg = rune_viz.render_live_jpeg(scale=max(1, min(6, scale)))
     return Response(content=jpg, media_type="image/jpeg",
                     headers={"Cache-Control": "no-store"})
+
+
+@app.get("/rune/live/info")
+def rune_live_info(token: str = Query("")):
+    """`/rune/live` 最近一次呼叫的累積判定狀態(JSON),給前端顯示每支的文字
+    細節用。【不觸發新的擷取】——直接讀 `rune_live_state` 在上一次 /rune/live
+    呼叫時已經算好、快取起來的結果,避免前端每次輪詢都多打一次全速連拍
+    (那樣會讓兩個端點對不上、也白白多耗一次擷取成本)。前端應該先打
+    /rune/live 拿圖,再打這支拿文字細節。從未打過 /rune/live 時回
+    reason="not_started" 的預設值。"""
+    _check_owner(token)
+    import rune_live_state
+    return JSONResponse(rune_live_state.get_last_status())
 
 
 # ===== 符文箭頭偵測測試器(離線資料集,不碰遊戲/角色)=====
