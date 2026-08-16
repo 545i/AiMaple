@@ -25,9 +25,28 @@
 `server/rune.py::save_sample` 的存檔邏輯),模型只看過這個尺度的輸入。
 
 --------------------------------------------------------------------------
-執行期依賴:ONNX(CPU),不是 torch
+執行期依賴:torch(CUDA),強制 GPU
 --------------------------------------------------------------------------
-伺服器是 CPU + onnxruntime,沒有 torch。`tools/export_rune_detr_onnx.py` 匯出的
+【設定要求:本系統一律用 GPU 推論,不得用 CPU】所以 CUDA 不可用時不是降級跑
+CPU,而是整個停用本模組(`available()` 回 False),讓 read_dirs 走現行的
+find_capsule + 色度分割。那是驗證過的既有行為,比偷偷在 CPU 上跑安全,也不會讓
+「以為在用 GPU」默默失真。
+
+實測(RTX 5070):GPU 偵測 26ms/張,端到端驗證 89.5% / 72.3%
+(與下面 ONNX CPU 版量到的 89.6% / 72.3% 一致 —— 前處理/後處理是手刻的 numpy,
+與後端無關,換後端不影響數值)。
+
+【為什麼不是 onnxruntime-gpu】試過,在這台 Windows 機器上三種方法都失敗,而且是
+【靜默退回 CPU】(providers 回 ['CPUExecutionProvider']):pip 的 nvidia cu12
+wheel + PATH、把 CUDA DLL 複製到 provider DLL 同目錄、系統 CUDA 12.9 toolkit
+加進 PATH —— 全部卡在 `onnxruntime_providers_cuda.dll` 找不到
+`cublasLt64_12.dll`。torch cu128 在同一台機器上現成可用(訓練環境一直在用)。
+
+--------------------------------------------------------------------------
+ONNX 路線(保留,目前未使用)
+--------------------------------------------------------------------------
+下面這段是先前 CPU 版的紀錄,匯出工具與圖手術修法都還留著,之後 onnxruntime 的
+GPU 環境理順了可以換回去。`tools/export_rune_detr_onnx.py` 匯出的
 圖有 4 個 Sin/Cos 節點吃 float64(RTDetr 的 sinusoidal 位置編碼全程用
 torch.float64 算,見 transformers `modeling_rt_detr.py
 ::build_2d_sinusoidal_position_embedding`),onnxruntime 的 CPU kernel 只登記了
@@ -71,6 +90,10 @@ import paths
 ENABLED = os.environ.get("MAPLE_RUNE_DETR", "1") != "0"
 
 # ---------- 模型:可寫素材目錄,不在 exe 裡 ----------
+# HuggingFace 格式的權重(safetensors),torch 推論用。
+HF_MODEL_DIR = os.path.join(paths.data_dir("models"), "rune_detr_ar", "final")
+# ONNX 版保留:匯出工具與圖手術修法都還在(tools/export_rune_detr_onnx.py、
+# tools/fix_rune_detr_onnx_cos.py),之後 onnxruntime 的 GPU 環境理順了可以換回去。
 MODEL_PATH = os.path.join(paths.data_dir("models"), "rune_detr_ar", "model.onnx")
 
 # 模型訓練時用的輸入尺寸(見 models/rune_detr_ar/final/preprocessor_config.json
@@ -231,23 +254,44 @@ _sess_tried = False
 
 
 def _session():
-    """惰性建立 ONNX session。ENABLED=False 時永遠回 None。載不起來也永久回
-    None(不重試,免得每幀都在試)——與 rune_nn.py 的 `_session()` 同一個模式。"""
+    """惰性載入模型,回 (model, device) 或 None。ENABLED=False 時永遠回 None。
+    載不起來也永久回 None(不重試,免得每幀都在試)。
+
+    【強制 GPU,不得退回 CPU】使用者要求本系統一律用 GPU 推論。所以 CUDA 不可用
+    時【不是】降級跑 CPU,而是整個停用本模組,讓 rune_cv.read_dirs 走現行的
+    find_capsule + 色度分割 —— 那條路是驗證過的既有行為,比偷偷在 CPU 上跑安全,
+    也不會讓「以為在用 GPU」這件事默默失真。
+
+    【為什麼是 torch 而不是 onnxruntime】原本走 ONNX(CPU 88.7ms,見檔頭)。改成
+    強制 GPU 之後試過 onnxruntime-gpu,在這台 Windows 機器上三種方法都失敗、而且
+    是【靜默退回 CPU】:pip 的 nvidia cu12 wheel + PATH、把 CUDA DLL 複製到
+    provider DLL 同目錄、系統 CUDA 12.9 toolkit 加進 PATH —— 都卡在
+    `onnxruntime_providers_cuda.dll` 找不到 `cublasLt64_12.dll`。torch cu128 在
+    同一台機器上是現成可用的(訓練環境 venv-detr 一直在用),所以改用它。
+    ONNX 模型檔與匯出工具都保留,之後 onnxruntime GPU 環境理順了可以換回去 ——
+    前處理/後處理是手刻的 numpy,與後端無關,換回去不必重驗數值。
+    """
     global _sess, _sess_tried
     if not ENABLED:
         return None
     if _sess_tried:
         return _sess
     _sess_tried = True
+    if not os.path.isdir(HF_MODEL_DIR):
+        print(f"[rune_detr] 找不到 {HF_MODEL_DIR},退回 find_capsule+色度分割")
+        return None
     try:
-        import onnxruntime as ort
-        if os.path.exists(MODEL_PATH):
-            so = ort.SessionOptions()
-            _sess = ort.InferenceSession(
-                MODEL_PATH, sess_options=so, providers=["CPUExecutionProvider"])
-            print(f"[rune_detr] 已載入 {MODEL_PATH}")
-        else:
-            print(f"[rune_detr] 找不到 {MODEL_PATH},退回 find_capsule+色度分割")
+        import torch
+        if not torch.cuda.is_available():
+            print("[rune_detr] CUDA 不可用 —— 依設定不得用 CPU 推論,"
+                  "停用本模組,退回 find_capsule+色度分割")
+            return None
+        from transformers import RTDetrForObjectDetection
+        device = torch.device("cuda")
+        model = RTDetrForObjectDetection.from_pretrained(HF_MODEL_DIR).to(device).eval()
+        _sess = (model, device)
+        print(f"[rune_detr] 已載入 {HF_MODEL_DIR} 於 GPU "
+              f"({torch.cuda.get_device_name(0)})")
     except Exception as e:
         print(f"[rune_detr] 載入失敗({e!r}),退回 find_capsule+色度分割")
         _sess = None
@@ -330,9 +374,14 @@ def detect_arrows(frame_bgr):
         return None
     bh, bw = band.shape[:2]
 
-    x = _preprocess(band)
-    input_name = sess.get_inputs()[0].name
-    logits, pred_boxes = sess.run(None, {input_name: x})
+    import torch
+    model, device = sess
+    x = _preprocess(band)                     # 手刻 numpy 前處理,與後端無關
+    with torch.no_grad():
+        out = model(pixel_values=torch.from_numpy(x).to(device))
+    # 轉回 numpy 交給同一份手刻後處理 —— 換後端時數值路徑不變,不必重驗
+    logits = out.logits.detach().cpu().numpy()
+    pred_boxes = out.pred_boxes.detach().cpu().numpy()
     boxes, scores = _postprocess(logits, pred_boxes, bh, bw)
 
     sel = select_arrows(boxes, scores, SELECT_PARAMS)
