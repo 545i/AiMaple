@@ -154,6 +154,10 @@ ATTEMPT_GAP = 8.0                      # 整體重試之間的間隔
 #         已不適用。瓶頸從來不是判向而是定位 —— 判向在框正確時本來就有 97~99.5%,
 #         而 find_capsule 誤差 <=20px 的只有 54.1%。詳見 rune_detr.py 開頭。)
 # 2 線 claude CLI:1 線讀不到時才走(沒開謎題、膠囊被擋、畫面尺寸不同…)。
+# 旋轉線(2026-08 新增,解放輪) 1 線多幀讀值不一致時,若判定是旋轉款符文
+#        (_rotating_signal:rune_detr 每幀都選得出 4 支、框位置穩定),不直接
+#        退 2 線,改走 rune_wheel.py 的角速度反轉偵測(_solve_wheel)。這條線
+#        失敗才真的退 2 線。獨立開關:MAPLE_RUNE_WHEEL=0 整組關掉(見 WHEEL_ENABLED)。
 #
 # 兩條線【各自獨立開關】,執行中可改(set_lines)。兩條都開 = 原本的 auto:1 線先跑、
 # 讀不到才退 2 線;只開一條就只走那條,不做銜接。
@@ -177,6 +181,35 @@ CV_GAP = 0.12                          # 每次重試間隔:要換到不同的�
 # 反過來說,單幀「很有把握但judge錯」的情況(實測 r19 第 4 支)就會因為拿不到一致票
 # 而被擋下,交給 2 線 —— 誤判的代價是按錯鍵白燒冷卻,寧可退線也不要賭。
 CV_AGREE = 2
+
+# ---------- 旋轉款符文(解放輪) ----------
+# 新版符文謎題(遊戲內稱「解放輪」,與舊符文是同一個東西、只是不同時期的稱呼,
+# 觸發/導航/按鍵/purple_gone 驗證全部沿用上面既有流程)的箭頭會【持續旋轉】,
+# 不再像舊版那樣停在固定方向。判向邏輯完全獨立寫在 server/rune_wheel.py
+# (角速度反轉偵測,不是這裡的靜態色度分割/模板),這裡只負責:
+#   1. 判斷「現在是不是旋轉款」(_rotating_signal)
+#   2. 是的話全速連拍幾秒交給 rune_wheel.solve()(_solve_wheel)
+#
+# 【怎麼判斷是旋轉款,而不是雜訊/定位失敗導致的 CV 讀值不一致】
+# 旋轉中的箭頭,每幀色度分割 + 模板判向讀出的方向本來就會跟著角度一路變,
+# CV_TRIES 幾幀讀不出一致答案是必然的 —— 但這正好是訊號本身,不是雜訊:
+# rune_detr.detect_arrows 認的是箭頭【位置】,箭頭原地旋轉不會位移,所以旋轉款
+# 符文在每一幀都還是能穩定選出 4 支箭頭、框的位置幾乎不動;真的雜訊/定位失敗時,
+# 通常連框都選不滿 4 支,或框會抖動。用「每幀都選得出 4 支 + 框位置穩定」這兩個
+# 條件一起判斷,兩者缺一都不判定為旋轉,直接照舊退 2 線 —— 誤判的代價是白白
+# 多花 WHEEL_CAPTURE_SECS 秒才退線,謎題窗預算還夠,不是安全問題。
+#
+# 【已知侷限,如實記錄】ROTATE_BOX_JITTER 是依專案裡其他定位容差的量級
+# (_PAD=24 / _ROW_TOL=14 / PAIR_DX_MAX=14 / OCCLUDE_R=12)類比訂的保守值,
+# 不是拿真實旋轉款符文在遊戲畫面(而非本次驗證用的實況主放大截圖)量出來的 ——
+# 目前沒有那樣的素材可以校準。上線後若這個訊號誤判率偏高,要用真實遊戲截圖
+# 重新量測再調整,不能繼續憑類比。
+WHEEL_ENABLED = os.environ.get("MAPLE_RUNE_WHEEL", "1") != "0"
+ROTATE_BOX_JITTER = 12                 # 判定「框位置穩定」的最大位移容差(px)
+WHEEL_CAPTURE_SECS = 3.0               # 全速連拍時長:週期約 0.9s,涵蓋約 3 圈
+WHEEL_POLL_GAP = 0.01                  # 連拍輪詢間隔上限,避免忙等(見 _solve_wheel)
+WHEEL_MIN_FRAMES = 10                  # 連拍樣本數低於此,直接判定旋轉路徑失敗
+WHEEL_BOX_PAD = 8                      # 四支箭頭聯集裁切框往外擴一點,避免箭頭尖端貼邊被切
 
 # ---------- 2 線後端 ----------
 # 曾經試過本地 VLM(Qwen2-VL-2B / Qwen2.5-VL-3B,獨立 venv 常駐子行程),已移除。
@@ -748,7 +781,7 @@ def _write_crop(frame):
 
 def _cv_read(first_frame):
     """1 線:最多讀 CV_TRIES 幀,要【兩幀答案一致】才採用。
-    回 (dirs, err, 已試次數, 產生該答案的那一幀)。
+    回 (dirs, err, 已試次數, 產生該答案的那一幀, 是否判定為旋轉款, 旋轉款的四支箭頭框)。
 
     最後那個回傳值不能省:重試會換幀,答案可能來自第 3 幀,但存進資料集的若是第 1 幀,
     就會出現「圖上箭頭被擋住、標籤卻是別幀讀到的」錯標樣本 —— 資料集最該避免的就是這個。
@@ -759,14 +792,18 @@ def _cv_read(first_frame):
     【怎麼判定失敗】分三種,都會記進 _stats 好事後拆解:
       no_capsule  找不到膠囊 —— 多半是謎題還沒渲染出來,重試最有價值
       not_capsule 找到膠囊但四格面積驗證沒過 —— 有東西擋住箭頭
-      disagree    讀得到但幾幀之間對不起來 —— 分割不穩,不該賭,交給 2 線
+      disagree    讀得到但幾幀之間對不起來 —— 分割不穩,一般情況下不該賭,交給 2 線;
+                  但這也正是旋轉款符文的必然表現(見 _rotating_signal),所以幾幀
+                  不一致時會【額外】判斷一次是不是旋轉款,連同判定結果一起回傳。
     """
     import minimap
     import rune_cv
     seen = {}                       # dirs(tuple) -> 出現次數
     reasons = []
     frame = first_frame
+    tried_frames = []               # 只有讀不出一致答案時,才用來判斷是不是旋轉款
     for i in range(CV_TRIES):
+        tried_frames.append(frame)
         try:
             d, err = rune_cv.read_dirs(frame)
         except Exception as e:
@@ -775,7 +812,7 @@ def _cv_read(first_frame):
             key = tuple(d)
             seen[key] = seen.get(key, 0) + 1
             if seen[key] >= CV_AGREE:
-                return list(key), "", i + 1, frame
+                return list(key), "", i + 1, frame, False, None
         else:
             reasons.append("no_capsule" if "找不到" in err else
                            "not_capsule" if "不像" in err else "unread")
@@ -784,13 +821,106 @@ def _cv_read(first_frame):
             f2 = minimap._grab_window()
             if f2 is not None:
                 frame = f2
+    rotating, wheel_boxes = _rotating_signal(tried_frames)
     if seen:
         best = max(seen.items(), key=lambda kv: kv[1])
         _stat("cv_disagree")
         return [], (f"1 線 {CV_TRIES} 幀未取得一致答案(最多票 {list(best[0])} "
-                    f"×{best[1]})"), CV_TRIES, None
+                    f"×{best[1]})"), CV_TRIES, None, rotating, wheel_boxes
     _stat("cv_" + (reasons[-1] if reasons else "unread"))
-    return [], f"1 線讀不到({reasons[-1] if reasons else 'unread'})", CV_TRIES, None
+    return ([], f"1 線讀不到({reasons[-1] if reasons else 'unread'})", CV_TRIES, None,
+            rotating, wheel_boxes)
+
+
+def _rotating_signal(frames):
+    """判斷這批讀不出一致答案的幀,是不是【旋轉款符文】(而不是雜訊/定位失敗)。
+
+    回 (rotating: bool, boxes4: list|None)。
+
+    訊號:rune_detr.detect_arrows 在【每一幀】都選得出 4 支箭頭,而且框位置
+    【穩定】(中心點在幀間的最大位移 <= ROTATE_BOX_JITTER)。旋轉款箭頭只是原地
+    轉動,位置不變,所以框穩定;普通的定位失敗/雜訊通常連 4 支都選不滿,或框會
+    跟著雜訊亂跳。任一幀選不出 4 支就直接判定不是旋轉款,不繼續算穩定度。
+
+    多花的成本:`rune_cv.read_dirs` 內部在 rune_detr 可用時本來就會呼叫一次
+    `detect_arrows`,這裡是【額外】再呼叫一次(不能省,因為需要它回傳的框本身,
+    而 read_dirs 只回判向結果不回框)。只在「CV 讀不出一致答案」這個已經算失敗
+    的分支才會執行,GPU 上 5 幀約多 140ms,遠低於謎題窗預算,不影響一致時
+    (靜態路徑正常情況)的行為與耗時。"""
+    import rune_detr
+    if not rune_detr.available():
+        return False, None
+    boxes_hist = []
+    for f in frames:
+        try:
+            b = rune_detr.detect_arrows(f)
+        except Exception:
+            return False, None
+        if b is None or len(b) != 4:
+            return False, None
+        boxes_hist.append(b)
+    if len(boxes_hist) < 2:
+        return False, None
+    for k in range(4):
+        cxs = [(b[k][0] + b[k][2]) / 2.0 for b in boxes_hist]
+        cys = [(b[k][1] + b[k][3]) / 2.0 for b in boxes_hist]
+        if max(cxs) - min(cxs) > ROTATE_BOX_JITTER or max(cys) - min(cys) > ROTATE_BOX_JITTER:
+            return False, None
+    # 用歷史框的平均當代表框(降一點雜訊),四支依 x 由左到右排序回傳。
+    avg_boxes = []
+    for k in range(4):
+        x0 = sum(b[k][0] for b in boxes_hist) / len(boxes_hist)
+        y0 = sum(b[k][1] for b in boxes_hist) / len(boxes_hist)
+        x1 = sum(b[k][2] for b in boxes_hist) / len(boxes_hist)
+        y1 = sum(b[k][3] for b in boxes_hist) / len(boxes_hist)
+        avg_boxes.append((x0, y0, x1, y1))
+    avg_boxes.sort(key=lambda b: b[0])
+    return True, avg_boxes
+
+
+def _solve_wheel(boxes4):
+    """旋轉款符文路徑:全速連拍 ~WHEEL_CAPTURE_SECS 秒 → rune_wheel.solve()。
+    回 (dirs, err)。boxes4 是 _rotating_signal 判定時已經拿到的、四支箭頭的
+    穩定框(整幀座標)。
+
+    只裁切「四支箭頭聯集外接矩形」那一小塊存進 frames list,不存整幀 ——
+    全速連拍 WHEEL_CAPTURE_SECS 秒可能有數百格,整幀存的話記憶體會爆
+    (wgc.py 就記過「複製整幀」的代價:1368x800x4 全速時每秒 260MB)。裁切後
+    座標系統要跟著平移,boxes4 要改成相對這個裁切框的座標再交給
+    rune_wheel.solve()。
+
+    request_full_rate 是引用計數(見 wgc.py),用 try/finally 保證還原 ——
+    不還原的話擷取會一直全速跑,吃掉一顆核心 66% 的代價會賴著不走。"""
+    import minimap
+    import rune_wheel
+    import wgc
+    pad = WHEEL_BOX_PAD
+    ux0 = max(0, int(min(b[0] for b in boxes4)) - pad)
+    uy0 = max(0, int(min(b[1] for b in boxes4)) - pad)
+    ux1 = int(max(b[2] for b in boxes4)) + pad
+    uy1 = int(max(b[3] for b in boxes4)) + pad
+    rel_boxes = [(b[0] - ux0, b[1] - uy0, b[2] - ux0, b[3] - uy0) for b in boxes4]
+
+    wgc.request_full_rate(True)
+    try:
+        frames = []
+        t_end = time.monotonic() + WHEEL_CAPTURE_SECS
+        while time.monotonic() < t_end:
+            f = minimap._grab_window()
+            if f is not None:
+                crop = f[uy0:min(f.shape[0], uy1), ux0:min(f.shape[1], ux1)]
+                if crop.size:
+                    frames.append(crop)
+            time.sleep(WHEEL_POLL_GAP)
+    finally:
+        wgc.request_full_rate(False)
+
+    if len(frames) < WHEEL_MIN_FRAMES:
+        return [], f"旋轉路徑連拍樣本不足({len(frames)} 幀 < {WHEEL_MIN_FRAMES})"
+    dirs = rune_wheel.solve(frames, rel_boxes)
+    if not dirs:
+        return [], f"旋轉路徑判不出方向(連拍 {len(frames)} 幀,晃動事件不足或被同步假影濾光)"
+    return dirs, ""
 
 
 def _detect():
@@ -812,19 +942,30 @@ def _detect():
     dirs = []
     _last["cv_tries"] = 0          # 1 線關掉時要歸零,否則狀態頁一直掛著上一輪的次數
     if _line_cv:
-        dirs, cv_err, tried, hit_frame = _cv_read(frame)
+        dirs, cv_err, tried, hit_frame, rotating, wheel_boxes = _cv_read(frame)
         _last["cv_tries"] = tried
         if dirs:
             line = "cv"
             _detect_frame = hit_frame   # 存進資料集的必須是產生這個答案的那一幀
         else:
-            _stat("cv_miss")
-            if not _line_claude:        # 沒有第二條線可退,就到此為止
-                ms = int((time.perf_counter() - t0) * 1000)
-                err = f"{cv_err or '1 線讀不到'}(2 線未開啟,無法退線)"
-                _last.update({"ts": time.time(), "dirs": [], "err": err,
-                              "ms": ms, "line": "cv"})
-                return [], err, ms
+            # 旋轉款符文:CV 多幀讀值必然不一致(見 _rotating_signal),那正是
+            # 判定訊號本身,不是失敗 —— 改走旋轉路徑,而不是直接退 2 線。
+            if rotating and WHEEL_ENABLED:
+                wdirs, werr = _solve_wheel(wheel_boxes)
+                if wdirs:
+                    dirs = wdirs
+                    line = "wheel"
+                    _detect_frame = frame
+                else:
+                    cv_err = f"{cv_err}(旋轉路徑亦失敗: {werr})" if cv_err else werr
+            if not dirs:
+                _stat("cv_miss")
+                if not _line_claude:        # 沒有第二條線可退,就到此為止
+                    ms = int((time.perf_counter() - t0) * 1000)
+                    err = f"{cv_err or '1 線讀不到'}(2 線未開啟,無法退線)"
+                    _last.update({"ts": time.time(), "dirs": [], "err": err,
+                                  "ms": ms, "line": "cv"})
+                    return [], err, ms
 
     if not dirs and _line_claude:
         path, werr = _write_crop(frame)
