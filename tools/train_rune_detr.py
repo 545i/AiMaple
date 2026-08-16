@@ -103,11 +103,11 @@ def load_split(ds_dir=DS_DIR, ann_path=None):
     return train, val
 
 
-def build_model():
+def build_model(model_id=None):
     from transformers import RTDetrForObjectDetection
     model = RTDetrForObjectDetection.from_pretrained(
-        MODEL_ID, num_labels=len(DIRS), id2label=ID2LABEL, label2id=LABEL2ID,
-        ignore_mismatched_sizes=True)
+        model_id or MODEL_ID, num_labels=len(DIRS), id2label=ID2LABEL,
+        label2id=LABEL2ID, ignore_mismatched_sizes=True)
     return model
 
 
@@ -135,6 +135,9 @@ def main():
     ap.add_argument("--max-minutes", type=float, default=None,
                     help="牆鐘時間預算,超過就存 checkpoint 提早結束(分段接續用)")
     ap.add_argument("--out-dir", default=OUT_DIR)
+    ap.add_argument("--model-id", default=None,
+                    help="HuggingFace 模型 id;不給就用 MODEL_ID(r18vd)。"
+                         "換骨幹時 image processor 也要跟著換,兩處共用同一個值。")
     ap.add_argument("--img-height", type=int, default=640,
                     help="RTDetrImageProcessor 輸入高度。預設 640 與原本行為(正方形"
                          "640x640 squash)完全相同,不影響既有對照組。等比實驗改這個 "
@@ -161,7 +164,8 @@ def main():
     # 那條路徑預設會把長邊也頂到跟短邊同一個正方形畫布,還是要另外驗證是否等比;
     # 直接給資料集比例的精確 (h, w) 更直接、也更容易驗證(見下面 batch shape 印出)。
     processor = RTDetrImageProcessor.from_pretrained(
-        MODEL_ID, size={"height": args.img_height, "width": args.img_width})
+        args.model_id or MODEL_ID,
+        size={"height": args.img_height, "width": args.img_width})
     print(f"image processor size = {processor.size}")
 
     train_recs, val_recs = load_split(ann_path=args.ann)
@@ -190,7 +194,7 @@ def main():
     start_epoch = 0
     if args.resume and os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        model = build_model()
+        model = build_model(args.model_id)
         model.load_state_dict(ckpt["model"])
         model.to(device)
         optimizer = torch.optim.AdamW(
@@ -212,7 +216,7 @@ def main():
         start_epoch = ckpt["epoch"] + 1
         print(f"從 checkpoint 接續:epoch {start_epoch}")
     else:
-        model = build_model()
+        model = build_model(args.model_id)
         model.to(device)
         optimizer = torch.optim.AdamW(
             param_groups(model, args.head_lr, args.backbone_lr),
