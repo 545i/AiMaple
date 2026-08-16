@@ -150,7 +150,7 @@ def compute_info(frame_bgr, gt_boxes):
 
 def render_jpeg(frame_bgr, gt_boxes, fn, idx, total):
     """畫好候選/真值/選中框(`viz_rune_detect.draw`)+ 頂部檔名/摘要條,回 JPEG bytes。"""
-    vis, summary = viz_rune_detect.draw(frame_bgr, gt_boxes, MIN_SCORE)
+    vis, summary, _dirs = viz_rune_detect.draw(frame_bgr, gt_boxes, MIN_SCORE)
     bar = np.zeros((30, vis.shape[1], 3), dtype=np.uint8)
     cv2.putText(bar, f"[{idx + 1}/{total}] {fn}   {summary}", (8, 21),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
@@ -174,6 +174,52 @@ def _encode_jpeg(img):
     if not ok:
         raise RuntimeError("JPEG 編碼失敗")
     return buf.tobytes()
+
+
+# 大字結果條的四個方向各畫一個三角箭頭。用畫的不用文字,是因為 cv2.putText 走的是
+# Hershey 字型,只吃 ASCII —— 印不出 ←↑→↓,而 "left/right" 這種英文字在手機上
+# 一眼掃過去遠不如箭頭好認。
+_GLYPH_DXY = {"right": (1, 0), "left": (-1, 0), "up": (0, -1), "down": (0, 1)}
+
+
+def _draw_glyph(img, cx, cy, r, d, color):
+    """在 (cx,cy) 畫一個朝 d 的實心箭頭(三角頭 + 方尾)。d 不認得就畫問號。"""
+    v = _GLYPH_DXY.get(d)
+    if v is None:
+        cv2.putText(img, "?", (cx - r // 3, cy + r // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, r / 22.0, color, 3, cv2.LINE_AA)
+        return
+    dx, dy = v
+    px, py = -dy, dx                      # 垂直於指向的方向,用來畫寬度
+    tip = (cx + dx * r, cy + dy * r)
+    b1 = (cx + int(px * r * 0.55) - dx * r // 4, cy + int(py * r * 0.55) - dy * r // 4)
+    b2 = (cx - int(px * r * 0.55) - dx * r // 4, cy - int(py * r * 0.55) - dy * r // 4)
+    cv2.fillPoly(img, [np.array([tip, b1, b2], np.int32)], color, cv2.LINE_AA)
+    t0 = (cx - dx * r, cy - dy * r)
+    cv2.line(img, t0, (cx - dx * r // 5, cy - dy * r // 5), color,
+             max(3, r // 4), cv2.LINE_AA)
+
+
+def _result_banner(dirs, width, h=96):
+    """最上層的大字結果條:把判到的 4 個方向畫成大箭頭,手機上也一眼看得到。
+
+    這是使用者明確要求的 —— 小字標在每個框旁邊,在手機上根本看不清楚結果。
+    """
+    bar = np.full((h, width, 3), 22, np.uint8)
+    if not dirs:
+        cv2.putText(bar, "no result", (16, h // 2 + 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (120, 120, 120), 2, cv2.LINE_AA)
+        return bar
+    n = len(dirs)
+    slot = width / max(1, n)
+    r = min(int(h * 0.32), int(slot * 0.22))
+    for i, d in enumerate(dirs):
+        cx = int(slot * (i + 0.5))
+        col = (90, 230, 90) if d else (90, 90, 240)      # 讀不出來的用紅色
+        _draw_glyph(bar, cx, h // 2 - 6, r, d, col)
+        cv2.putText(bar, str(d or "?"), (cx - 26, h - 12),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.62, col, 2, cv2.LINE_AA)
+    return bar
 
 
 def render_live_jpeg(scale=1):
@@ -214,7 +260,7 @@ def render_live_jpeg(scale=1):
         out = np.vstack([bar, vis])
         return _encode_jpeg(out)
 
-    vis, summary = viz_rune_detect.draw(frame, None, MIN_SCORE)
+    vis, summary, dirs = viz_rune_detect.draw(frame, None, MIN_SCORE)
     elapsed_ms = round((time.time() - t0) * 1000, 1)
     s = max(1, min(3, scale))
     if s != 1:
@@ -223,5 +269,5 @@ def render_live_jpeg(scale=1):
     bar = np.zeros((28, vis.shape[1], 3), np.uint8)
     cv2.putText(bar, f"{_no_gt_summary(summary)}   {elapsed_ms}ms", (8, 20),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
-    out = np.vstack([bar, vis])
+    out = np.vstack([_result_banner(dirs, vis.shape[1]), bar, vis])
     return _encode_jpeg(out)

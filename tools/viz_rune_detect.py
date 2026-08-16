@@ -66,11 +66,15 @@ def raw_detections(frame_bgr):
 
 
 def draw(frame_bgr, gt_boxes, min_score=0.015):
-    """回 (標註後的圖, 摘要字串)。"""
+    """回 (標註後的圖, 摘要字串, 每支判到的方向 list)。
+
+    第三個回傳值是給呼叫端做大字顯示用的 —— 不另外再跑一次推論,直接把這裡
+    已經算好的結果帶出去(即時預覽每翻一張本來就要跑 0.5~4 秒,不該再乘二)。
+    選不出 4 支時回 None。"""
     vis = frame_bgr.copy()
     boxes, scores, _by0 = raw_detections(frame_bgr)
     if boxes is None:
-        return vis, "模型不可用"
+        return vis, "模型不可用", None
 
     # --- 第 1 層:所有超過門檻的候選(灰) ---
     keep = [i for i in range(len(scores)) if scores[i] >= min_score]
@@ -88,7 +92,7 @@ def draw(frame_bgr, gt_boxes, min_score=0.015):
     # --- 第 3 層:幾何選擇挑中的 4 支 + 判向對錯 ---
     sel = rune_detr.detect_arrows(frame_bgr)
     if sel is None:
-        return vis, f"候選 {len(keep)} 個,幾何選擇【選不出 4 支】→ 退給 2 線"
+        return vis, f"候選 {len(keep)} 個,幾何選擇【選不出 4 支】→ 退給 2 線", None
 
     dirs, err = rune_cv._read_dirs_detr(frame_bgr, sel)
     truth = [b.get("settled_direction") or b.get("label")
@@ -103,10 +107,11 @@ def draw(frame_bgr, gt_boxes, min_score=0.015):
         cv2.rectangle(vis, (x0, y0), (x1, y1), col, 2)
         cv2.putText(vis, f"{d or '?'}", (x0, y1 + 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 2, cv2.LINE_AA)
-        if not ok:
+        if not ok and t is not None:   # 沒有真值(即時預覽)就不要印 gt:None,那是雜訊
             cv2.putText(vis, f"gt:{t}", (x0, y1 + 32),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, C_GT, 1, cv2.LINE_AA)
-    return vis, f"候選 {len(keep)} 個 → 選出 4 支,判向對 {n_ok}/4" + (f"  ({err})" if err else "")
+    return (vis, f"候選 {len(keep)} 個 → 選出 4 支,判向對 {n_ok}/4"
+            + (f"  ({err})" if err else ""), dirs)
 
 
 def main():
@@ -129,7 +134,7 @@ def main():
         if img is None:
             print(f"讀不到 {p}")
             continue
-        vis, summary = draw(img, gt_by_file.get(os.path.basename(p)), args.min_score)
+        vis, summary, _dirs = draw(img, gt_by_file.get(os.path.basename(p)), args.min_score)
         bar = np.zeros((30, vis.shape[1], 3), np.uint8)
         cv2.putText(bar, f"{os.path.basename(p)}   {summary}", (8, 21),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
