@@ -67,6 +67,11 @@ rune_dataset/*
 # 固化後不得重算,必須進版控才能複驗
 !rune_dataset/gate_split.json
 
+# 符文合成測試集(tools/rune_synth.py 產生):圖檔會佔數百 MB 且可重新產生,
+# 只留標註 json(小、且是「撐不撐得住新箭頭」這個結論的可複現依據)。
+rune_synth/*
+!rune_synth/annotations_*.json
+
 # SDD 工作區(ledger/briefs/reports),不進版控
 .superpowers/
 
