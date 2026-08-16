@@ -40,6 +40,7 @@ import navigator
 import minimap
 import calib
 import rune
+import rune_viz
 import revive
 import firmware
 import paths
@@ -812,6 +813,46 @@ def rune_capsule(token: str = Query(""), scale: int = Query(3)):
                             detail="拿不到 MapleStory 視窗影格(遊戲開著嗎?)")
     return Response(content=jpg, media_type="image/jpeg",
                     headers={"Cache-Control": "no-store"})
+
+
+# ===== 符文箭頭偵測測試器(離線資料集,不碰遊戲/角色)=====
+@app.get("/rune/viz")
+def rune_viz_img(token: str = Query(""), src: str = Query("real"), i: int = Query(0)):
+    """對指定資料集樣本跑一次偵測,畫上候選框+信心分數(灰)、真值框(藍)、
+    幾何選擇挑中的 4 支+判向對錯(綠/紅)。回 JPEG。i 超出範圍會取模,方便
+    前端一路按「下一張」。首次呼叫要載入模型,可能要 0.5~3 秒。"""
+    _check_owner(token)
+    try:
+        fn, frame, gt_boxes, idx, total = rune_viz.sample(src, i)
+    except rune_viz.SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        jpg = rune_viz.render_jpeg(frame, gt_boxes, fn, idx, total)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/rune/viz/info")
+def rune_viz_info(token: str = Query(""), src: str = Query("real"), i: int = Query(0)):
+    """跟 /rune/viz 同一張樣本的結構化版本:候選數、選出幾支、判向對幾支、
+    每支的預測方向/真值/角度/is_settled、推論耗時。"""
+    _check_owner(token)
+    try:
+        fn, frame, gt_boxes, idx, total = rune_viz.sample(src, i)
+    except rune_viz.SourceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    info = rune_viz.compute_info(frame, gt_boxes)
+    return JSONResponse({"src": src, "file": fn, "index": idx, "total": total, **info})
+
+
+@app.get("/rune/viz/stats")
+def rune_viz_stats(token: str = Query("")):
+    """各來源離線量測的參考基準(端到端單支/四支全對正確率)。寫死,不即時重算
+    ——重算 335 張要好幾分鐘,不適合放在網頁請求裡。"""
+    _check_owner(token)
+    return JSONResponse(rune_viz.STATS)
 
 
 # ===== 死亡自動復活 =====

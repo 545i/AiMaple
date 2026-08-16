@@ -405,6 +405,33 @@
      <div id="capInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
    </div>
 
+   <!-- 偵測測試器：離線資料集(真實/合成)一鍵重跑偵測，看候選框/幾何選擇/判向對錯 -->
+   <div class="mbtn" id="vizEditBtn" style="margin-top:6px">🧪 偵測測試器：展開</div>
+   <div id="vizBox" style="display:none;margin-top:8px;padding:8px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
+     <div style="font-size:11px;color:#8a8f99;margin-bottom:6px">
+       圖例：灰＝候選框＋信心分數　藍＝真值框　綠＝判向正確　紅＝判向錯誤(下方標 gt:真值)
+     </div>
+     <select id="vizSrcSel" style="width:100%;background:#1a1d26;color:#e6e8ee;border:1px solid #2a2d38;border-radius:5px;padding:6px;font-size:13px">
+       <option value="real">真實</option>
+       <option value="synth_a">合成－不動</option>
+       <option value="synth_c">合成－粗胖</option>
+       <option value="synth_d">合成－細長</option>
+       <option value="synth_e">合成－細長＋旋轉</option>
+     </select>
+     <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+       <div class="mbtn" id="vizPrevBtn" style="flex:0 0 auto;padding:8px 12px">◀ 上一張</div>
+       <div id="vizIdxLabel" style="flex:1;text-align:center;font-size:13px;color:#cfd3db;font-variant-numeric:tabular-nums">-- / --</div>
+       <div class="mbtn" id="vizNextBtn" style="flex:0 0 auto;padding:8px 12px">下一張 ▶</div>
+     </div>
+     <img id="vizImg" alt="偵測測試器"
+          style="width:100%;border-radius:8px;background:#000;display:block;object-fit:contain;margin-top:6px">
+     <div id="vizInfo" style="font-size:12px;color:#cfd3db;margin-top:6px;white-space:pre-wrap">--</div>
+     <div style="border-top:1px solid #2a2d38;margin:8px 0 6px;padding-top:6px;font-size:11px;color:#8a8f99">
+       離線量測參考基準（下表非即時算出，見說明文字）
+     </div>
+     <div id="vizStats" style="font-size:11px;color:#8a8f99;overflow-x:auto">--</div>
+   </div>
+
    <!-- 一眼可讀的狀態面板 -->
    <div id="statusPanel" style="margin-top:10px;padding:8px 10px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
      <div id="patrolPhase" style="font-size:15px;font-weight:700;color:#7fe0b0;font-variant-numeric:tabular-nums">狀態：--</div>
@@ -774,6 +801,7 @@ function showView(name){
   if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
   if(name !== "dash" && faceTimer){ clearInterval(faceTimer); faceTimer = null; }  // 停方向輪詢
   if(name !== "dash" && typeof stopCapPreview === "function") stopCapPreview();  // 離開儀表板停膠囊預覽
+  if(name !== "dash" && typeof stopVizTester === "function") stopVizTester();  // 離開儀表板停偵測測試器
   if(name !== "dash" && typeof watchDetect === "function") watchDetect(0);  // 撤銷背景偵測需求
 }
 function loadDash(){
@@ -1658,6 +1686,95 @@ $("#capBtn").onclick = ()=>{
   $("#capBtn").textContent = "💊 膠囊預覽：開（每秒更新）";
   capTick();
   capTimer = setInterval(capTick, 1000);
+};
+
+// ---- 偵測測試器：對 rune_dataset(真實)/rune_synth(合成 a/c/d/e)離線樣本重跑一次
+// 偵測，畫出候選框/幾何選擇挑中的 4 支/判向對錯，配上 /rune/viz/stats 的離線基準。
+// 不是即時輪詢（每張都要重新推論，0.5~3 秒），只在展開面板/切換來源/按上下一張時打一次。
+const VIZ_SRC_LABEL = {real:"真實", synth_a:"合成-不動", synth_c:"合成-粗胖",
+                        synth_d:"合成-細長", synth_e:"合成-細長+旋轉"};
+let vizOpened = false, vizIdx = 0, vizTotal = 0, vizBusy = false, vizAbort = null;
+
+function stopVizTester(){
+  if(vizAbort){ vizAbort.abort(); vizAbort = null; }
+  $("#vizImg").removeAttribute("src");
+}
+
+async function vizLoadStats(){
+  try{
+    const j = await (await fetch(`/rune/viz/stats?token=${encodeURIComponent(token)}`)).json();
+    const rows = Object.entries(j.sources || {}).map(([k, v]) =>
+      `<tr><td style="padding:2px 10px 2px 0">${v.label}</td>` +
+      `<td style="padding:2px 10px;text-align:right">${v.single != null ? (v.single*100).toFixed(1)+"%" : "—"}</td>` +
+      `<td style="padding:2px 0;text-align:right">${v.all4 != null ? (v.all4*100).toFixed(1)+"%" : "—"}</td></tr>`
+    ).join("");
+    $("#vizStats").innerHTML =
+      `<table style="border-collapse:collapse;width:100%"><tr style="color:#6b7280">` +
+      `<th style="text-align:left;font-weight:400">來源</th>` +
+      `<th style="text-align:right;font-weight:400">端到端單支</th>` +
+      `<th style="text-align:right;font-weight:400">四支全對</th></tr>${rows}</table>` +
+      `<div style="margin-top:4px;color:#6b7280">${j.note || ""}</div>`;
+  }catch(_){ $("#vizStats").textContent = "讀取失敗（連線？）"; }
+}
+
+async function vizLoad(){
+  if(vizBusy) return;
+  vizBusy = true;
+  const src = $("#vizSrcSel").value;
+  if(vizAbort) vizAbort.abort();
+  const ctrl = new AbortController();
+  vizAbort = ctrl;
+  $("#vizInfo").textContent = "偵測中…（首次載入模型可能要數秒）";
+  $("#vizIdxLabel").textContent = "載入中…";
+  const im = $("#vizImg");
+  im.onerror = ()=>{ $("#vizInfo").textContent = "❌ 讀圖失敗（連線？）"; };
+  im.src = `/rune/viz?src=${src}&i=${vizIdx}&token=${encodeURIComponent(token)}&_=${Date.now()}`;
+  try{
+    const j = await (await fetch(
+      `/rune/viz/info?src=${src}&i=${vizIdx}&token=${encodeURIComponent(token)}`,
+      { signal: ctrl.signal })).json();
+    if(ctrl.signal.aborted) return;
+    vizTotal = j.total || 0;
+    vizIdx = j.index || 0;
+    $("#vizIdxLabel").textContent = `${VIZ_SRC_LABEL[src]||src}　第 ${vizIdx+1} / ${vizTotal} 張`;
+    if(!j.model_available){
+      $("#vizInfo").textContent = "⚠ 模型不可用（RT-DETR 權重載不到？）";
+    }else if(j.fallback){
+      $("#vizInfo").textContent =
+        `${j.file}　候選 ${j.n_candidates} 個 → 幾何選擇【選不出 4 支】(退給 2 線)　耗時 ${j.elapsed_ms}ms`;
+    }else{
+      const lines = j.arrows.map((a, k) =>
+        `#${k+1} 預測 ${RUNE_ARROW[a.pred]||a.pred||"?"} / 真值 ${RUNE_ARROW[a.truth]||a.truth||"?"} ` +
+        `${a.correct ? "✅" : "❌"}　角度 ${a.angle != null ? a.angle.toFixed(1)+"°" : "—"}` +
+        `${a.is_settled === false ? "（旋轉中）" : a.is_settled === true ? "（已停止）" : ""}`
+      ).join("\n");
+      $("#vizInfo").textContent =
+        `${j.file}　候選 ${j.n_candidates} 個 → 選出 ${j.n_selected} 支，判向對 ${j.n_correct}/${j.n_selected}` +
+        (j.err ? `（${j.err}）` : "") + `　耗時 ${j.elapsed_ms}ms\n` + lines;
+    }
+  }catch(e){
+    if(e.name !== "AbortError") $("#vizInfo").textContent = "讀取失敗（連線？）";
+  }finally{
+    vizBusy = false;
+  }
+}
+function vizStep(delta){
+  vizIdx = vizTotal > 0 ? (vizIdx + delta + vizTotal) % vizTotal : Math.max(0, vizIdx + delta);
+  vizLoad();
+}
+$("#vizPrevBtn").onclick = ()=> vizStep(-1);
+$("#vizNextBtn").onclick = ()=> vizStep(1);
+$("#vizSrcSel").onchange = ()=>{ vizIdx = 0; vizLoad(); };
+$("#vizEditBtn").onclick = ()=>{
+  const b = $("#vizBox"), on = b.style.display === "none";
+  b.style.display = on ? "block" : "none";
+  $("#vizEditBtn").textContent = on ? "🧪 偵測測試器：收合" : "🧪 偵測測試器：展開";
+  if(on){
+    if(!vizOpened){ vizOpened = true; vizLoadStats(); }
+    vizLoad();
+  }else{
+    stopVizTester();
+  }
 };
 
 // ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
