@@ -17,6 +17,7 @@ import os
 import threading
 
 from config import KM_DLL, KM_VID, KM_PID
+import paths
 
 # 滑鼠鍵編號（文件：1=左 2=右 3=中 4-8=側鍵）
 _BTN = {"left": 1, "right": 2, "middle": 3,
@@ -27,8 +28,8 @@ class KMouse:
     def __init__(self, dll_path=KM_DLL):
         self._lock = threading.Lock()
         self.connected = False
-        here = os.path.dirname(os.path.abspath(__file__))
-        self._dll_path = os.path.join(here, dll_path)
+        # km.dll 是唯讀資源(ctypes 載入),打包後內嵌在 exe → 走 paths.res
+        self._dll_path = dll_path if os.path.isabs(dll_path) else paths.srv_res(dll_path)
         self._dll = None
 
     def _bind_signatures(self):

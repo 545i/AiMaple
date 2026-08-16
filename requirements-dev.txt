@@ -1,0 +1,5 @@
+# 開發用,執行期與打包都不需要
+pytest
+onnxruntime       # 符文箭頭 CNN 判讀器(server/rune_arrow.onnx)實驗用。CNN 驗收未過,
+                  # server/rune_nn.py 的 ENABLED 預設關閉,正式執行期不需要這個套件。
+                  # 要做實驗設 MAPLE_RUNE_NN=1 時才需要安裝。

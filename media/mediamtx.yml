@@ -1,0 +1,35 @@
+# MediaMTX 低延遲桌面串流設定
+# 由 start-video 腳本從 maple 根目錄啟動（故 ffmpeg 路徑相對於根目錄）。
+logLevel: info
+readTimeout: 10s
+writeTimeout: 10s
+
+# --- 控制 API（供 FastAPI 即時調整 ffmpeg 參數用，僅綁本機） ---
+api: yes
+apiAddress: 127.0.0.1:9997
+
+# --- RTSP：ffmpeg 把編碼後的畫面推進來 ---
+rtsp: yes
+rtspTransports: [tcp]
+rtspAddress: :8554
+
+# --- WebRTC：手機瀏覽器從這裡低延遲拉流（WHEP） ---
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcAllowOrigins: ['*']
+# 跨網際網路/Tailscale 時，把主機的 Tailscale IP 加進來，讓 ICE 候選正確：
+webrtcAdditionalHosts: ['100.92.107.69']
+
+# 關閉不需要的協定，降低攻擊面
+hls: no
+rtmp: no
+srt: no
+
+paths:
+  # 畫面：由 FastAPI 直接啟動 ffmpeg 推流進來（支援全螢幕/指定視窗），
+  # 這裡只需接收該路徑的發布，不使用 runOnDemand。
+  screen:
+  # 音訊：獨立管線（soundcard loopback → Opus），與畫面分開，互不影響。
+  # 前端用第二條 WHEP(:8889/audio/whep) 只收音訊。
+  audio:

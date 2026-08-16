@@ -7,7 +7,15 @@
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   html,body { width:100%; height:100%; overflow:hidden; background:#000; font-family:system-ui,"Microsoft JhengHei",sans-serif; touch-action:none; }
-  #video { position:fixed; background:#000; z-index:0; object-fit:contain; }
+  /* 舞台容器：強制橫向時整個轉 90° 填滿(參考 YouTube 全螢幕) */
+  #stage { position:fixed; inset:0; }
+  body.rotate #stage { inset:auto; top:50%; left:50%; width:100vh; height:100vw;
+                       transform:translate(-50%,-50%) rotate(90deg); }
+
+  #video, #mjpeg { position:fixed; inset:0; width:100%; height:100%; background:#000; z-index:0; object-fit:contain; }
+  #mjpeg { display:none; }   /* 遠端模式(Cloudflare Tunnel)才顯示：MJPEG 備援串流 */
+  /* 畫質切換遮罩：凍結最後一格畫面蓋住 ffmpeg 重啟+WHEP 重連的空窗，避免黑屏 */
+  #freeze { position:fixed; inset:0; width:100%; height:100%; z-index:1; object-fit:contain; display:none; pointer-events:none; }
 
   /* 連線畫面 */
   #setup { position:fixed; inset:0; z-index:100; background:#111; color:#eee; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
@@ -17,183 +25,689 @@
   #status { position:fixed; top:6px; left:10px; z-index:60; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
   #status.bad { color:#f55; }
 
-  /* 頂部工具列 */
-  #tools { position:fixed; top:6px; right:10px; z-index:60; display:flex; gap:8px; }
-  #tools .tool { pointer-events:auto; font-size:13px; padding:6px 12px; border-radius:10px; color:#fff;
-                 background:rgba(40,40,50,.7); border:1px solid rgba(255,255,255,.25); }
-  #tools .tool.on { background:#ffb020; color:#000; }
+  /* ===== 訪客(短密碼)模式：僅螢幕按鈕 4/←/→，滑鼠觸控板與主人功能全隱藏 ===== */
+  #guestBadge { position:fixed; top:6px; left:50%; transform:translateX(-50%); z-index:60; display:none;
+                font-size:12px; color:#ffd479; background:rgba(0,0,0,.55); padding:3px 12px; border-radius:10px; white-space:nowrap; }
+  body.guest #guestBadge { display:block; }
+  body.guest #look, body.guest #padbg, body.guest #deskhint { display:none !important; }
+  body.guest #pad { display:block !important; }          /* 電腦端也用螢幕按鈕 */
+  body.guest #pad .btn { width:76px; height:76px; font-size:22px; }
+  body.guest #mTarget, body.guest #mHw, body.guest #focusBtn, body.guest #editRow,
+  body.guest #ownerScreen, body.guest #ownerClip,
+  body.guest #toDashBtn, body.guest #idleBtn { display:none !important; }
+  #rHours { width:70px; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:6px; font-size:14px; }
+  /* 閒置掛機按鍵追蹤燈(桌面寵物式) */
+  #klights { display:flex; align-items:center; gap:10px; margin-top:8px; }
+  #klights .klight { width:44px; height:44px; border-radius:10px; display:flex; align-items:center;
+                     justify-content:center; font-size:18px; font-weight:700;
+                     background:#23242e; border:1px solid #3a3d48; color:#6a6d78; transition:all .08s; }
+  #klights .klight.on { background:#3a7; border-color:#5fe0a0; color:#fff; box-shadow:0 0 10px #3a7; }
+  #klights .kinfo { margin-left:auto; font-size:13px; color:#b8bcc6; font-variant-numeric:tabular-nums; }
+  #cursor { position:fixed; z-index:30; width:16px; height:16px; margin:-8px 0 0 -8px; pointer-events:none; display:none;
+            border:2px solid #fff; border-radius:50%; background:rgba(255,70,70,.6); box-shadow:0 0 5px rgba(0,0,0,.85); }
 
-  /* 按鍵 */
-  .btn { pointer-events:auto; display:flex; align-items:center; justify-content:center;
-         color:#fff; font-size:15px; font-weight:600; border-radius:12px;
-         background:rgba(40,40,50,.55); border:1px solid rgba(255,255,255,.22); backdrop-filter:blur(2px); }
-  .btn.active { background:rgba(70,160,120,.85); }
-  .btn.editing { outline:2px dashed #ffb020; }
-  .look { pointer-events:auto; }
 
-  .layout { position:fixed; inset:0; z-index:10; pointer-events:none; display:none; }
+  /* 直立時控制區背景（由 JS 的 body.lay-port / lay-land 控制，非物理方向） */
+  #padbg { position:fixed; display:none; z-index:6; }
+  body.lay-port #padbg{ display:block; top:36vh; left:0; right:0; bottom:0;
+    background:linear-gradient(#15151c,#0a0a0f); border-top:2px solid #2a2a35; }
 
-  /* ===== 橫向：畫面滿版，控制浮在上面 ===== */
-  @media (orientation:landscape){
-    #video { inset:0; width:100%; height:100%; }
-    #land { display:block; }
-    #land .look { position:absolute; left:25%; right:25%; top:0; bottom:0; }
-    #land .dpad { position:absolute; left:26px; bottom:26px; width:186px; height:186px; }
-    #land .dpad .btn { position:absolute; width:60px; height:60px; }
-    #land .dpad [data-slot=up]{ left:63px; top:0; } #land .dpad [data-slot=left]{ left:0; top:63px; }
-    #land .dpad [data-slot=down]{ left:63px; top:63px; } #land .dpad [data-slot=right]{ left:126px; top:63px; }
-    #land .leftcustom { position:absolute; left:230px; bottom:26px; display:flex; flex-direction:column; gap:12px; }
-    #land .leftcustom .btn { width:64px; height:64px; }
-    #land .rightcustom { position:absolute; right:26px; bottom:26px; display:grid; grid-template-columns:repeat(2,72px); grid-auto-rows:72px; gap:12px; }
-    #land .rightcustom .btn { width:72px; height:72px; }
-  }
+  /* 滑鼠觸控板區（依佈局定位） */
+  .look { position:fixed; z-index:8; pointer-events:auto; }
+  body.lay-land #video, body.lay-land #mjpeg, body.lay-land #freeze{ inset:0; width:100%; height:100%; }
+  body.lay-land .look{ left:24%; right:24%; top:0; bottom:0; }
+  body.lay-port #video, body.lay-port #mjpeg, body.lay-port #freeze{ inset:auto; top:0; left:0; width:100%; height:36vh; }
+  body.lay-port .look{ left:auto; right:auto; bottom:auto; top:0; left:0; width:100%; height:36vh; }
 
-  /* ===== 直立：上畫面、下按鍵（紅白機佈局） ===== */
-  @media (orientation:portrait){
-    #video { top:0; left:0; width:100%; height:44vh; }
-    #port { display:block; }
-    #port .look { position:absolute; top:0; left:0; width:100%; height:44vh; }
-    #port .pad { position:absolute; top:44vh; left:0; right:0; bottom:0; pointer-events:auto;
-                 background:linear-gradient(#1a1a22,#0e0e14); border-top:2px solid #333;
-                 display:flex; align-items:center; justify-content:space-between; padding:0 22px; }
-    #port .dpad { position:relative; width:174px; height:174px; flex:0 0 auto; }
-    #port .dpad .btn { position:absolute; width:56px; height:56px; }
-    #port .dpad [data-slot=up]{ left:59px; top:0; } #port .dpad [data-slot=left]{ left:0; top:59px; }
-    #port .dpad [data-slot=down]{ left:59px; top:118px; } #port .dpad [data-slot=right]{ left:118px; top:59px; }
-    #port .actions { flex:0 0 auto; display:grid; grid-template-columns:repeat(4,62px); grid-auto-rows:62px; gap:12px; }
-    #port .actions .btn { width:62px; height:62px; border-radius:50%; }
-  }
+  /* 自由擺放按鈕 */
+  #pad { position:fixed; inset:0; z-index:12; pointer-events:none; }
+  #pad .btn { position:absolute; width:58px; height:58px; transform:translate(-50%,-50%);
+              pointer-events:auto; touch-action:none;
+              display:flex; align-items:center; justify-content:center;
+              color:#fff; font-size:15px; font-weight:600; border-radius:14px;
+              background:rgba(40,40,50,.55); border:1px solid rgba(255,255,255,.25); backdrop-filter:blur(2px); }
+  #pad .btn.active { background:rgba(70,160,120,.9); }
+  #pad .btn.editing { outline:2px dashed #ffb020; }
+  #pad .btn .del { position:absolute; top:-9px; right:-9px; width:22px; height:22px; border-radius:50%;
+                   background:#d33; color:#fff; font-size:13px; display:none; align-items:center; justify-content:center; }
+  #pad .btn.editing .del { display:flex; }
+
+  /* 桌面(電腦)模式：隱藏虛擬按鍵/觸控板/編輯，直接捕捉實體鍵鼠 */
+  body.desktop #pad, body.desktop #look, body.desktop #padbg { display:none !important; }
+  #deskhint { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); z-index:45;
+              display:none; font-size:14px; color:#fff; background:rgba(0,0,0,.6);
+              padding:8px 18px; border-radius:12px; pointer-events:none; }
+  body.desktop #deskhint.show { display:block; }
 
   /* 注視覆蓋層 */
-  #watch { position:fixed; inset:0; z-index:40; display:none; align-items:center; justify-content:center; }
+  #watch { position:fixed; z-index:40; display:none; align-items:center; justify-content:center; inset:0; }
   #watch.show { display:flex; }
   #watch button { pointer-events:auto; font-size:20px; font-weight:700; padding:18px 40px; border-radius:16px;
                   border:none; background:rgba(70,160,120,.92); color:#fff; }
-  @media (orientation:portrait){ #watch{ bottom:auto; height:44vh; inset:0 0 auto 0; } }
+  body.lay-port #watch{ inset:0 0 auto 0; height:36vh; }
 
-  /* 模擬鍵盤選擇器 */
-  #picker,#screen { position:fixed; inset:0; z-index:120; background:rgba(0,0,0,.85); display:none;
-            flex-direction:column; align-items:center; justify-content:center; padding:12px; color:#fff; }
-  #picker.on,#screen.on { display:flex; }
-  #picker h3,#screen h3 { font-size:16px; margin-bottom:12px; }
-  #kbd { display:flex; flex-direction:column; gap:6px; align-items:center; max-height:78vh; overflow:auto; touch-action:pan-y; }
-  #kbd .row { display:flex; gap:6px; }
-  #kbd .k { min-width:40px; height:42px; padding:0 8px; display:flex; align-items:center; justify-content:center; font-size:14px; border-radius:8px; background:#333; border:1px solid #555; }
+  /* 模擬鍵盤 */
+  #picker { position:fixed; inset:0; z-index:140; background:rgba(0,0,0,.92); display:none;
+            flex-direction:column; align-items:center; justify-content:flex-start;
+            padding:14px 10px 30px; color:#fff; overflow-y:auto; touch-action:pan-y; }
+  #picker.on { display:flex; }
+  #picker h3 { font-size:16px; margin-bottom:12px; }
+  #kbd { display:flex; flex-direction:column; gap:8px; align-items:center; width:100%; }
+  #kbd .row { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; max-width:98vw; }
+  #kbd .k { min-width:34px; height:40px; padding:0 7px; display:flex; align-items:center; justify-content:center; font-size:13px; border-radius:8px; background:#333; border:1px solid #555; }
   #kbd .k:active { background:#3a7; }
   .modal-close { margin-top:14px; font-size:15px; padding:8px 24px; border-radius:8px; border:none; background:#555; color:#fff; }
 
-  /* 畫面設定面板 */
-  #screen .field { display:flex; align-items:center; gap:12px; margin:8px 0; font-size:15px; width:300px; max-width:86vw; }
-  #screen .field label { width:70px; }
-  #screen .field input[type=range]{ flex:1; }
-  #screen .field .val { width:52px; text-align:right; }
-  #screen .segs { display:flex; gap:6px; flex-wrap:wrap; }
-  #screen .seg { padding:6px 10px; border-radius:8px; background:#333; border:1px solid #555; font-size:13px; }
-  #screen .seg.on { background:#3a7; }
-  #screen .apply { margin-top:14px; font-size:16px; padding:10px 30px; border-radius:8px; border:none; background:#3a7; color:#fff; }
+  /* ===== 漢堡按鈕 + 控制中心抽屜(Steam Deck 式) ===== */
+  #menuBtn { position:fixed; top:8px; right:10px; z-index:60; width:46px; height:40px; display:flex;
+             align-items:center; justify-content:center; font-size:20px; color:#fff;
+             background:rgba(40,40,50,.72); border:1px solid rgba(255,255,255,.25); border-radius:10px; }
+  #menuMask { position:fixed; inset:0; z-index:125; background:rgba(0,0,0,.4); display:none; }
+  #menuMask.on { display:block; }
+  #menu { position:fixed; top:0; right:0; bottom:0; width:min(88%,360px); z-index:126;
+          background:#15161c; color:#eee; transform:translateX(105%); transition:transform .22s ease;
+          display:flex; flex-direction:column; box-shadow:-6px 0 24px rgba(0,0,0,.55); }
+  #menu.on { transform:translateX(0); }
+  .mhead { display:flex; align-items:center; justify-content:space-between; padding:14px 16px;
+           border-bottom:1px solid #2a2b33; font-size:16px; flex:0 0 auto; }
+  /* 控制中心分頁：連接管理 / 出租管理 */
+  .mtabs { display:flex; flex:0 0 auto; border-bottom:1px solid #2a2b33; }
+  .mtab { flex:1; text-align:center; padding:11px 0; font-size:14px; color:#8a8f99;
+          border-bottom:2px solid transparent; }
+  .mtab.on { color:#fff; border-bottom-color:#3a7; font-weight:600; }
+  body.guest .mtabs { display:none; }   /* 訪客沒有出租分頁 */
+  .mx { width:34px; height:34px; display:flex; align-items:center; justify-content:center; border-radius:8px; background:#2a2b33; }
+  .mbody { flex:1; overflow-y:auto; padding:12px 16px 34px; touch-action:pan-y; }
+  .mstat { font-size:13px; color:#ffd479; background:#1d1e26; padding:8px 12px; border-radius:8px; margin-bottom:8px; word-break:break-all; }
+  #mHw { color:#7fe0b0; }
+  .msec { font-size:12px; color:#8a8f99; margin:16px 0 8px; letter-spacing:2px; }
+  .mrow { display:flex; align-items:center; gap:10px; margin:9px 0; font-size:14px; }
+  .mrow > label { width:52px; flex:0 0 auto; color:#b8bcc6; }
+  .mrow input[type=range]{ flex:1; }
+  .mrow .val { width:48px; text-align:right; }
+  .mgrid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:9px 0; }
+  .mbtn { padding:12px; text-align:center; border-radius:10px; background:#262832; border:1px solid #3a3d48; font-size:14px; color:#fff; }
+  .mbtn.on { background:#ffb020; color:#000; border-color:#ffb020; }
+  .segs { display:flex; gap:6px; flex-wrap:wrap; }
+  .seg { padding:7px 11px; border-radius:8px; background:#2a2b33; border:1px solid #3a3d48; font-size:13px; }
+  .seg.on { background:#3a7; color:#fff; border-color:#3a7; }
+  .mapply { width:100%; margin-top:18px; padding:13px; border:none; border-radius:10px; background:#3a7; color:#fff; font-size:15px; }
+  #clipText { width:100%; box-sizing:border-box; background:#1d1e26; color:#eee; border:1px solid #3a3d48; border-radius:8px; padding:8px; font-size:14px; resize:vertical; }
+  body.desktop #editRow, body.desktop #layRow { display:none; }
+
+  /* ===== 三層 view：登入 / 儀表板(中控) / 主人遠端 ===== */
+  /* 覆寫原本的顯示規則,一律改由 body.view-* 控制,徹底分頁避免互相干擾 */
+  #setup   { display:none; }
+  #menuBtn { display:none; }
+  body.view-login  #setup   { display:flex; }
+  body.view-remote #menuBtn { display:flex; }
+  body.view-remote #toDashTop { display:flex; }
+
+  #dashView { position:fixed; inset:0; z-index:110; background:#0e0f14; color:#eee;
+              display:none; flex-direction:column; overflow-y:auto; padding:22px 16px 40px; }
+  body.view-dash #dashView { display:flex; }
+  .dash-card { max-width:540px; width:100%; margin:0 auto; }
+  .dash-h  { font-size:22px; font-weight:700; }
+  .dash-sub{ font-size:13px; color:#8a8f99; margin:4px 0 16px; }
+  /* 儀表板分頁：出租 / 閒置 / 自動巡邏 / 遠端 */
+  .dtabs { display:flex; gap:5px; margin:14px 0 12px; }
+  .dtab { flex:1; text-align:center; padding:9px 3px; border-radius:9px; background:#1a1c24;
+          color:#9aa0ac; font-size:12.5px; font-weight:600; border:1px solid #2a2d38; cursor:pointer;
+          white-space:nowrap; }
+  .dtab.on { background:#2d6cdf; color:#fff; border-color:#2d6cdf; }
+  .dpane { display:none; }
+  .dpane.on { display:block; }
+  #toast { position:fixed; top:14px; left:50%; transform:translate(-50%,-24px); z-index:200;
+           background:rgba(30,126,52,.96); color:#fff; padding:10px 18px; border-radius:10px;
+           font-size:14px; max-width:82vw; text-align:center; box-shadow:0 6px 20px rgba(0,0,0,.45);
+           opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
+  #toast.show { opacity:1; transform:translate(-50%,0); }
+  #toast.err { background:rgba(192,57,43,.96); }
+  .enter-btn { width:100%; margin-top:22px; padding:16px; border:none; border-radius:12px;
+               background:#3a7; color:#fff; font-size:17px; font-weight:700; }
+  .logout-btn { width:100%; margin-top:10px; padding:11px; border:1px solid #3a3d48;
+                border-radius:10px; background:#1d1e26; color:#b8bcc6; font-size:14px; }
+  /* 遠端頁右上「≡ 儀表板」返回鈕(放漢堡左側,不擋左上狀態列) */
+  /* 小地圖預覽上的巡邏點圓圈(仿 auto-maple draw_location 大範圍容差圈) */
+  .patrol-dot { position:absolute; width:22%; aspect-ratio:1; transform:translate(-50%,-50%);
+                border:2px solid #33ffdd; border-radius:50%; background:rgba(51,255,221,.10);
+                box-shadow:0 0 4px #000; pointer-events:none; box-sizing:border-box; }
+  .patrol-dot > span {   /* 中心橘點=站立位置(青圈=攻擊範圍) */
+                position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+                width:15px; height:15px; background:#ff9820; border:1px solid #fff;
+                border-radius:50%; display:flex; align-items:center; justify-content:center;
+                font-size:10px; font-weight:800; color:#000; box-shadow:0 0 3px #000; }
+  /* 平A設定 / 記錄點放置技能列表 */
+  .mfield { padding:8px; border-radius:8px; border:1px solid #3a3f4b;
+            background:#20242e; color:#e6e6e6; font-size:14px; width:100%; box-sizing:border-box; }
+  .ptrow { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .ptrow .ptpick { flex:1 1 40%; min-width:0; padding:6px; border-radius:6px;
+                   border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
+  .ptrow .ptdel { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
+                  background:#7a2530; color:#fff; font-size:13px; cursor:pointer; }
+  .ptrow .ptprec { flex:0 0 auto; padding:6px 8px; border:1px solid #3a3f4b; border-radius:6px;
+                   background:#20242e; color:#9aa0ac; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .ptrow .ptprec.on { background:#1e7e34; color:#fff; border-color:#1e7e34; }
+  .ptrow .ptskip { flex:0 0 auto; padding:6px 8px; border:1px solid #3a3f4b; border-radius:6px;
+                   background:#20242e; color:#9aa0ac; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .ptrow .ptskip.on { background:#8a6d1e; color:#fff; border-color:#8a6d1e; }
+  .ptrow .ptidx { flex:0 0 20px; height:20px; border-radius:50%; background:#ff9820; color:#000;
+                  font-weight:800; display:flex; align-items:center; justify-content:center; font-size:11px; }
+  .ptrow .ptxy { flex:0 0 58px; color:#8a8f99; font-size:12px; }
+  .ptrow .ptskill { flex:1 1 auto; min-width:0; padding:6px; border-radius:6px;
+                    border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px;
+                    cursor:pointer; text-align:left; }
+  .ptrow .ptcd { flex:0 0 56px; padding:6px; border-radius:6px;
+                 border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
+  .ptrow .ptsave { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
+                   background:#2d6cdf; color:#fff; font-size:13px; }
+  /* 巡邏路線連接線(SVG overlay) */
+  #mmOverlay svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #toDashTop { position:fixed; top:8px; right:64px; z-index:60; display:none;
+               align-items:center; justify-content:center; height:40px; padding:0 14px;
+               font-size:14px; color:#fff; background:rgba(40,40,50,.72);
+               border:1px solid rgba(255,255,255,.25); border-radius:10px; }
 </style>
 </head>
-<body>
-  <img id="video" alt="game">
+<body class="view-login">
+ <div id="stage">
+  <video id="video" autoplay muted playsinline></video>
+  <img id="mjpeg" alt="">
+  <canvas id="freeze"></canvas>
+  <audio id="gaudio" autoplay playsinline></audio>
+  <div id="padbg"></div>
+  <div id="cursor"></div>
   <div id="status" class="bad">未連線</div>
+  <div id="guestBadge">👤 訪客模式：僅 4 / ← / →</div>
 
   <div id="setup">
     <div style="font-size:22px;font-weight:700;">maple 遠端遊玩</div>
     <input id="token" placeholder="連線 token" autocomplete="off">
     <button id="go">連線</button>
-    <div style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
+    <div id="setupHint" style="font-size:12px;color:#888;">請透過 Tailscale/VPN 連線</div>
   </div>
 
-  <div id="tools" style="display:none">
-    <div class="tool" id="watchBtn">👁 注視中</div>
-    <div class="tool" id="screenBtn">🎬 畫面</div>
-    <div class="tool" id="editBtn">⚙ 編輯</div>
-  </div>
+  <div id="menuBtn">☰</div>
+  <div id="toDashTop">≡ 儀表板</div>
 
-  <!-- 橫向佈局 -->
-  <div id="land" class="layout">
-    <div class="look"></div>
-    <div class="dpad">
-      <div class="btn key" data-slot="up"></div><div class="btn key" data-slot="left"></div>
-      <div class="btn key" data-slot="down"></div><div class="btn key" data-slot="right"></div>
-    </div>
-    <div class="leftcustom">
-      <div class="btn key" data-slot="lc1"></div><div class="btn key" data-slot="lc2"></div>
-    </div>
-    <div class="rightcustom">
-      <div class="btn key" data-slot="rc1"></div><div class="btn key" data-slot="rc2"></div>
-      <div class="btn key" data-slot="rc3"></div><div class="btn key" data-slot="rc4"></div>
-      <div class="btn key" data-slot="rc5"></div><div class="btn key" data-slot="rc6"></div>
-    </div>
-  </div>
+  <div class="look" id="look"></div>
+  <div id="pad"></div>
+  <div id="deskhint">滑鼠移到遊戲畫面上即可操控（移開自動釋放）</div>
 
-  <!-- 直立佈局（紅白機） -->
-  <div id="port" class="layout">
-    <div class="look"></div>
-    <div class="pad">
-      <div class="dpad">
-        <div class="btn key" data-slot="up"></div><div class="btn key" data-slot="left"></div>
-        <div class="btn key" data-slot="down"></div><div class="btn key" data-slot="right"></div>
-      </div>
-      <div class="actions">
-        <div class="btn key" data-slot="rc1"></div><div class="btn key" data-slot="rc2"></div>
-        <div class="btn key" data-slot="rc3"></div><div class="btn key" data-slot="rc4"></div>
-        <div class="btn key" data-slot="rc5"></div><div class="btn key" data-slot="rc6"></div>
-        <div class="btn key" data-slot="lc1"></div><div class="btn key" data-slot="lc2"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 注視覆蓋層 -->
   <div id="watch"><button id="watchResume">👁 注視畫面</button></div>
 
   <!-- 模擬鍵盤 -->
   <div id="picker">
     <h3 id="pickerTitle">選擇要綁定的按鍵</h3>
+    <button id="pickerClear" style="display:none;margin-bottom:10px;padding:8px 16px;border:1px solid #c0392b;border-radius:8px;background:#2a1416;color:#ff9a8a;font-size:14px">✕ 不設放置技能（只平A）</button>
     <div id="kbd"></div>
     <button class="modal-close" id="pickerClose">取消</button>
   </div>
 
-  <!-- 畫面設定 -->
-  <div id="screen">
-    <h3>畫面設定</h3>
-    <div class="field"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
-    <div class="field"><label>寬度</label><div class="segs" id="wSegs"></div></div>
-    <div class="field"><label>畫質</label><input type="range" id="qRange" min="20" max="90" step="5"><span class="val" id="qVal"></span></div>
-    <div class="field"><label>FPS</label><input type="range" id="fRange" min="10" max="60" step="5"><span class="val" id="fVal"></span></div>
-    <button class="apply" id="screenApply">套用</button>
-    <button class="modal-close" id="screenClose">關閉</button>
+  <!-- 漢堡控制中心(Steam Deck 式) -->
+  <div id="menuMask"></div>
+  <div id="menu">
+    <div class="mhead"><b>連接管理</b><div class="mx" id="menuClose">✕</div></div>
+    <div class="mbody">
+      <div class="mbtn" id="toDashBtn" style="margin-bottom:10px">≡ 回儀表板（暫停操作）</div>
+      <div class="mstat" id="mTarget">🎯 全螢幕</div>
+      <div class="mstat" id="mHw">硬體：載入中…</div>
+
+      <div class="msec">操作</div>
+      <div class="mgrid2">
+        <div class="mbtn" id="watchBtn">👁 注視中</div>
+        <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
+      </div>
+      <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
+      <div class="mbtn" id="menuPatrolStop" style="margin:9px 0;background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
+      <div id="menuPatrolMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
+      <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
+        <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
+      </div></div>
+      <div class="mgrid2" id="editRow">
+        <div class="mbtn" id="editBtn">⚙ 編輯按鍵</div>
+        <div class="mbtn" id="addBtn" style="display:none">➕ 新增鍵</div>
+      </div>
+
+      <div id="ownerScreen">
+      <div class="msec">畫面</div>
+      <div class="mrow"><label>預設</label><div class="segs" id="presetSegs">
+        <div class="seg" data-preset="quality">畫質</div><div class="seg" data-preset="smooth">流暢</div>
+        <div class="seg" data-preset="fast">快速</div><div class="seg" data-preset="turbo">急速</div>
+      </div></div>
+      <div class="mrow"><label>來源</label><div class="segs" id="srcSegs"></div></div>
+      <div class="mrow" id="winRow" style="display:none"><label>視窗</label><div class="segs" id="winSegs" style="max-height:26vh;overflow:auto"></div></div>
+      <div class="mrow" id="monRow"><label>螢幕</label><div class="segs" id="monSegs"></div></div>
+      <div class="mrow"><label>解析度</label><div class="segs" id="scaleSegs"></div></div>
+      <div class="mrow"><label>黑白</label><div class="segs" id="graySegs"></div></div>
+      <div class="mrow"><label>FPS</label><input type="range" id="fRange" min="30" max="120" step="10"><span class="val" id="fVal"></span></div>
+      <div class="mrow"><label>位元率</label><input type="range" id="bRange" min="5" max="60" step="5"><span class="val" id="bVal"></span></div>
+      <div class="mrow"><label>靈敏度</label><input type="range" id="sRange" min="1" max="10" step="0.5"><span class="val" id="sVal"></span></div>
+      <button class="mapply" id="screenApply">套用畫面設定</button>
+      </div><!-- /#ownerScreen -->
+
+      <div id="ownerClip">
+      <div class="msec">剪貼簿（操作端 → 主機）</div>
+      <textarea id="clipText" placeholder="在框內貼上即自動傳送：電腦按 Ctrl+V、手機長按→貼上（或直接打字後按傳送）" rows="3"></textarea>
+      <div class="mgrid2">
+        <div class="mbtn" id="clipRead">讀取剪貼簿</div>
+        <div class="mbtn" id="clipSend">傳送到主機</div>
+      </div>
+      <div id="clipMsg" style="font-size:12px;color:#7fe0b0;margin-top:6px;min-height:16px"></div>
+      </div><!-- /#ownerClip -->
+    </div>
   </div>
+ </div><!-- /#stage -->
+
+ <!-- ===== 儀表板（中控頁）：出租管理 + 進入主人操作頁 ===== -->
+ <div id="dashView">
+  <div class="dash-card">
+   <div class="dash-h">maple 儀表板</div>
+   <div class="dash-sub">出租中控與進入遠端（連接管理在遠端頁內）</div>
+   <div class="mstat" id="dHw">硬體：載入中…</div>
+
+   <div class="dtabs">
+     <div class="dtab on" data-tab="rent">🏠 出租</div>
+     <div class="dtab" data-tab="idle">🤖 閒置</div>
+     <div class="dtab" data-tab="patrol">🗺 巡邏</div>
+     <div class="dtab" data-tab="remote">🎮 遠端</div>
+   </div>
+
+   <div class="dpane on" data-pane="rent">
+   <div class="msec">出租管理（Cloudflare Tunnel）</div>
+   <div class="mstat" id="rTunnel" style="user-select:text;-webkit-user-select:text">🌐 隧道：未啟動</div>
+   <div class="mstat" id="rPass" style="user-select:text;-webkit-user-select:text">🔑 密碼：未產生</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rTunnelBtn">🚀 啟動出租</div>
+     <div class="mbtn" id="rNewBtn">🔑 產生新密碼</div>
+   </div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rExtBtn">⏳ 延長 +30 分</div>
+     <div class="mbtn" id="rRevokeBtn">🛑 撤銷密碼</div>
+   </div>
+   <div class="mrow"><label>自訂</label>
+     <input type="number" id="rHours" min="0.5" max="24" step="0.5" value="0.5"><span>小時</span>
+     <div class="mbtn" id="rHoursBtn" style="flex:1">延長此時數</div>
+   </div>
+
+   <div class="msec">分享給訪客</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="rCopyUrl">🔗 複製網址</div>
+     <div class="mbtn" id="rCopyPass">🔑 複製密碼</div>
+   </div>
+   <button class="mapply" id="rCopyAll" style="background:#3a7">📋 一鍵複製出租資訊（貼給訪客）</button>
+   <div style="font-size:12px;color:#8a8f99;margin-top:4px">
+     訪客用隧道網址＋短密碼登入專屬訪客頁，只能按 4 / ← / → 螢幕按鈕；
+     滑鼠、其他按鍵與所有設定 API 於伺服器端全面封鎖（含連點冷卻），密碼到期自動斷線。</div>
+   </div><!-- /#dpane rent -->
+
+   <div class="dpane" data-pane="idle">
+   <div class="msec">閒置掛機（隨機移動＋放置輪迴）</div>
+   <div class="mrow"><label>時長</label>
+     <input type="number" id="idleH" min="0" max="24" value="1" style="width:52px;background:#1d1e26;color:#eee;border:1px solid #3a3d48;border-radius:8px;padding:6px;font-size:14px"><span>時</span>
+     <input type="number" id="idleM" min="0" max="59" value="0" style="width:52px;background:#1d1e26;color:#eee;border:1px solid #3a3d48;border-radius:8px;padding:6px;font-size:14px"><span>分</span>
+     <span style="font-size:12px;color:#8a8f99;margin-left:auto">0=無限</span>
+   </div>
+   <div class="mbtn" id="idleBtn">🤖 閒置掛機：關</div>
+   <div id="idleMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
+   <div id="monitorBox" style="display:none;margin-top:8px">
+     <img id="monitorImg" alt="監視畫面"
+          style="width:100%;border-radius:10px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain">
+     <div style="font-size:12px;color:#8a8f99;margin-top:4px">🖥 監視畫面（MapleStory，約 1 秒更新）</div>
+     <!-- 按鍵追蹤燈(桌面寵物式):送出該鍵即亮 -->
+     <div id="klights">
+       <div class="klight" data-k="left">←</div>
+       <div class="klight" data-k="4">4</div>
+       <div class="klight" data-k="right">→</div>
+       <div id="nextSkill" class="kinfo">下一次放置輪迴：--</div>
+     </div>
+     <div id="idleRemain" style="font-size:13px;color:#7fe0b0;margin-top:6px;font-variant-numeric:tabular-nums"></div>
+     <div id="focusWarn" style="display:none;font-size:12px;color:#f55;margin-top:4px"></div>
+   </div>
+   </div><!-- /#dpane idle -->
+
+   <div class="dpane" data-pane="patrol">
+   <!-- 巡邏控制 + 狀態 + 監控(置頂,最常用) -->
+   <div class="mgrid2">
+     <div class="mbtn" id="patrolStartBtn" style="background:#1e7e34">▶ 開始巡邏掛機</div>
+     <div class="mbtn" id="patrolStopBtn" style="background:#c0392b">⏹ 停止巡邏</div>
+   </div>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:13px;color:#cfd3db">
+     ⏱ 巡邏時限
+     <input type="number" id="patrolMins" min="0" max="1440" step="10" value="60"
+            style="width:72px;background:#1a1d26;color:#e6e8ee;border:1px solid #2a2d38;border-radius:5px;padding:3px 6px">
+     分鐘（0＝無限）
+   </label>
+
+   <!-- 符文自動解除：緊接在巡邏時限下方（只在巡邏進行中才會觸發，兩者相依） -->
+   <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="runeEnable"> 🔮 符文自動解除
+     <span style="font-size:11px;color:#8a8f99">（僅巡邏中生效）</span>
+   </label>
+   <!-- 辨識線路：兩條都勾＝1 線讀不到才退給 2 線；只勾一條就只走那條。至少要留一條 -->
+   <div style="display:flex;gap:12px;margin:6px 0 0 20px;font-size:12px;color:#cfd3db">
+     <label style="display:flex;align-items:center;gap:5px">
+       <input type="checkbox" id="runeLineCv"> 1 線 CV<span style="color:#8a8f99">（本機・數毫秒）</span>
+     </label>
+     <label style="display:flex;align-items:center;gap:5px">
+       <input type="checkbox" id="runeLineClaude"> 2 線 claude<span style="color:#8a8f99">（雲端・6~11 秒）</span>
+     </label>
+   </div>
+   <div style="display:flex;gap:6px;margin-top:6px">
+     <div class="mbtn" id="runeDetectBtn" style="flex:1">🔎 測試辨識</div>
+     <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
+   </div>
+   <div id="runeMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <div class="mbtn" id="capBtn" style="margin-top:6px">💊 膠囊預覽：關</div>
+   <div id="capBox" style="display:none;margin-top:6px">
+     <img id="capImg" alt="膠囊預覽"
+          style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+     <div id="capInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+   </div>
+
+   <!-- 一眼可讀的狀態面板 -->
+   <div id="statusPanel" style="margin-top:10px;padding:8px 10px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
+     <div id="patrolPhase" style="font-size:15px;font-weight:700;color:#7fe0b0;font-variant-numeric:tabular-nums">狀態：--</div>
+     <div id="patrolClock" style="font-size:26px;font-weight:800;color:#e6e8ee;font-variant-numeric:tabular-nums;letter-spacing:1px;margin:2px 0 6px">--:--:--</div>
+
+     <!-- EXP 進度：讀經驗條【上面的文字】，不是量填充長度（底色會隨經驗值變，見 server/exp.py） -->
+     <div id="expBox" style="margin:0 0 8px">
+       <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+         <span id="expPct" style="font-size:19px;font-weight:800;color:#7fe0b0;font-variant-numeric:tabular-nums">--%</span>
+         <span id="expNum" style="font-size:12px;color:#8a8f99;font-variant-numeric:tabular-nums">--</span>
+       </div>
+       <div style="height:5px;background:#2a2d38;border-radius:99px;overflow:hidden;margin:4px 0 3px">
+         <div id="expBar" style="height:100%;width:0%;background:linear-gradient(90deg,#5bc48f,#7fe0b0);transition:width .4s"></div>
+       </div>
+       <div id="expGain" style="font-size:11px;color:#6b7280;font-variant-numeric:tabular-nums">--</div>
+     </div>
+     <div id="switchRow" style="display:flex;flex-wrap:wrap;gap:5px"></div>
+     <div id="patrolMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
+   </div>
+   <div id="placeMon" style="font-size:13px;color:#cfd3db;display:flex;flex-direction:column;gap:3px;margin-top:6px"></div>
+   <div style="border-top:1px solid #2a2d38;margin:12px 0 6px;padding-top:8px;font-size:12px;color:#8a8f99">⚙ 巡邏設定（設好即可收在下方，平時看上面狀態就好）</div>
+
+   <div class="msec">職業（攻擊＋移動參數一組·換角色時整組切換）</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     二段跳飛多遠、用哪個鍵、等落地多久，這些都跟職業綁在一起。目前這組數值量自「蓮」，
+     換職業要重新量（同層二段跳的水平距離最關鍵）。</div>
+   <div style="display:flex;gap:6px;align-items:center;margin:6px 0">
+     <select id="jobSel" style="flex:1;background:#161922;color:#e6e8ee;border:1px solid #2a2d38;border-radius:8px;padding:8px"></select>
+     <div class="mbtn" id="jobApplyBtn" style="flex:0 0 auto;padding:8px 12px">切換</div>
+   </div>
+   <div class="mbtn" id="jobEditBtn">🧬 職業參數：展開</div>
+   <div id="jobBox" style="display:none;margin-top:8px;padding:8px;background:#161922;border:1px solid #2a2d38;border-radius:8px">
+     <div style="display:flex;gap:6px;margin-bottom:6px">
+       <input id="jobName" placeholder="職業名稱" style="flex:1;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:8px;padding:7px">
+     </div>
+     <div class="mgrid2">
+       <label style="font-size:12px;color:#8a8f99">二段跳鍵1<input id="jkey1" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">二段跳鍵2<input id="jkey2" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div class="mgrid2" style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">上繩鍵<input id="jrope" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">二段跳水平距離(px)<input id="jdx" type="number" min="1" max="200" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div class="mgrid2" style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">兩段間隔(秒)<input id="jint" type="number" step="0.01" min="0.02" max="2" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+       <label style="font-size:12px;color:#8a8f99">等落地(秒)<input id="jland" type="number" step="0.1" min="0" max="5" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div style="margin-top:6px">
+       <label style="font-size:12px;color:#8a8f99">上繩到頂(秒)<input id="jropeup" type="number" step="0.1" min="0" max="10" style="width:100%;background:#0f1219;color:#e6e8ee;border:1px solid #2a2d38;border-radius:6px;padding:6px;margin-top:2px"></label>
+     </div>
+     <div style="font-size:11px;color:#6b7280;margin-top:6px">
+       平A設定（攻擊鍵/模式/跳躍攻擊）在下方「平A」區，儲存職業時會一起收進去。</div>
+     <div class="mgrid2" style="margin-top:8px">
+       <div class="mbtn" id="jobSaveBtn">💾 儲存為此名稱</div>
+       <div class="mbtn" id="jobDelBtn">🗑 刪除</div>
+     </div>
+     <div id="jobMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
+   </div>
+
+   <div class="msec">目前方向（最後觸發的方向鍵＝角色面向）</div>
+   <div style="display:flex;align-items:center;gap:10px;margin:6px 0">
+     <div id="faceArrow" style="font-size:40px;font-weight:800;color:#ffb020;width:56px;text-align:center;line-height:1">→</div>
+     <div class="mbtn" id="faceLeft" style="flex:1">← 轉向左</div>
+     <div class="mbtn" id="faceRight" style="flex:1">轉向右 →</div>
+   </div>
+
+   <div class="msec">掛機模式（開發中）· 小地圖偵測</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     第一步：自動找出遊戲左上角小地圖（自適應各地圖大小）＋角色黃點。
+     顯示偵測到的小地圖放大圖，洋紅十字＝角色。僅擷取 maplestory.exe 視窗。</div>
+   <div class="mbtn" id="mmBtn">🗺 小地圖偵測預覽：關</div>
+   <div id="mmBox" style="display:none;margin-top:8px">
+     <div style="position:relative">
+       <img id="mmImg" alt="小地圖偵測"
+            style="width:100%;border-radius:10px;background:#000;display:block;object-fit:contain">
+       <div id="mmOverlay" style="position:absolute;inset:0;pointer-events:none"></div>
+     </div>
+     <div id="mmInfo" style="font-size:12px;color:#8a8f99;margin-top:4px">--</div>
+     <div class="mbtn" id="mmRedetectBtn" style="margin-top:6px">🔄 重新偵測（換地圖後按）</div>
+   </div>
+
+   <div class="msec">地圖座標（掛機導航用·每張地圖自動識別、獨立）</div>
+   <div class="mstat" id="mapStat" style="user-select:text">地圖：偵測中…</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="mapRecordBtn">📍 記錄目前位置</div>
+     <div class="mbtn" id="mapUndoBtn">↩ 刪除上一點</div>
+   </div>
+   <div class="mgrid2">
+     <div class="mbtn" id="mapSaveBtn">💾 保存設置</div>
+     <div class="mbtn" id="mapLoadBtn">📂 讀取設置</div>
+   </div>
+   <div class="mbtn" id="mapClearBtn" style="margin-top:6px">🗑 清空座標</div>
+   <div id="profList" style="display:none;flex-direction:column;gap:5px;margin-top:6px"></div>
+   <div id="mapMsg" style="font-size:12px;color:#8a8f99;margin-top:4px">
+     移動角色到巡邏點 → 按「記錄目前位置」。至少 1 點才能開掛機（自動識別地圖，免命名）。</div>
+
+   <div class="msec" style="margin-top:14px">地形設定（跨層路徑用 · 標一次存進設置）</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 6px">
+     平台＝可走線段：走到左端按「記A端」、右端按「記B端」、再「新增平台」。繩索：站到繩索上按「記繩索」。</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="platMarkA">📍 記A端</div>
+     <div class="mbtn" id="platMarkB">📍 記B端</div>
+   </div>
+   <div class="mgrid2" style="margin-top:6px">
+     <div class="mbtn" id="platAddBtn">➕ 新增平台</div>
+     <div class="mbtn" id="ropeAddBtn">🪢 記繩索</div>
+   </div>
+   <div id="platInfo" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <div id="platList" style="display:flex;flex-direction:column;gap:4px;margin-top:6px"></div>
+   <div id="ropeList" style="display:flex;flex-direction:column;gap:4px;margin-top:4px"></div>
+
+   <div class="msec" style="margin-top:14px">平A（普通攻擊）設定</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="atkKeyBtn">攻擊鍵：A（點我選）</div>
+     <select id="atkMode" class="mfield">
+       <option value="hold2s">到點長按2秒</option>
+       <option value="tap2">到點按兩次</option>
+       <option value="move">移動時按壓（走位攻擊）</option>
+     </select>
+   </div>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:6px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="atkJumpHold"> 二段跳時保持攻擊（某些技能支援邊跳邊連發）
+   </label>
+   <label style="display:flex;align-items:center;gap:6px;margin-top:4px;font-size:13px;color:#cfd3db">
+     <input type="checkbox" id="atkFallHold"> 下跳時保持攻擊
+   </label>
+   <div class="mbtn" id="atkSaveBtn" style="margin-top:6px">💾 儲存平A設定</div>
+
+   <!-- 註:符文自動解除的開關與測試鈕已移到頁面上方「巡邏時限」下方(兩者相依:
+        只在巡邏進行中才會觸發),此處不再重複放,避免 DOM 出現重複 id。 -->
+
+   <div class="msec" style="margin-top:14px">記錄點放置技能（僅到點施放·各自冷卻）</div>
+   <div id="ptList" style="display:flex;flex-direction:column;gap:5px"></div>
+   <div style="font-size:12px;color:#8a8f99;margin-top:4px">
+     每個記錄點可設一個「放置技能」鍵＋冷卻秒數（如召喚/圖騰）。留空=只平A。冷卻中略過、絕不在移動途中放。</div>
+   </div><!-- /#dpane patrol -->
+
+   <div class="dpane" data-pane="remote">
+   <div class="msec">遠端操作</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 10px">
+     進入遠端會連線 WebSocket、開啟即時畫面,可直接操控滑鼠鍵盤（連接管理在遠端頁內）。掛機／出租時通常不需進入。</div>
+   <button class="enter-btn" id="enterRemote" style="margin-top:0">▶ 進入遠端</button>
+   </div><!-- /#dpane remote -->
+
+   <!-- Arduino 韌體維護:寫入代碼 + 測試訊號。與分頁無關(硬體層),故放在共用區。 -->
+   <div class="msec" style="margin-top:16px">Arduino 韌體</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 8px">
+     韌體原始碼與編譯結果都內建在程式裡，不需另外準備檔案。寫入時鍵盤會短暫中斷（板子會重開機）。</div>
+   <div id="fwInfo" style="font-size:12px;color:#8a8f99;margin-bottom:6px">--</div>
+   <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+     <select id="fwPort" class="mfield" style="flex:1"></select>
+     <div class="mbtn" id="fwRefresh" style="flex:0 0 auto">🔄</div>
+   </div>
+   <div style="display:flex;gap:6px">
+     <div class="mbtn" id="fwTestBtn" style="flex:1">📡 測試訊號</div>
+     <div class="mbtn" id="fwFlashBtn" style="flex:1;background:#5a4320;border-color:#c08a2b">⬇ 寫入 Arduino 代碼</div>
+   </div>
+   <div id="fwMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
+   <pre id="fwLog" style="display:none;max-height:180px;overflow:auto;background:#0f1116;
+        border:1px solid #2a2d38;border-radius:8px;padding:8px;font-size:11px;
+        color:#9aa0ac;white-space:pre-wrap;margin-top:6px"></pre>
+
+   <button class="mapply" id="releaseBtn" style="background:#c0392b;margin-top:16px">🆘 解除卡死（放開所有按鍵）</button>
+   <div id="releaseMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
+
+   <button class="logout-btn" id="logout">登出</button>
+  </div>
+ </div>
 
 <script>
 const $ = s => document.querySelector(s);
-let ws=null, token="", editMode=false, watching=true, editingSlot=null;
+let _toastTimer=null;
+function toast(msg, ok=true){
+  let t=document.getElementById("toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; document.body.appendChild(t); }
+  t.textContent=msg; t.className="show"+(ok?"":" err");
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>{ t.className=t.className.replace(/show/g,"").trim(); }, 2500);
+}
+let ws=null, token="", editMode=false, watching=true, editingBtn=null, pickerOnPick=null;
+let guest=false, expired=false;   // 訪客(短密碼)模式：由伺服器 WS "mode" 訊息判定
+const IS_TOUCH = navigator.maxTouchPoints > 0 || ('ontouchstart' in window);
 
-// ===== 全域禁止手勢縮放（雙指放大/縮小、雙擊放大） =====
+// ===== 遠端模式偵測：https = 走 Cloudflare Tunnel =====
+// 隧道只代理 :8000 的 HTTP/WS，WebRTC(:8889 WHEP + UDP 媒體流)穿不過去，
+// 且 https 頁面也不可連 http 的 8889(mixed content) → 影像自動退 MJPEG(無音訊)。
+// 在家 Tailscale(http) 走原本 WebRTC 低延遲，完全不受影響。
+const REMOTE = location.protocol === "https:";
+
+// ===== 全域禁止手勢縮放 =====
 ["gesturestart","gesturechange","gestureend"].forEach(ev =>
   document.addEventListener(ev, e => e.preventDefault(), {passive:false}));
-document.addEventListener("touchmove", e => {           // 多指移動一律擋掉(pinch)
-  if(e.touches.length > 1) e.preventDefault();
-}, {passive:false});
+document.addEventListener("touchmove", e => { if(e.touches.length > 1) e.preventDefault(); }, {passive:false});
 let _lastTouchEnd = 0;
-document.addEventListener("touchend", e => {            // 擋雙擊放大
-  const now = Date.now();
-  if(now - _lastTouchEnd <= 300) e.preventDefault();
-  _lastTouchEnd = now;
-}, {passive:false});
+document.addEventListener("touchend", e => { const now=Date.now(); if(now-_lastTouchEnd<=300) e.preventDefault(); _lastTouchEnd=now; }, {passive:false});
 document.addEventListener("dblclick", e => e.preventDefault(), {passive:false});
 
-// ===== 按鍵槽 =====
-const DEFAULTS = { up:"w",left:"a",down:"s",right:"d", lc1:"space",lc2:"r",
-  rc1:"1",rc2:"2",rc3:"3",rc4:"4",rc5:"5",rc6:"6" };
-let binds = Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem("maple_binds")||"{}"));
-const saveBinds = () => localStorage.setItem("maple_binds", JSON.stringify(binds));
-
+// ===== 按鍵標籤 =====
 const LABELS = { space:"空白",enter:"Enter",tab:"Tab",esc:"Esc",backspace:"⌫",
   up:"↑",down:"↓",left:"←",right:"→",home:"Home",end:"End",pageup:"PgUp",pagedown:"PgDn",
   insert:"Ins",delete:"Del",shift:"Shift",ctrl:"Ctrl",alt:"Alt" };
 const labelFor = t => LABELS[t] || (t.startsWith("num")?"數"+t.slice(3):t.toUpperCase());
-function refreshLabels(){ document.querySelectorAll(".key").forEach(el => el.textContent = labelFor(binds[el.dataset.slot])); }
+
+// ===== 按鈕資料（自由擺放，位置為視窗百分比，橫向/直立各存一份） =====
+function defaultButtons(){ return [
+  {id:"w",key:"w",land:[10,58],port:[24,45]},
+  {id:"a",key:"a",land:[4,78],port:[8,60]},
+  {id:"s",key:"s",land:[10,78],port:[24,60]},
+  {id:"d",key:"d",land:[16,78],port:[40,60]},
+  {id:"k1",key:"1",land:[78,56],port:[62,66]},
+  {id:"k2",key:"2",land:[85,56],port:[76,66]},
+  {id:"k3",key:"3",land:[92,56],port:[90,66]},
+  {id:"k4",key:"4",land:[78,78],port:[62,80]},
+  {id:"k5",key:"5",land:[85,78],port:[76,80]},
+  {id:"k6",key:"6",land:[92,78],port:[90,80]},
+  {id:"sp",key:"space",land:[70,78],port:[62,92]},
+  {id:"kr",key:"r",land:[70,56],port:[76,92]},
+]; }
+let buttons = JSON.parse(localStorage.getItem("maple_buttons")||"null") || defaultButtons();
+const saveButtons = () => { if(!guest) localStorage.setItem("maple_buttons", JSON.stringify(buttons)); };
+const isPortrait = () => document.body.classList.contains("lay-port");
+const clamp = (v,a,b) => Math.max(a,Math.min(b,v));
+
+// ===== 佈局方向：手動鎖定(不靠物理旋轉) =====
+let layoutMode = localStorage.getItem("maple_layout") || "auto";   // auto | port | land
+function curPortrait(){
+  if(document.body.classList.contains("desktop")) return false;    // 桌面一律橫向
+  return layoutMode==="auto" ? matchMedia("(orientation:portrait)").matches : layoutMode==="port";
+}
+function applyLayout(){
+  const port = curPortrait();
+  const devPort = matchMedia("(orientation:portrait)").matches;
+  const desktop = document.body.classList.contains("desktop");
+  const rotate = !port && devPort && !desktop;   // 想橫向但手機是直的 → 轉 90° 填滿
+  document.body.classList.toggle("lay-port", port);
+  document.body.classList.toggle("lay-land", !port);
+  document.body.classList.toggle("rotate", rotate);
+  document.querySelectorAll("#layGroup .seg").forEach(s => s.classList.toggle("on", s.dataset.lay===layoutMode));
+  renderButtons();
+}
+const isRotated = () => document.body.classList.contains("rotate");
+// 旋轉後把觸控位移轉回內容座標系(stage 順時針 90°)
+function rotVec(dx,dy){ return isRotated() ? [dy, -dx] : [dx, dy]; }
+// 內容(video)在 #cursor/#pad 座標系中的顯示矩形(旋轉時 stage 為 100vh×100vw)
+function stageRect(){
+  return isRotated() ? { left:0, top:0, width:window.innerHeight, height:window.innerWidth }
+                     : { left:0, top:0, width:window.innerWidth, height:window.innerHeight };
+}
+
+function renderButtons(){
+  const pad=$("#pad"); pad.innerHTML="";
+  const port=isPortrait();
+  buttons.forEach(b=>{
+    const el=document.createElement("div");
+    el.className="btn"+(editMode?" editing":"");
+    el.textContent=labelFor(b.key);
+    const pos = port? b.port : b.land;
+    el.style.left=pos[0]+"%"; el.style.top=pos[1]+"%";
+    const del=document.createElement("div"); del.className="del"; del.textContent="✕";
+    el.appendChild(del);
+    bindButton(el,b,del);
+    pad.appendChild(el);
+  });
+}
+function bindButton(el,b,del){
+  let dragging=false, moved=false, sx=0, sy=0, spx=0, spy=0, arr=null;
+  el.addEventListener("touchstart", e=>{
+    e.preventDefault(); e.stopPropagation();
+    if(editMode){
+      const t=e.touches[0]; sx=t.clientX; sy=t.clientY; moved=false; dragging=true;
+      arr = isPortrait()? b.port : b.land; spx=arr[0]; spy=arr[1];
+    } else { el.classList.add("active"); vheld.add(b.key); send({t:"kd",k:b.key}); }
+  }, {passive:false});
+  el.addEventListener("touchmove", e=>{
+    if(!editMode||!dragging) return; e.preventDefault(); e.stopPropagation();
+    const t=e.touches[0];
+    const rv=rotVec(t.clientX-sx, t.clientY-sy), sr=stageRect();   // 旋轉修正
+    const nx = spx + rv[0]/sr.width*100;
+    const ny = spy + rv[1]/sr.height*100;
+    if(Math.abs(t.clientX-sx)+Math.abs(t.clientY-sy)>4) moved=true;
+    arr[0]=clamp(nx,3,97); arr[1]=clamp(ny,5,96);
+    el.style.left=arr[0]+"%"; el.style.top=arr[1]+"%";
+  }, {passive:false});
+  const end = e=>{ e.preventDefault(); e.stopPropagation();
+    if(editMode){ dragging=false; if(moved) saveButtons(); else openPicker(b); }
+    else { el.classList.remove("active"); vheld.delete(b.key); send({t:"ku",k:b.key}); } };
+  el.addEventListener("touchend", end, {passive:false});
+  el.addEventListener("touchcancel", end, {passive:false});
+  del.addEventListener("touchstart", e=>{ if(!editMode) return; e.preventDefault(); e.stopPropagation();
+    buttons = buttons.filter(x=>x!==b); saveButtons(); renderButtons(); }, {passive:false});
+  if(!IS_TOUCH){   // 電腦端(訪客模式)：螢幕按鈕用滑鼠點
+    el.addEventListener("mousedown", e=>{ e.preventDefault(); e.stopPropagation();
+      if(!editMode){ el.classList.add("active"); vheld.add(b.key); send({t:"kd",k:b.key}); } });
+    const mend = e=>{ e.stopPropagation();
+      if(!editMode && el.classList.contains("active")){ el.classList.remove("active"); vheld.delete(b.key); send({t:"ku",k:b.key}); } };
+    el.addEventListener("mouseup", mend);
+    el.addEventListener("mouseleave", mend);
+  }
+}
+matchMedia("(orientation:portrait)").addEventListener("change", () => { if(layoutMode==="auto") applyLayout(); });
+document.querySelectorAll("#layGroup .seg").forEach(s => s.onclick = () => {
+  layoutMode = s.dataset.lay; localStorage.setItem("maple_layout", layoutMode); applyLayout();
+});
 
 // ===== 連線 =====
 const setStatus = (t,ok)=>{ const s=$("#status"); s.textContent=t; s.className= ok?"":"bad"; };
@@ -201,18 +715,219 @@ function connect(){
   const proto = location.protocol==="https:"?"wss":"ws";
   ws = new WebSocket(`${proto}://${location.host}/ws/input?token=${encodeURIComponent(token)}`);
   ws.onopen = ()=>setStatus("已連線",true);
-  ws.onclose = ()=>{ setStatus("斷線，重連中…",false); setTimeout(connect,1500); };
+  ws.onclose = ()=>{
+    if(expired){ setStatus("密碼已過期，連線結束", false); stopVideo(); return; }   // 訪客到期：不重連
+    setStatus("斷線，重連中…",false); setTimeout(connect,1500);
+  };
   ws.onerror = ()=>setStatus("連線錯誤",false);
+  ws.onmessage = e => { try{ const m=JSON.parse(e.data);
+    if(m.t==="cur") updateCursor(m.x,m.y);
+    else if(m.t==="mode"){ if(m.guest) enterGuest(m.remain); }
+    else if(m.t==="bye") expired = true;          // 伺服器宣告到期/撤銷,隨後斷線
+  }catch(_){} };
+}
+
+// ===== 訪客(短密碼)模式：固定 3 顆螢幕按鈕,其餘輸入途徑全關 =====
+// 注意:這只是介面配合;真正的封鎖在伺服器端白名單(改前端也繞不過)。
+const GUEST_BUTTONS = [
+  {id:"gl",key:"left", land:[12,72],port:[15,62]},
+  {id:"g4",key:"4",    land:[50,80],port:[50,78]},
+  {id:"gr",key:"right",land:[88,72],port:[85,62]},
+];
+function enterGuest(remain){
+  if(!guest){
+    guest = true;
+    document.body.classList.add("guest");
+    document.body.classList.remove("desktop");   // 電腦端也一律用螢幕按鈕
+    showView("remote");                          // 訪客沒有儀表板,直接進操作畫面
+    buttons = GUEST_BUTTONS; editMode = false;
+    renderButtons();
+  }
+  if(typeof remain === "number")
+    $("#guestBadge").textContent = `👤 訪客模式：僅 4 / ← / → · 剩餘 ${Math.max(1, Math.ceil(remain/60))} 分`;
+}
+// 虛擬游標：依伺服器回報的座標，畫在影像內容(object-fit:contain)對應位置
+function updateCursor(nx,ny){
+  const c=$("#cursor");
+  if(!watching){ c.style.display="none"; return; }
+  const v = REMOTE ? $("#mjpeg") : $("#video");
+  const vr = isRotated() ? stageRect() : v.getBoundingClientRect();
+  const vw = REMOTE ? v.naturalWidth : v.videoWidth,
+        vh = REMOTE ? v.naturalHeight : v.videoHeight;
+  if(!vw||!vh){ c.style.display="none"; return; }
+  const scale=Math.min(vr.width/vw, vr.height/vh);
+  const dw=vw*scale, dh=vh*scale;
+  const ox=vr.left+(vr.width-dw)/2, oy=vr.top+(vr.height-dh)/2;
+  c.style.display="block";
+  c.style.left=(ox+nx*dw)+"px"; c.style.top=(oy+ny*dh)+"px";
 }
 const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
+
+// ===== 三層 view 導航：login → dash(儀表板) → remote(主人操作) =====
+// dash 純 HTTP(出租管理)、不連 WS 不開影像 → 管理時完全不影響/不佔用遊玩硬體。
+let vheld = new Set();     // 虛擬按鍵目前按住的鍵(回儀表板時全放,避免卡鍵)
+let faceTimer = null;
+function showView(name){
+  document.body.classList.remove("view-login","view-dash","view-remote");
+  document.body.classList.add("view-"+name);
+  if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
+  if(name !== "dash" && typeof stopMmPreview === "function") stopMmPreview(); // 離開儀表板停小地圖預覽
+  if(name !== "dash" && faceTimer){ clearInterval(faceTimer); faceTimer = null; }  // 停方向輪詢
+  if(name !== "dash" && typeof stopCapPreview === "function") stopCapPreview();  // 離開儀表板停膠囊預覽
+  if(name !== "dash" && typeof watchDetect === "function") watchDetect(0);  // 撤銷背景偵測需求
+}
+function loadDash(){
+  fetchStatus(); refreshRemote(); refreshIdle();
+  // refreshSettings 取代 refreshMapStat:後者只更新「地圖/點數」那一行,巡邏點清單、
+  // 地形、平A 都不填 —— 平A 尤其不能不填,表單維持預設值時按儲存會覆寫掉真正的設定。
+  refreshFace(); refreshSettings(); refreshRuneStatus(); refreshPatrolMins();
+  refreshJobs();
+  fwStatus();
+  if(!faceTimer) faceTimer = setInterval(refreshFace, 1500);   // 每 1.5 秒刷新面向(不依賴預覽)
+  if(patrolPaneOn()) watchDetect(1);
+}
+async function enterRemote(){
+  showView("remote");
+  if(!ws || ws.readyState > 1) connect();     // 進主人頁才連 WS
+  await syncConfig(); renderButtons(); setWatching(true);
+}
+function pauseAll(){
+  // 回儀表板：全部暫停——停影像、放開所有虛擬鍵與電腦端映射鍵、停用鍵鼠映射
+  // (active() 靠 body.view-remote 判斷,離開此 view 即失效,不會誤送輸入到遊戲)。
+  setWatching(false);
+  vheld.forEach(k => send({t:"ku", k})); vheld.clear();
+  document.querySelectorAll("#pad .btn.active").forEach(el => el.classList.remove("active"));
+  if(window.__releaseDesktop) window.__releaseDesktop();   // 電腦端實體鍵鼠映射的 held
+}
+function backToDash(){ showView("dash"); pauseAll(); closeMenu(); loadDash(); }
+
+// 徹底斷線：先拆掉所有事件(尤其 onclose,否則 close 會觸發 1.5 秒後用舊 token
+// 自動重連)、再 close、清空 ws。避免登出後背景偷連、或新舊 token 串線。
+function disconnectWS(){
+  if(ws){ try{ ws.onclose=ws.onopen=ws.onerror=ws.onmessage=null; ws.close(); }catch(_){} ws=null; }
+}
+// 重置訪客殘留狀態：主人若曾誤輸入訪客短密碼而進 guest 模式,登出/重登需清乾淨,
+// 否則會卡在「僅 4/←/→」的訪客介面且實體鍵鼠映射失效(active() 因 !guest 恆假)。
+function resetGuestState(){
+  if(guest){
+    guest = false;
+    document.body.classList.remove("guest");
+    buttons = JSON.parse(localStorage.getItem("maple_buttons")||"null") || defaultButtons();
+  }
+  expired = false;
+}
 
 $("#go").onclick = () => {
   token = $("#token").value.trim(); if(!token) return;
   localStorage.setItem("maple_token", token);
-  $("#setup").style.display="none"; $("#tools").style.display="flex";
-  refreshLabels(); setWatching(true); connect();
+  resetGuestState();                 // 清掉上次可能殘留的訪客狀態
+  showView("dash"); loadDash();
+};
+$("#enterRemote").onclick = enterRemote;
+$("#toDashTop").onclick = backToDash;
+$("#toDashBtn").onclick = backToDash;
+$("#logout").onclick = () => {
+  disconnectWS(); setWatching(false); resetGuestState();
+  showView("login");
 };
 (() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
+if(REMOTE){
+  $("#token").placeholder = "限時連線密碼";
+  $("#setupHint").textContent = "遠端模式（Cloudflare Tunnel）：輸入主機顯示的限時密碼";
+}
+
+// ===== WebRTC 影像（WHEP） =====
+let pc = null, apc = null;   // apc = 音訊 PeerConnection(獨立第二條)
+function iceComplete(p){ return new Promise(res => {
+  if(p.iceGatheringState==="complete") return res();
+  const chk=()=>{ if(p.iceGatheringState==="complete"){ p.removeEventListener("icegatheringstatechange",chk); res(); } };
+  p.addEventListener("icegatheringstatechange", chk); setTimeout(res, 1000); }); }
+// 畫質切換遮罩:凍結最後一格 → 蓋住重連空窗 → 新串流第一格到就撤掉(避免黑屏)
+function freezeNow(){
+  const v=$("#video"), c=$("#freeze");
+  if(!v.videoWidth || !v.videoHeight) return;   // 沒畫面可凍就跳過(維持原本行為)
+  c.width=v.videoWidth; c.height=v.videoHeight;
+  try{ c.getContext("2d").drawImage(v,0,0,c.width,c.height); c.style.display="block"; }
+  catch(_){}
+}
+function unfreeze(){ $("#freeze").style.display="none"; }
+function onFirstFrame(v, cb){
+  let done=false; const fin=()=>{ if(!done){ done=true; cb(); } };
+  if(v.requestVideoFrameCallback){ try{ v.requestVideoFrameCallback(()=>fin()); }catch(_){} }
+  v.addEventListener("playing", ()=>setTimeout(fin,120), { once:true });
+  setTimeout(fin, 2500);   // 保底:無論如何最多凍 2.5 秒
+}
+// 低延遲:壓低接收端抖動緩衝。WebRTC 預設會為了流暢自動堆高緩衝(可達數十~數百 ms)。
+// VIDEO_JITTER_MS=0 = 盡量最小(最低延遲);若手機/弱網下變頓,可調高(如 100)換平順。
+// 註:jitterBufferTarget 是新標準(Chrome 114+)，playoutDelayHint 是舊版(Chromium)。
+// iOS Safari 目前兩者多半不支援 → 對 iPhone 可能無效，但對電腦 Chrome 有效，且無害。
+const VIDEO_JITTER_MS = 0;
+function lowLatency(receiver){
+  if(!receiver) return;
+  try{
+    if("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = VIDEO_JITTER_MS;         // ms
+    else if("playoutDelayHint" in receiver) receiver.playoutDelayHint = VIDEO_JITTER_MS/1000;   // 秒
+  }catch(_){}
+}
+async function whepOnce(){
+  const p = new RTCPeerConnection();
+  p.addTransceiver("video", { direction:"recvonly" });
+  p.ontrack = e => { const v=$("#video"); v.srcObject = e.streams[0]; lowLatency(e.receiver); onFirstFrame(v, unfreeze); };
+  p.onconnectionstatechange = () => {
+    if(p===pc && ["failed","disconnected"].includes(p.connectionState) && watching)
+      setTimeout(()=>{ if(watching) startVideo(); }, 1500); };
+  await p.setLocalDescription(await p.createOffer());
+  await iceComplete(p);
+  const url = `${location.protocol}//${location.hostname}:8889/screen/whep`;
+  const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/sdp" }, body: p.localDescription.sdp });
+  if(!r.ok){ p.close(); throw new Error("whep "+r.status); }
+  await p.setRemoteDescription({ type:"answer", sdp: await r.text() });
+  return p;
+}
+async function startVideo(){
+  stopVideo();
+  if(REMOTE){          // 遠端(隧道)：MJPEG 走同源 :8000，不啟 ffmpeg/WebRTC、無音訊
+    const im=$("#mjpeg");
+    im.onerror = ()=>{ if(watching) setTimeout(()=>{ if(watching) startVideo(); }, 1500); };
+    im.style.display="block";
+    im.src = `/video?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+    setStatus("已連線（遠端 MJPEG）", true);
+    return;
+  }
+  try{ await fetch(`/video/start?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(e){}
+  for(let i=0; i<8 && watching; i++){
+    try{ pc = await whepOnce(); setStatus("已連線", true); startAudio(); return; }
+    catch(e){ setStatus(`影像連線中…(${i+1}/8)`, false); await new Promise(r=>setTimeout(r, 800)); }
+  }
+  if(watching) setStatus("影像連線失敗（檢查防火牆 8889 / Tailscale）", false);
+}
+function stopVideo(){
+  if(pc){ pc.close(); pc=null; } $("#video").srcObject=null;
+  const im=$("#mjpeg"); im.onerror=null; im.removeAttribute("src"); im.style.display="none";
+  $("#cursor").style.display="none"; stopAudio();
+}
+
+// ===== 音訊：獨立第二條 WHEP(:8889/audio/whep)，與影像分開 =====
+async function whepAudioOnce(){
+  const p = new RTCPeerConnection();
+  p.addTransceiver("audio", { direction:"recvonly" });
+  p.ontrack = e => { const a=$("#gaudio"); a.srcObject = e.streams[0]; a.muted=false; a.play().catch(()=>{}); };
+  await p.setLocalDescription(await p.createOffer());
+  await iceComplete(p);
+  const url = `${location.protocol}//${location.hostname}:8889/audio/whep`;
+  const r = await fetch(url, { method:"POST", headers:{ "Content-Type":"application/sdp" }, body: p.localDescription.sdp });
+  if(!r.ok){ p.close(); throw new Error("whep-audio "+r.status); }
+  await p.setRemoteDescription({ type:"answer", sdp: await r.text() });
+  return p;
+}
+async function startAudio(){
+  stopAudio();
+  for(let i=0; i<8 && watching; i++){
+    try{ apc = await whepAudioOnce(); return; }
+    catch(e){ await new Promise(r=>setTimeout(r, 800)); }   // 音訊路徑可能比影像晚 ready
+  }
+}
+function stopAudio(){ if(apc){ apc.close(); apc=null; } const a=$("#gaudio"); if(a) a.srcObject=null; }
 
 // ===== 注視狀態 =====
 function setWatching(on){
@@ -220,33 +935,953 @@ function setWatching(on){
   $("#watch").classList.toggle("show", !on);
   $("#watchBtn").classList.toggle("on", on);
   $("#watchBtn").textContent = on ? "👁 注視中" : "👁 已暫停";
-  if(on){ $("#video").src = `/video?token=${encodeURIComponent(token)}&_=${Date.now()}`; }
-  else  { $("#video").removeAttribute("src"); }
+  if(on){ startVideo(); if(!guest && cfg.source==="window") focusTarget(); }
+  else { unfreeze(); stopVideo(); if(!guest) fetch(`/video/stop?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
 }
 $("#watchBtn").onclick = () => setWatching(!watching);
 $("#watchResume").onclick = () => setWatching(true);
-$("#video").addEventListener("error", () => { if(watching && token) setTimeout(()=>setWatching(true), 1200); });
+
+// ===== 解除卡死:一鍵放開所有鍵盤/滑鼠鍵(Arduino 韌體卡住按鍵時用) =====
+async function releaseStuck(btn){
+  const orig = btn.textContent;
+  btn.textContent = "放開中…";
+  try{
+    const r = await fetch(`/input/release?token=${encodeURIComponent(token)}`, { method:"POST" });
+    btn.textContent = r.ok ? "✓ 已解除卡死" : "✗ 失敗";
+    const m = $("#releaseMsg"); if(m) m.textContent = r.ok ? "已放開所有按鍵、並停止閒置掛機" : "";
+    if(idleOn) setIdle(false);   // 解除同時關閉掛機顯示
+  }catch(_){ btn.textContent = "✗ 連線失敗"; }
+  setTimeout(()=>{ btn.textContent = orig; }, 1600);
+}
+$("#releaseBtn").onclick  = e => releaseStuck(e.currentTarget);
+$("#releaseBtn2").onclick = e => releaseStuck(e.currentTarget);
+
+// ===== Arduino 韌體:寫入代碼 + 測試訊號 =====
+// 測試訊號預設按小鍵盤 5(N5):遊戲裡通常沒綁,在記事本看得到字元,一眼確認 HID 通了。
+// 判斷成功的依據是「板子回了幾次 OK」而非「送出幾次」—— 後者只證明寫進了序列埠。
+async function fwStatus(){
+  try{
+    const j = await (await fetch(`/arduino/status?token=${encodeURIComponent(token)}`)).json();
+    const fw = j.firmware || {};
+    $("#fwInfo").innerHTML =
+      `內建韌體：${fw.hex_exists ? `✅ ${(fw.hex_bytes/1024).toFixed(1)} KB` : "❌ 缺少"}`
+      + (fw.title ? `<br><span style="color:#6f7480">${fw.title}</span>` : "")
+      + `<br>連線：${j.connected ? `✅ ${j.port}` : "❌ 未連線"}`
+      + (j.can_flash ? "" : `<br><span style="color:#ffb020">⚠ ${j.why}</span>`);
+    const sel = $("#fwPort"); const keep = sel.value;
+    sel.innerHTML = (j.ports||[]).map(p=>
+      `<option value="${p.port}">${p.port}　${p.desc}</option>`).join("")
+      || `<option value="">（找不到序列埠）</option>`;
+    if(keep && [...sel.options].some(o=>o.value===keep)) sel.value = keep;
+    else if(j.guess) sel.value = j.guess;
+  }catch(_){ $("#fwInfo").textContent = "讀取狀態失敗（連線？）"; }
+}
+$("#fwRefresh").onclick = fwStatus;
+$("#fwTestBtn").onclick = async (e)=>{
+  const el = e.currentTarget; el.classList.add("on");
+  $("#fwMsg").textContent = "送出測試訊號中…";
+  try{
+    const j = await (await fetch(`/arduino/test?key=n5&times=3&token=${encodeURIComponent(token)}`,
+                                 { method:"POST" })).json();
+    $("#fwMsg").textContent = (j.ok ? "✅ " : "⚠ ") + j.msg
+      + `　回應：${(j.replies||[]).join(" / ") || "（無）"}`;
+    toast(j.msg, !!j.ok);
+  }catch(_){ $("#fwMsg").textContent = "測試失敗（連線？）"; }
+  el.classList.remove("on");
+};
+$("#fwFlashBtn").onclick = async (e)=>{
+  const port = $("#fwPort").value || "";
+  if(!confirm(`要把內建韌體寫入 ${port||"（自動偵測）"} 嗎？
+
+寫入期間鍵盤會中斷約 5~10 秒（板子重開機），完成後會自動重新連線。`)) return;
+  const el = e.currentTarget; el.classList.add("on");
+  $("#fwMsg").textContent = "寫入中…（板子會重開機並換 COM 埠，請勿拔線）";
+  $("#fwLog").style.display = "none";
+  try{
+    const j = await (await fetch(`/arduino/flash?port=${encodeURIComponent(port)}&token=${encodeURIComponent(token)}`,
+                                 { method:"POST" })).json();
+    $("#fwMsg").textContent = (j.ok ? "✅ " : "❌ ") + j.msg
+      + (j.boot_port ? `　bootloader:${j.boot_port}` : "")
+      + (j.reconnected ? `　已重新連線 ${j.port_after}` : "　⚠ 尚未重新連線");
+    if(j.output){ $("#fwLog").style.display = "block"; $("#fwLog").textContent = j.output; }
+    toast(j.msg, !!j.ok);
+    fwStatus();
+  }catch(_){ $("#fwMsg").textContent = "寫入失敗（連線？）"; }
+  el.classList.remove("on");
+};
+
+// ===== 閒置(掛機)模式(儀表板/中控頁)：伺服器端隨機時序自動輸入,僅主人、與出租互斥 =====
+// 開啟時同步顯示「監視畫面」——每秒抓一張 MapleStory 視窗 JPEG(約 1 秒延遲,
+// 省頻寬、穩定流暢),達到掛機監控效果。
+let idleOn = false, monitorTimer = null, trackTimer = null;
+function refreshMonitorFrame(){
+  const im = $("#monitorImg");
+  im.onerror = ()=>{};   // 尚無影格(503)忽略,下一秒再試
+  im.src = `/monitor/frame?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+}
+// ===== 方向預覽:面向=最後觸發的方向鍵(伺服器 keyboard.last_dir) =====
+function setFaceArrow(dir){
+  const a = $("#faceArrow"); if(!a) return;
+  a.textContent = dir === "left" ? "←" : "→";
+  a.style.color = dir === "left" ? "#5b8cff" : "#ffb020";
+}
+async function refreshFace(){
+  try{ const j = await (await fetch(`/face?token=${encodeURIComponent(token)}`)).json();
+    setFaceArrow(j.dir); }catch(_){}
+}
+async function turnFace(dir){
+  try{ const j = await (await fetch(`/face/${dir}?token=${encodeURIComponent(token)}`, { method:"POST" })).json();
+    setFaceArrow(j.dir); }catch(_){}
+}
+// 按鍵追蹤:每 400ms 抓 /idle/status,亮燈(該鍵最近 <0.6 秒送出)+ 下一次技能倒數
+// + 焦點診斷(前景不是 MapleStory → 提示技能/字母送不進去)。
+async function refreshTrack(){
+  try{
+    const s = await (await fetch(`/idle/status?token=${encodeURIComponent(token)}`)).json();
+    const keys = s.keys || {};
+    document.querySelectorAll("#klights .klight").forEach(el => {
+      const ago = keys[el.dataset.k];
+      el.classList.toggle("on", typeof ago === "number" && ago < 0.6);
+    });
+    $("#nextSkill").textContent = s.running
+      ? `下一次放置輪迴：${s.next_skill_in}s` : "下一次放置輪迴：--";
+    // 剩餘總時長(有設時長才顯示;到期倒數)
+    const rem = $("#idleRemain");
+    if(s.running && s.has_limit){
+      rem.textContent = "⏳ 掛機剩餘：" + fmtHMS(s.remaining_total);
+    } else if(s.running){
+      rem.textContent = "⏳ 掛機時長：無限（手動關閉）";
+    } else rem.textContent = "";
+    const w = $("#focusWarn");
+    if(s.running && s.target_foreground === false){
+      w.style.display = "block";
+      w.textContent = "⚠ MapleStory 不在前景，技能/字母送不進去（方向鍵仍可）。焦點守衛每秒嘗試切回。";
+    } else w.style.display = "none";
+    // 到期自動關閉:伺服器 running 轉 false 而前端還開著 → 同步關閉顯示
+    if(idleOn && !s.running){ setIdle(false); $("#idleMsg").textContent = "已達設定時長，閒置掛機自動關閉"; }
+  }catch(_){}
+}
+function startMonitor(){
+  if(monitorTimer) return;
+  $("#monitorBox").style.display = "block";
+  refreshMonitorFrame(); refreshTrack(); refreshFace();
+  monitorTimer = setInterval(()=>{ refreshMonitorFrame(); refreshFace(); }, 1000);   // 畫面+面向
+  trackTimer = setInterval(refreshTrack, 400);             // 亮燈/倒數更即時
+}
+function stopMonitor(){
+  if(monitorTimer){ clearInterval(monitorTimer); monitorTimer = null; }
+  if(trackTimer){ clearInterval(trackTimer); trackTimer = null; }
+  $("#monitorBox").style.display = "none";
+  $("#monitorImg").removeAttribute("src");
+}
+function setIdle(on){
+  idleOn = on;
+  const b=$("#idleBtn");
+  b.classList.toggle("on", on);
+  b.textContent = on ? "🤖 閒置掛機：開（隨機移動＋放置輪迴）" : "🤖 閒置掛機：關";
+  if(on) startMonitor(); else { stopMonitor(); $("#idleMsg").textContent = ""; }
+}
+async function refreshIdle(){
+  try{ const s=await (await fetch(`/idle/status?token=${encodeURIComponent(token)}`)).json(); setIdle(!!s.running); }catch(_){}
+}
+$("#idleBtn").onclick = async () => {
+  let path = idleOn ? "/idle/stop" : "/idle/start";
+  if(!idleOn){   // 開啟時帶上總時長(時*3600+分*60,0=無限)
+    const dur = (parseInt($("#idleH").value)||0)*3600 + (parseInt($("#idleM").value)||0)*60;
+    path += `?duration=${dur}&`;
+  } else path += "?";
+  try{
+    const r = await fetch(`${path}token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok){ $("#idleMsg").textContent = "⚠ " + (j.detail || "與出租模式衝突，無法同時開啟"); return; }
+    setIdle(!!j.running);
+    $("#idleMsg").textContent = j.running ? "已啟動：隨機左右移動、隨機間隔施放（下方監視畫面約 1 秒更新）" : "";
+  }catch(_){ $("#idleMsg").textContent = "操作失敗（連線？）"; }
+};
+$("#faceLeft").onclick = ()=>turnFace("left");
+$("#faceRight").onclick = ()=>turnFace("right");
+$("#focusBtn").onclick = async () => { const el=$("#focusBtn"); el.classList.add("on"); await focusTarget(); setTimeout(()=>el.classList.remove("on"), 400); };
+
+// ===== 掛機模式(開發中)：小地圖偵測遠端預覽 =====
+// 每秒抓一張 /minimap/frame(伺服器端偵測+標註),再讀 /minimap/status 顯示數據。
+// 只顯示小地圖裁切放大(view=crop);沒偵測到時伺服器回左上角區域方便診斷。
+// 與閒置掛機互相獨立,可單獨開來驗證偵測效果。
+let mmOn = false, mmTimer = null;
+async function mmTick(){
+  const im = $("#mmImg");
+  im.onerror = ()=>{ $("#mmInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
+  im.src = `/minimap/frame?view=crop&token=${encodeURIComponent(token)}&_=${Date.now()}`;
+  try{
+    const s = await (await fetch(`/minimap/status?token=${encodeURIComponent(token)}`)).json();
+    if(s.found){
+      $("#mmInfo").textContent = (s.locked ? "🔒 已鎖定 " : "🔎 偵測中 ")
+        + `小地圖 ${s.w}×${s.h} @ (${s.x},${s.y})`
+        + (s.dot ? `　🟡 角色點 (${s.dot.x},${s.dot.y})${s.dot_stale?"（殘影）":""}` : "　（未見角色黃點）")
+        + (s.purple && s.purple.length ? `　🟣 紫標 ×${s.purple.length}！` : "");
+    } else {
+      $("#mmInfo").textContent = s.error ? `❌ ${s.error}` : "🔎 尚未偵測到小地圖（小地圖有展開嗎？）";
+    }
+    // 疊加巡邏點圓圈:巡邏點座標(x,y)在小地圖系[0~w,0~h],crop 圖顯示整個小地圖,
+    // 故位置=(x/w, y/h)百分比。同步刷新中控地圖座標狀態。
+    const ov = $("#mmOverlay"); if(ov){
+      ov.innerHTML = "";
+      if(s.found && s.w && s.h){
+        try{
+          // 設定面板的渲染【不在這裡】(見 applyMapStatus/refreshSettings)。
+          // 預覽只負責畫圖層,疊加需要小地圖尺寸(s.w/s.h)才能把座標換成百分比。
+          //
+          // 【不能只靠 mapCache】它只在 refreshSettings() 時更新,而那只在進面板時跑一次。
+          // 小地圖的偵測尺寸會變(同一張圖曾在 181x66 / 165x75 之間跳,見 DEV_LOG 已知問題),
+          // map_id 一變就是另一份設定 —— 這時 cache 還是舊的,預覽就畫不出平台/巡邏點,
+          // 看起來像「設定不見了」,其實資料好好的在檔案裡。
+          // 所以偵測到的小地圖尺寸與 cache 對不上時,強制重拉一次。
+          const sizeChanged = mapCache && mapCache.map_id
+            && !String(mapCache.map_id).startsWith(`${s.w}x${s.h}`);
+          const mm = (mapCache && !sizeChanged)
+            ? mapCache
+            : applyMapStatusAndReturn(
+                await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json());
+          // 地形疊加:平台=水平線(藍)、繩索=垂直虛線(黃)
+          const terr = mm.platforms || [], rps = mm.ropes || [];
+          if(terr.length || rps.length){
+            const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");
+            svg.setAttribute("viewBox","0 0 100 100"); svg.setAttribute("preserveAspectRatio","none");
+            terr.forEach(p=>{
+              const ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+              ln.setAttribute("x1",p.xA/s.w*100); ln.setAttribute("y1",p.y/s.h*100);
+              ln.setAttribute("x2",p.xB/s.w*100); ln.setAttribute("y2",p.y/s.h*100);
+              ln.setAttribute("stroke","#4bd"); ln.setAttribute("stroke-width","1.4"); ln.setAttribute("opacity","0.85");
+              svg.appendChild(ln);
+            });
+            rps.forEach(r=>{
+              const ln=document.createElementNS("http://www.w3.org/2000/svg","line");
+              ln.setAttribute("x1",r.x/s.w*100); ln.setAttribute("y1","0");
+              ln.setAttribute("x2",r.x/s.w*100); ln.setAttribute("y2","100");
+              ln.setAttribute("stroke","#fd5"); ln.setAttribute("stroke-width","0.8"); ln.setAttribute("stroke-dasharray","2 2"); ln.setAttribute("opacity","0.7");
+              svg.appendChild(ln);
+            });
+            ov.appendChild(svg);
+          }
+          const pts = mm.points || [];
+          // 隨機巡邏無固定路線,故不畫連接線,只標各站立點(橘點=站立位置、青圈=攻擊範圍)
+          pts.forEach((p,i)=>{
+            const d=document.createElement("div"); d.className="patrol-dot";
+            d.style.left=(p.x/s.w*100)+"%"; d.style.top=(p.y/s.h*100)+"%";
+            const c=document.createElement("span"); c.textContent=i+1;
+            if(p.skill) c.title = `放置技能 ${p.skill}${p.cd?(' / 冷卻 '+p.cd+'s'):''}`;
+            d.appendChild(c);
+            ov.appendChild(d);
+          });
+          // 當前導航路線連線(pathgraph 每次算的 path,點到點青色虛線 + 節點圓點)
+          try{
+            const ns = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+            const seg = ns.path || [];
+            if(seg.length && s.w && s.h){
+              const start = (ns.pos && ns.pos.length===2) ? ns.pos : seg[0][0];
+              const chain = [start, ...seg.map(x=>x[0])];
+              const svg3=document.createElementNS("http://www.w3.org/2000/svg","svg");
+              svg3.setAttribute("viewBox","0 0 100 100"); svg3.setAttribute("preserveAspectRatio","none");
+              const pl=document.createElementNS("http://www.w3.org/2000/svg","polyline");
+              pl.setAttribute("points", chain.map(n=>`${n[0]/s.w*100},${n[1]/s.h*100}`).join(" "));
+              pl.setAttribute("fill","none"); pl.setAttribute("stroke","#33ffee");
+              pl.setAttribute("stroke-width","0.9"); pl.setAttribute("stroke-dasharray","2 1.5"); pl.setAttribute("opacity","0.95");
+              svg3.appendChild(pl);
+              seg.forEach(x=>{
+                const c=document.createElementNS("http://www.w3.org/2000/svg","circle");
+                c.setAttribute("cx",x[0][0]/s.w*100); c.setAttribute("cy",x[0][1]/s.h*100);
+                c.setAttribute("r","1.3"); c.setAttribute("fill","#33ffee");
+                svg3.appendChild(c);
+              });
+              ov.appendChild(svg3);
+            }
+          }catch(_){}
+        }catch(_){}
+      }
+    }
+  }catch(_){ $("#mmInfo").textContent = "連線失敗"; }
+}
+function stopMmPreview(){
+  if(mmTimer){ clearInterval(mmTimer); mmTimer = null; }
+  mmOn = false;
+  $("#mmBox").style.display = "none";
+  $("#mmImg").removeAttribute("src");
+  $("#mmBtn").classList.remove("on");
+  $("#mmBtn").textContent = "🗺 小地圖偵測預覽：關";
+}
+$("#mmBtn").onclick = ()=>{
+  if(mmOn){ stopMmPreview(); return; }
+  mmOn = true;
+  $("#mmBox").style.display = "block";
+  $("#mmBtn").classList.add("on");
+  $("#mmBtn").textContent = "🗺 小地圖偵測預覽：開（每秒更新）";
+  mmTick();
+  mmTimer = setInterval(mmTick, 1000);
+};
+$("#mmRedetectBtn").onclick = async ()=>{   // 解除鎖定,下一幀起重新偵測
+  try{
+    await fetch(`/minimap/redetect?token=${encodeURIComponent(token)}`, { method:"POST" });
+    $("#mmInfo").textContent = "🔄 已解除鎖定，重新偵測中…";
+    if(mmOn) mmTick();
+  }catch(_){ $("#mmInfo").textContent = "操作失敗（連線？）"; }
+};
+
+// ===== 設定顯示與背景偵測:兩者都【不依賴小地圖預覽】=====
+// 巡邏點、地形、平A、放置技能都存在伺服器 profile 裡,巡邏一直在用,所以顯示不該
+// 依賴預覽開著。這些渲染原本包在 mmTick() 的 `if(s.found)` 內,結果是「預覽關掉就
+// 看起來沒設定」;更糟的是平A表單維持 HTML 預設值(hold2s/未勾),而存檔其實是
+// move/兩者都開 —— 這時按「儲存平A設定」會靜默把設定改掉。
+//
+// 偵測則改由 /minimap/watch 宣告需求:進巡邏分頁就請伺服器每 2 秒自己偵測,
+// 這樣「開始巡航」(需要 current_map_id)與設定顯示都不必先開預覽。
+let mapCache = null, watchTick = 0;
+// 給預覽用:更新 cache 並把資料回傳,讓「發現 map_id 變了就重拉」那條路徑能一次做完
+// 更新與取用（不然預覽拿到新資料、cache 卻還是舊的，下一秒又觸發重拉）。
+function applyMapStatusAndReturn(mm){
+  applyMapStatus(mm);
+  return mm || {};
+}
+function applyMapStatus(mm){
+  if(!mm) return;
+  mapCache = mm;
+  renderMapStat(mm);
+  if(mm.count !== lastPtCount){ lastPtCount = mm.count; renderPoints(mm); }
+  fillAttack(mm);
+  const tsig = (mm.platforms||[]).length+'/'+(mm.ropes||[]).length;
+  if(tsig !== lastTerrSig){ lastTerrSig = tsig; renderTerrain(mm); }
+}
+async function refreshSettings(){
+  try{
+    applyMapStatus(await (await fetch(`/map/status?token=${encodeURIComponent(token)}`)).json());
+  }catch(_){ /* 連線瞬斷就下次動作再拉,不要清掉已顯示的設定 */ }
+}
+// 背景偵測需求:on=1 續約(伺服器 30s 後自動失效,瀏覽器關掉不會留下殘留執行緒)
+async function watchDetect(on){
+  try{ await fetch(`/minimap/watch?on=${on?1:0}&token=${encodeURIComponent(token)}`,
+                   { method:"POST" }); }catch(_){}
+}
+function patrolPaneOn(){
+  const p = document.querySelector('.dpane[data-pane="patrol"]');
+  return !!(p && p.classList.contains("on") &&
+            document.body.classList.contains("view-dash"));
+}
+
+// ===== 地圖座標(掛機導航前置):每張地圖自動識別、獨立記錄巡邏點 =====
+function renderMapStat(s){
+  if(!s || !s.map_id){
+    // 偵測已不依賴預覽(進巡邏分頁就會請伺服器背景偵測),所以真正的原因只有這兩個
+    $("#mapStat").textContent = "地圖：偵測不到小地圖（遊戲視窗最小化了嗎？小地圖有展開嗎？）";
+    return;
+  }
+  const nm = s.name ? `「${s.name}」` : "(未命名)";
+  const ok = s.has_layout ? "✅ 可掛機" : "⚠ 尚未設定，至少記錄 1 點";
+  $("#mapStat").textContent = `地圖 ${nm}　巡邏點 ${s.count} 個　${ok}`;
+}
+async function mapAct(path){
+  try{
+    const r = await fetch(`${path}${path.includes("?")?"&":"?"}token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok){ $("#mapMsg").textContent = "⚠ " + (j.detail || "操作失敗"); toast(j.detail||"操作失敗", false); return null; }
+    // 這些端點都回完整地圖狀態 → 整面套用,不會出現「點數更新了但地形/平A 還是舊的」
+    applyMapStatus(j); toast("✓ 已套用設定"); return j;
+  }catch(_){ $("#mapMsg").textContent = "操作失敗（連線？）"; toast("操作失敗（連線？）", false); return null; }
+}
+// 標記類動作【刻意】要求開著小地圖預覽:記錄巡邏點/平台端點/繩索都是把「角色現在
+// 站的位置」寫進設定,標錯了要事後靠座標數字去查很難。要求預覽開著,使用者按下去之前
+// 就能在圖上確認洋紅十字的位置對不對。唯讀顯示與自動化(巡航)不受此限。
+function requirePreview(msgId){
+  if(mmOn) return true;
+  $(msgId).textContent = "請先開啟上方「🗺 小地圖偵測預覽」—— 標記位置前要能看到角色在哪";
+  toast("標記位置需先開啟小地圖預覽", false);
+  return false;
+}
+$("#mapRecordBtn").onclick = async ()=>{
+  if(!requirePreview("#mapMsg")) return;
+  const j = await mapAct("/map/record");
+  if(j) $("#mapMsg").textContent = j.added ? `已記錄第 ${j.count} 個巡邏點` : "此位置已記錄過（容差內去重）";
+};
+$("#mapUndoBtn").onclick = async ()=>{ const j=await mapAct("/map/remove_last"); if(j) $("#mapMsg").textContent="已刪除上一點"; };
+$("#mapClearBtn").onclick = async ()=>{
+  if(!confirm("清空此地圖所有巡邏座標？")) return;
+  const j = await mapAct("/map/clear"); if(j) $("#mapMsg").textContent="已清空此地圖座標";
+};
+
+// ---- 地形:平台(A/B端)+繩索,供跨層路徑規劃 ----
+let platA=null, platB=null, lastTerrSig="";
+async function readDot(){
+  try{
+    await fetch(`/minimap/frame?view=crop&token=${encodeURIComponent(token)}`);
+    const s = await (await fetch(`/minimap/status?token=${encodeURIComponent(token)}`)).json();
+    return (s.dot && !s.dot_stale) ? s.dot : null;
+  }catch(_){ return null; }
+}
+$("#platMarkA").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（角色站定，確認預覽上有洋紅十字）"; return; }
+  platA = d; $("#platInfo").textContent = `A端 (${d.x},${d.y})${platB?`　B端 (${platB.x},${platB.y})`:'　→ 走到右端再記B端'}`;
+};
+$("#platMarkB").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（角色站定，確認預覽上有洋紅十字）"; return; }
+  platB = d; $("#platInfo").textContent = `${platA?`A端 (${platA.x},${platA.y})　`:'（尚未記A端）　'}B端 (${d.x},${d.y})`;
+};
+$("#platAddBtn").onclick = async ()=>{
+  if(!platA || !platB){ $("#platInfo").textContent = "請先記 A端 和 B端"; return; }
+  const y = Math.round((platA.y + platB.y)/2);
+  const j = await mapAct(`/map/platform/add?y=${y}&xa=${platA.x}&xb=${platB.x}`);
+  if(j){ $("#platInfo").textContent = `已新增平台 層${y} [${Math.min(platA.x,platB.x)}–${Math.max(platA.x,platB.x)}]`; platA=platB=null; lastTerrSig=""; renderTerrain(j); }
+};
+$("#ropeAddBtn").onclick = async ()=>{
+  if(!requirePreview("#platInfo")) return;
+  const d = await readDot();
+  if(!d){ $("#platInfo").textContent = "讀不到角色黃點（站到繩索上）"; return; }
+  const j = await mapAct(`/map/rope/add?x=${d.x}`);
+  if(j){ $("#platInfo").textContent = `已記繩索 x=${d.x}`; lastTerrSig=""; renderTerrain(j); }
+};
+function renderTerrain(s){
+  const pf=(s&&s.platforms)||[], rp=(s&&s.ropes)||[];
+  const pl=$("#platList");
+  if(pl){
+    pl.innerHTML = pf.length ? "" : '<div style="font-size:12px;color:#8a8f99">尚無平台</div>';
+    pf.forEach((p,i)=>{
+      const row=document.createElement("div"); row.className="ptrow";
+      row.innerHTML=`<span style="flex:1;min-width:0">🟦 平台 層${p.y} [${p.xA}–${p.xB}]</span><button class="ptdel">刪</button>`;
+      row.querySelector(".ptdel").onclick=async()=>{ const j=await mapAct(`/map/platform/remove?index=${i}`); if(j){ lastTerrSig=""; renderTerrain(j); } };
+      pl.appendChild(row);
+    });
+  }
+  const rl=$("#ropeList");
+  if(rl){
+    rl.innerHTML = rp.length ? "" : '<div style="font-size:12px;color:#8a8f99">尚無繩索</div>';
+    rp.forEach((r,i)=>{
+      const row=document.createElement("div"); row.className="ptrow";
+      row.innerHTML=`<span style="flex:1;min-width:0">🪢 繩索 x=${r.x}</span><button class="ptdel">刪</button>`;
+      row.querySelector(".ptdel").onclick=async()=>{ const j=await mapAct(`/map/rope/remove?index=${i}`); if(j){ lastTerrSig=""; renderTerrain(j); } };
+      rl.appendChild(row);
+    });
+  }
+}
+$("#mapSaveBtn").onclick = async ()=>{
+  const name = prompt("設置名稱（會保存目前記錄點＋放置技能＋平A）：", "");
+  if(name === null || !name.trim()) return;
+  try{
+    const r = await fetch(`/map/profile/save?name=${encodeURIComponent(name.trim())}&token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    $("#mapMsg").textContent = r.ok ? `已保存設置「${j.name}」（記錄點＋放置技能）` : ("⚠ " + (j.detail || "保存失敗"));
+  }catch(_){ $("#mapMsg").textContent = "保存失敗（連線？）"; }
+};
+function renderProfList(profs){
+  const box = $("#profList"); box.style.display = "flex";
+  if(!profs.length){ box.innerHTML = '<div style="font-size:12px;color:#8a8f99;padding:4px">尚無保存的設置</div>'; return; }
+  box.innerHTML = "";
+  profs.forEach(p=>{
+    const row = document.createElement("div"); row.className = "ptrow";
+    row.innerHTML =
+      `<span style="flex:1;min-width:0">${p.name}　<span style="color:#8a8f99;font-size:12px">${p.count}點/${p.skills}放置/${p.platforms||0}平台 · ${p.map_id||"?"}</span></span>`+
+      `<button class="ptsave">載入</button>`+
+      `<button class="ptdel">刪</button>`;
+    row.querySelector(".ptsave").onclick = async ()=>{
+      if(!confirm(`載入設置「${p.name}」？會覆蓋目前地圖的記錄點與放置技能。`)) return;
+      try{
+        const r = await fetch(`/map/profile/load?name=${encodeURIComponent(p.name)}&token=${encodeURIComponent(token)}`, { method:"POST" });
+        const j = await r.json().catch(()=>({}));
+        if(r.ok){
+          $("#mapMsg").textContent = `已載入設置「${j.loaded}」`;
+          // 載入會換掉整組設定 → 整面重套(含地形,原本漏了它)。三個閂鎖都要清,
+          // 否則 fillAttack 因 atkFilled 不再填、renderPoints/renderTerrain 因
+          // 數量沒變而跳過重繪。
+          atkFilled = false; lastPtCount = -1; lastTerrSig = "";
+          applyMapStatus(j);
+          box.style.display = "none";
+        }
+        else $("#mapMsg").textContent = "⚠ " + (j.detail || "載入失敗");
+      }catch(_){ $("#mapMsg").textContent = "載入失敗（連線？）"; }
+    };
+    row.querySelector(".ptdel").onclick = async ()=>{
+      if(!confirm(`刪除設置「${p.name}」？`)) return;
+      try{
+        const r = await fetch(`/map/profile/delete?name=${encodeURIComponent(p.name)}&token=${encodeURIComponent(token)}`, { method:"POST" });
+        const j = await r.json().catch(()=>({}));
+        renderProfList(j.profiles || []);
+      }catch(_){}
+    };
+    box.appendChild(row);
+  });
+}
+$("#mapLoadBtn").onclick = async ()=>{
+  const box = $("#profList");
+  if(box.style.display === "flex"){ box.style.display = "none"; return; }
+  try{
+    const j = await (await fetch(`/map/profile/list?token=${encodeURIComponent(token)}`)).json();
+    renderProfList(j.profiles || []);
+  }catch(_){ $("#mapMsg").textContent = "讀取清單失敗"; }
+};
+
+// ---- 平A設定 + 各記錄點放置技能 + 巡邏開關（按鍵一律用虛擬鍵盤點選） ----
+let lastPtCount = -1, atkFilled = false, atkKeyVal = "a";
+function fillAttack(s){                          // 平A只填一次(避免每秒覆蓋)
+  if(atkFilled || !s || !s.attack) return;
+  atkKeyVal = s.attack.key || "a";
+  $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(atkKeyVal)}（點我選）`;
+  $("#atkMode").value = s.attack.mode || "hold2s";
+  $("#atkJumpHold").checked = !!s.attack.jump_atk;
+  $("#atkFallHold").checked = !!s.attack.fall_atk;
+  atkFilled = true;
+}
+$("#atkKeyBtn").onclick = ()=> openKeyPicker("選平A攻擊鍵 → 點鍵盤上的按鍵", tok=>{
+  atkKeyVal = tok;
+  $("#atkKeyBtn").textContent = `攻擊鍵：${labelFor(tok)}（點我選）`;
+});
+// 放置方向循環:不限 → 左 → 右 → 不限。三態用一顆按鈕,列已經很擠。
+const FACE_CYCLE = { "": "left", "left": "right", "right": "" };
+const FACE_TXT = { "": "↔不限向", "left": "⬅朝左放", "right": "➡朝右放" };
+function paintFace(btn, row){
+  btn.textContent = FACE_TXT[row.dataset.face || ""];
+  btn.classList.toggle("on", !!row.dataset.face);
+  btn.title = row.dataset.face
+    ? "施放前會再按一次該方向鍵確保面向（會走一小步）"
+    : "不轉向，面向取決於走位方向";
+}
+function renderPoints(s){                         // 放置技能:已設定行 +「＋新增」選記錄點
+  const box = $("#ptList"); if(!box) return;
+  const pts = (s && s.points) || [];
+  box.innerHTML = "";
+  const configured = pts.map((p,i)=>({...p, i})).filter(p=>p.skill);   // 已設放置技能的點
+  if(!configured.length){
+    const d = document.createElement("div"); d.style.cssText = "font-size:12px;color:#8a8f99";
+    d.textContent = pts.length ? "尚無放置技能。按下方「＋ 新增放置技能」選一個記錄點設定。"
+                               : "尚無巡邏點（先記錄位置）。";
+    box.appendChild(d);
+  }
+  configured.forEach(p=>{
+    const row = document.createElement("div"); row.className = "ptrow";
+    row.dataset.skill = p.skill; row.dataset.precise = p.precise ? "1" : ""; row.dataset.skip = p.skip ? "1" : "";
+    row.dataset.face = p.face || "";
+    row.innerHTML =
+      `<span class="ptidx">${p.i+1}</span>`+
+      `<span class="ptxy">(${p.x},${p.y})</span>`+
+      `<button class="ptskill"></button>`+
+      `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s" value="${p.cd||''}">`+
+      `<button class="ptprec"></button>`+
+      `<button class="ptskip"></button>`+
+      `<button class="ptface"></button>`+
+      `<button class="ptsave">存</button>`+
+      `<button class="ptdel">刪</button>`;
+    const skBtn = row.querySelector(".ptskill");
+    const paint = ()=>{ skBtn.textContent = `技能 ${labelFor(row.dataset.skill)}`; };
+    const precBtn = row.querySelector(".ptprec");
+    const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
+    const skipBtn = row.querySelector(".ptskip");
+    const paintSkip = ()=>{ skipBtn.textContent = row.dataset.skip?"⏭冷卻略過":"🔁每輪"; skipBtn.classList.toggle("on", !!row.dataset.skip); };
+    const faceBtn = row.querySelector(".ptface");
+    paint(); paintPrec(); paintSkip(); paintFace(faceBtn, row);
+    faceBtn.onclick = ()=>{ row.dataset.face = FACE_CYCLE[row.dataset.face || ""]; paintFace(faceBtn, row); };
+    skBtn.onclick = ()=> openKeyPicker(`第 ${p.i+1} 點放置技能 → 點鍵盤選鍵`, tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
+    precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
+    skipBtn.onclick = ()=>{ row.dataset.skip = row.dataset.skip?"":"1"; paintSkip(); };
+    row.querySelector(".ptsave").onclick = async ()=>{
+      const cd = row.querySelector(".ptcd").value || 0;
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}&face=${row.dataset.face||''}`);
+      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確":"範圍"} / ${row.dataset.skip?"冷卻略過":"每輪"}（已存）`; renderPoints(j); }
+    };
+    row.querySelector(".ptdel").onclick = async ()=>{
+      const j = await mapAct(`/map/point_skill?index=${p.i}&skill=&cd=0`);
+      if(j){ $("#mapMsg").textContent = `第 ${p.i+1} 點：已移除放置技能`; renderPoints(j); }
+    };
+    box.appendChild(row);
+  });
+  const addBtn = document.createElement("div"); addBtn.className = "mbtn"; addBtn.style.marginTop = "8px";
+  addBtn.textContent = "＋ 新增放置技能";
+  addBtn.onclick = ()=> showAddRow(pts, box, addBtn);
+  box.appendChild(addBtn);
+}
+function showAddRow(pts, box, addBtn){
+  const avail = pts.map((p,i)=>({...p, i})).filter(p=>!p.skill);   // 未設定的記錄點(已設定不可選)
+  if(!avail.length){ $("#mapMsg").textContent = "所有記錄點都已設定放置技能"; return; }
+  addBtn.style.display = "none";
+  const row = document.createElement("div"); row.className = "ptrow"; row.dataset.skill = ""; row.dataset.precise = ""; row.dataset.skip = ""; row.dataset.face = "";
+  row.innerHTML =
+    `<select class="ptpick">`+
+      avail.map(p=>`<option value="${p.i}">${p.i+1} (${p.x},${p.y})</option>`).join("")+
+    `</select>`+
+    `<button class="ptskill">＋技能鍵</button>`+
+    `<input class="ptcd" type="number" min="0" step="1" placeholder="冷卻s">`+
+    `<button class="ptprec"></button>`+
+    `<button class="ptskip"></button>`+
+    `<button class="ptface"></button>`+
+    `<button class="ptsave">存</button>`+
+    `<button class="ptdel">取消</button>`;
+  const skBtn = row.querySelector(".ptskill");
+  const paint = ()=>{ skBtn.textContent = row.dataset.skill?`技能 ${labelFor(row.dataset.skill)}`:"＋技能鍵"; skBtn.style.opacity = row.dataset.skill?"1":"0.6"; };
+  const precBtn = row.querySelector(".ptprec");
+  const paintPrec = ()=>{ precBtn.textContent = row.dataset.precise?"🎯精確":"⭕範圍"; precBtn.classList.toggle("on", !!row.dataset.precise); };
+  const skipBtn = row.querySelector(".ptskip");
+  const paintSkip = ()=>{ skipBtn.textContent = row.dataset.skip?"⏭冷卻略過":"🔁每輪"; skipBtn.classList.toggle("on", !!row.dataset.skip); };
+  const faceBtn = row.querySelector(".ptface");
+  paint(); paintPrec(); paintSkip(); paintFace(faceBtn, row);
+  faceBtn.onclick = ()=>{ row.dataset.face = FACE_CYCLE[row.dataset.face || ""]; paintFace(faceBtn, row); };
+  skBtn.onclick = ()=> openKeyPicker("放置技能 → 點鍵盤選鍵", tok=>{ if(tok){ row.dataset.skill=tok; paint(); } });
+  precBtn.onclick = ()=>{ row.dataset.precise = row.dataset.precise?"":"1"; paintPrec(); };
+  skipBtn.onclick = ()=>{ row.dataset.skip = row.dataset.skip?"":"1"; paintSkip(); };
+  row.querySelector(".ptsave").onclick = async ()=>{
+    if(!row.dataset.skill){ $("#mapMsg").textContent = "請先點「＋技能鍵」選一個鍵"; return; }
+    const idx = row.querySelector(".ptpick").value;
+    const cd = row.querySelector(".ptcd").value || 0;
+    const j = await mapAct(`/map/point_skill?index=${idx}&skill=${encodeURIComponent(row.dataset.skill)}&cd=${encodeURIComponent(cd)}&precise=${row.dataset.precise?1:0}&skip=${row.dataset.skip?1:0}&face=${row.dataset.face||''}`);
+    if(j){ $("#mapMsg").textContent = `第 ${Number(idx)+1} 點：${labelFor(row.dataset.skill)} / 冷卻 ${cd}s / ${row.dataset.precise?"精確":"範圍"} / ${row.dataset.skip?"冷卻略過":"每輪"}（已存）`; renderPoints(j); }
+  };
+  row.querySelector(".ptdel").onclick = ()=> renderPoints({points:pts});   // 取消:重繪回列表
+  box.insertBefore(row, addBtn);
+}
+$("#atkSaveBtn").onclick = async ()=>{
+  const key = atkKeyVal || "a";
+  const mode = $("#atkMode").value || "hold2s";
+  const jh = $("#atkJumpHold").checked ? 1 : 0;
+  const fh = $("#atkFallHold").checked ? 1 : 0;
+  const j = await mapAct(`/map/attack?key=${encodeURIComponent(key)}&mode=${encodeURIComponent(mode)}&jump_atk=${jh}&fall_atk=${fh}`);
+  const mtxt = mode==="tap2"?"到點按兩次":(mode==="move"?"移動時按壓":"到點長按2秒");
+  if(j) $("#mapMsg").textContent = `已儲存平A：鍵「${labelFor(key)}」、${mtxt}`;
+};
+// 巡邏時限:讀存檔值填進輸入框(伺服器重啟後也保留設定)
+async function refreshPatrolMins(){
+  try{
+    const j = await (await fetch(`/nav/patrol_minutes?token=${encodeURIComponent(token)}`)).json();
+    if(Number.isInteger(j.minutes)) $("#patrolMins").value = j.minutes;
+  }catch(_){}
+}
+function fmtRemain(sec){
+  if(sec === null || sec === undefined) return "無限";
+  const s = Math.max(0, Math.round(sec));
+  return `${String(Math.floor(s/3600)).padStart(2,"0")}:${String(Math.floor(s%3600/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+}
+async function doPatrolStart(sel){
+  const mins = Math.max(0, Math.min(1440, parseInt($("#patrolMins").value, 10) || 0));
+  try{
+    const r = await fetch(`/nav/patrol?minutes=${mins}&token=${encodeURIComponent(token)}`, { method:"POST" });
+    const j = await r.json().catch(()=>({}));
+    const lim = mins ? `，時限 ${mins} 分鐘` : "，無限巡邏";
+    const txt = r.ok ? `▶ 巡邏已啟動（隨機跨層走位＋到點平A/放置技能）${lim}` : ("⚠ " + (j.detail || "啟動失敗"));
+    document.querySelectorAll(sel).forEach(e=>e.textContent = txt);
+    toast(r.ok ? `▶ 巡邏已啟動${lim}` : (j.detail||"啟動失敗"), r.ok);
+  }catch(_){ document.querySelectorAll(sel).forEach(e=>e.textContent = "啟動失敗（連線？）"); toast("啟動失敗（連線？）", false); }
+}
+async function doPatrolStop(sel){
+  try{ await fetch(`/nav/stop?token=${encodeURIComponent(token)}`, { method:"POST" }); }catch(_){}
+  document.querySelectorAll(sel).forEach(e=>e.textContent = "⏹ 已停止巡邏");
+  toast("⏹ 已停止巡邏");
+}
+$("#patrolStartBtn").onclick = ()=> doPatrolStart("#patrolMsg,#menuPatrolMsg");
+$("#patrolStopBtn").onclick  = ()=> doPatrolStop("#patrolMsg,#menuPatrolMsg");
+$("#menuPatrolStop").onclick  = ()=> doPatrolStop("#menuPatrolMsg,#patrolMsg");
+
+// ---- 符文自動解除：開關 + 辨識測試（校準用） ----
+const RUNE_ARROW = {up:"↑",down:"↓",left:"←",right:"→"};
+async function refreshRuneStatus(){
+  try{
+    const s = await (await fetch(`/rune/status?token=${encodeURIComponent(token)}`)).json();
+    $("#runeEnable").checked = !!s.enabled;
+    applyRuneLines(s);
+  }catch(_){}
+}
+function applyRuneLines(s){
+  const ln = s.lines || {};
+  $("#runeLineCv").checked     = ln.cv !== false;
+  $("#runeLineClaude").checked = ln.claude !== false;
+}
+// 後端可能拒絕（兩條都關），所以要拿回傳的實際狀態覆蓋回去，不能相信勾選框
+async function setRuneLine(which, on){
+  try{
+    const j = await (await fetch(
+      `/rune/line?${which}=${on?1:0}&token=${encodeURIComponent(token)}`,
+      { method:"POST" })).json();
+    applyRuneLines(j);
+    if(j.ok === false){ toast(j.msg || "設定失敗", false); return; }
+    const name = which === "cv" ? "1 線 CV" : "2 線 claude";
+    toast(`${name}：${on ? "開" : "關"}`);
+  }catch(_){ refreshRuneStatus(); toast("設定失敗（連線？）", false); }
+}
+$("#runeLineCv").onchange     = (e)=> setRuneLine("cv", e.target.checked);
+$("#runeLineClaude").onchange = (e)=> setRuneLine("claude", e.target.checked);
+$("#runeEnable").onchange = async (e)=>{
+  const on = e.target.checked ? 1 : 0;
+  try{
+    await fetch(`/rune/enable?on=${on}&token=${encodeURIComponent(token)}`, { method:"POST" });
+    toast(on ? "🔮 符文自動解除：開（正在預熱辨識器）" : "符文自動解除：關");
+    placeTick();                       // 立刻更新徽章,不等下一次輪詢
+  }catch(_){ toast("設定失敗（連線？）", false); }
+};
+async function runeProbe(url, label){
+  // dataset.hint=0 → 暫時把這行讓給測試結果,別被每秒的狀態 tick 蓋掉
+  $("#runeMsg").dataset.hint = "0";
+  setTimeout(()=>{ $("#runeMsg").dataset.hint = "1"; }, 15000);
+  $("#runeMsg").textContent = label + "中…（1 線 CV 約數十毫秒；退到 2 線 claude 要 6~11 秒）";
+  try{
+    const j = await (await fetch(url, { method:"POST" })).json();
+    if(j.err){ $("#runeMsg").textContent = "⚠ " + j.err; toast(j.err, false); return; }
+    const seq = (j.dirs||[]).map(d=>RUNE_ARROW[d]||"?").join(" ");
+    const ln = j.line === "cv" ? "1 線 CV" : (j.line === "claude" ? "2 線 claude" : j.line || "—");
+    $("#runeMsg").textContent = `認出 ${j.n} 支：${seq||"（無）"}　${ln}　耗時 ${j.ms}ms`;
+    toast(`${j.n} 支 ${seq}（${ln} ${j.ms}ms）`, j.n===4);
+  }catch(_){ $("#runeMsg").textContent = label+"失敗（連線？）"; toast(label+"失敗", false); }
+}
+$("#runeDetectBtn").onclick = ()=>
+  runeProbe(`/rune/detect?token=${encodeURIComponent(token)}`, "辨識");
+$("#runeTestBtn").onclick = ()=>
+  runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
+
+// ---- 膠囊預覽：1 線(CV)的定位與判向即時檢查 ----
+// 每秒抓一張 /rune/capsule（伺服器端定位＋標註）。橘框＝膠囊，直線＝四等分，
+// 下方色帶＝每格判到的方向。頂部兩行是【原始影格座標】，用來二次確認到底切在哪。
+// 沒開謎題時伺服器回整幀縮圖＋畫出搜尋範圍框，看得出是沒找到還是膠囊落在範圍外。
+let capOn = false, capTimer = null;
+function capTick(){
+  const im = $("#capImg");
+  im.onerror = ()=>{ $("#capInfo").textContent = "❌ 拿不到 MapleStory 視窗影格（遊戲開著嗎？）"; };
+  im.onload  = ()=>{ $("#capInfo").textContent =
+    "頂部：綠 capsule＝實際切出的框、橘 search＝允許範圍（皆為原始影格座標）　橘框＝膠囊　直線＝四等分　下方＝1 線判到的方向"; };
+  im.src = `/rune/capsule?token=${encodeURIComponent(token)}&_=${Date.now()}`;
+}
+function stopCapPreview(){
+  if(capTimer){ clearInterval(capTimer); capTimer = null; }
+  capOn = false;
+  $("#capBox").style.display = "none";
+  $("#capImg").removeAttribute("src");
+  $("#capBtn").classList.remove("on");
+  $("#capBtn").textContent = "💊 膠囊預覽：關";
+}
+$("#capBtn").onclick = ()=>{
+  if(capOn){ stopCapPreview(); return; }
+  capOn = true;
+  $("#capBox").style.display = "block";
+  $("#capBtn").classList.add("on");
+  $("#capBtn").textContent = "💊 膠囊預覽：開（每秒更新）";
+  capTick();
+  capTimer = setInterval(capTick, 1000);
+};
+
+// ---- 儀表板分頁切換：出租 / 閒置 / 自動巡邏 / 遠端 ----
+document.querySelectorAll(".dtab").forEach(t=>{
+  t.onclick = ()=>{
+    const name = t.dataset.tab;
+    document.querySelectorAll(".dtab").forEach(x=>x.classList.toggle("on", x===t));
+    document.querySelectorAll(".dpane").forEach(p=>p.classList.toggle("on", p.dataset.pane===name));
+    // 進巡邏分頁:立刻拉一次設定,並請伺服器開始背景偵測(不必開預覽);離開就撤銷。
+    if(name === "patrol"){ refreshSettings(); watchDetect(1); }
+    else { watchDetect(0); }
+  };
+});
+
+// ---- 巡邏監控：階段(平A/放置技能)＋各放置技能點下次觸發倒數 ----
+const PHASE_TXT = {idle:"待機",starting:"啟動中",patrol:"巡邏中",settle:"定位",rope_up:"上繩",
+  pass_cast:"路過補刀",summon:"放召喚",
+  fall:"下跳",fall_adjust:"下跳修正",move_x:"水平移動",goto:"前往點",cast:"平A攻擊",place:"放置技能",
+  done:"完成",time_up:"時間到已停止",purple_pause:"紫標暫停"};
+// 開關徽章:一眼看出「開/關」以及「開了但目前不生效」
+function badge(label, on, note, warn){
+  const c = warn ? ["#3a2d16","#ffb020"] : (on ? ["#14331f","#7fe0b0"] : ["#26282f","#8a8f99"]);
+  const mark = on ? (warn ? "⚠" : "✓") : "✕";
+  return `<span style="font-size:11px;padding:2px 7px;border-radius:99px;`
+       + `background:${c[0]};color:${c[1]};border:1px solid ${c[1]}44;white-space:nowrap">`
+       + `${mark} ${label}${note ? "・" + note : ""}</span>`;
+}
+// ---- 職業（攻擊＋移動參數一組） ----
+// 移動參數原本寫死在 navigator.py（量自「蓮」），現在收成職業設定，換角色整組切換。
+let jobDetail = null;
+function jobFill(d){
+  if(!d) return;
+  jobDetail = d;
+  $("#jobName").value = d.name || "";
+  const m = d.move || {};
+  $("#jkey1").value = m.jump_key1 ?? "";
+  $("#jkey2").value = m.jump_key2 ?? "";
+  $("#jrope").value = m.rope_key ?? "";
+  $("#jdx").value   = m.jump_dx ?? "";
+  $("#jint").value  = m.jump_interval ?? "";
+  $("#jland").value = m.jump_land ?? "";
+  $("#jropeup").value = m.rope_up ?? "";
+}
+async function refreshJobs(){
+  try{
+    const s = await (await fetch(`/job/status?token=${encodeURIComponent(token)}`)).json();
+    const sel = $("#jobSel");
+    sel.innerHTML = (s.jobs||[]).map(n=>
+      `<option value="${n}"${n===s.current?" selected":""}>${n}</option>`).join("")
+      || `<option value="">（尚無職業）</option>`;
+    jobFill(s.detail);
+  }catch(_){}
+}
+$("#jobEditBtn").onclick = ()=>{
+  const b = $("#jobBox"), on = b.style.display === "none";
+  b.style.display = on ? "block" : "none";
+  $("#jobEditBtn").textContent = on ? "🧬 職業參數：收合" : "🧬 職業參數：展開";
+};
+$("#jobApplyBtn").onclick = async ()=>{
+  const n = $("#jobSel").value;
+  if(!n) return;
+  try{
+    const r = await fetch(`/job/apply?token=${encodeURIComponent(token)}&name=${encodeURIComponent(n)}`,{method:"POST"});
+    if(!r.ok){ toast((await r.json()).detail || "切換失敗", false); return; }
+    jobFill((await r.json()).detail);
+    toast(`已切換到「${n}」`, true);
+    refreshFace && refreshFace();
+  }catch(_){ toast("切換失敗（連線？）", false); }
+};
+$("#jobSaveBtn").onclick = async ()=>{
+  const name = $("#jobName").value.trim();
+  if(!name){ $("#jobMsg").textContent = "請先填職業名稱"; return; }
+  try{
+    // 平A設定一起收進去：職業 = 移動參數 + 攻擊設定，切換時兩者一起套用
+    const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+    const body = {
+      name,
+      move: {jump_key1:$("#jkey1").value.trim(), jump_key2:$("#jkey2").value.trim(),
+             rope_key:$("#jrope").value.trim(), jump_dx:+$("#jdx").value,
+             jump_interval:+$("#jint").value, jump_land:+$("#jland").value,
+             rope_up:+$("#jropeup").value},
+      attack: {key:st.attack_key, mode:st.attack_mode,
+               jump_atk:!!st.jump_atk, fall_atk:!!st.fall_atk},
+    };
+    const r = await fetch(`/job/save?token=${encodeURIComponent(token)}`,
+      {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if(!r.ok){ $("#jobMsg").textContent = (await r.json()).detail || "儲存失敗"; return; }
+    $("#jobMsg").textContent = `已儲存「${name}」（含平A設定）`;
+    await refreshJobs();
+  }catch(_){ $("#jobMsg").textContent = "儲存失敗（連線？）"; }
+};
+$("#jobDelBtn").onclick = async ()=>{
+  const n = $("#jobSel").value;
+  if(!n || !confirm(`確定刪除職業「${n}」？`)) return;
+  try{
+    const r = await fetch(`/job/delete?token=${encodeURIComponent(token)}&name=${encodeURIComponent(n)}`,{method:"POST"});
+    if(!r.ok){ $("#jobMsg").textContent = (await r.json()).detail || "刪除失敗"; return; }
+    $("#jobMsg").textContent = `已刪除「${n}」`;
+    await refreshJobs();
+  }catch(_){ $("#jobMsg").textContent = "刪除失敗（連線？）"; }
+};
+$("#jobSel").onchange = ()=>{ /* 只換顯示，按「切換」才真的套用 */ };
+
+// ---- EXP 進度 ----
+// 伺服器端讀經驗條【上面的文字】(點陣模板比對，約 1ms)，這裡只負責顯示。
+// 不用綠/灰長度比例推算：底色會隨經驗值變，而且 1px = 0.073%，文字精度高得多。
+function fmtBig(n){
+  if(n === null || n === undefined) return "--";
+  const a = Math.abs(n);
+  if(a >= 1e12) return (n/1e12).toFixed(2) + " 兆";
+  if(a >= 1e8)  return (n/1e8).toFixed(2) + " 億";
+  if(a >= 1e4)  return (n/1e4).toFixed(1) + " 萬";
+  return String(n);
+}
+async function expTick(){
+  try{
+    const e = await (await fetch(`/exp/status?token=${encodeURIComponent(token)}`)).json();
+    const pct=$("#expPct"), num=$("#expNum"), bar=$("#expBar"), gain=$("#expGain");
+    if(!e.ok){
+      pct.textContent = "--%"; pct.style.color = "#8a8f99";
+      // 讀失敗時把辨識到的原文顯示出來——那是判斷「哪個字元認錯」的唯一線索
+      num.textContent = e.text ? `讀到「${e.text}」` : "";
+      bar.style.width = "0%";
+      gain.textContent = e.err || "讀不到經驗條";
+      return;
+    }
+    pct.textContent = e.pct.toFixed(3) + "%";
+    pct.style.color = "#7fe0b0";
+    num.textContent = e.exp.toLocaleString();
+    bar.style.width = Math.min(100, e.pct) + "%";
+    const parts = [];
+    if(e.gained) parts.push(`本次 +${fmtBig(e.gained)}`);
+    if(e.rate)   parts.push(`每小時 ${fmtBig(e.rate)}`);
+    if(e.levels) parts.push(`升 ${e.levels} 級`);
+    gain.textContent = parts.length ? parts.join("　") : "累計中…";
+  }catch(_){}
+}
+
+async function placeTick(){
+  try{
+    const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+    // 三態:解符文中 / 巡航中 / 停止中。解符文期間 navigator 也在跑導航,
+    // 只看 st.running 會誤顯示成巡航中,所以用伺服器算好的 overall。
+    const S = {solving:["🔮 解除符文中","#c9a0ff"], patrol:["▶ 巡航中","#7fe0b0"],
+               stopped:["⏹ 停止中","#9aa0ad"]}[st.overall] || ["--","#9aa0ad"];
+    const el = $("#patrolPhase");
+    el.style.color = S[1];
+    const detail = st.overall === "stopped"
+      ? (st.phase === "time_up" ? "・巡邏時間到" : (st.error ? "・" + st.error : ""))
+      : `・${PHASE_TXT[st.phase]||st.phase||"--"}・已造訪 ${st.rounds||0} 點`
+        + (st.pass_n ? `・路過補刀 ${st.pass_n}` : "")
+        // 卡在爬梯處的自動脫困。分子＝真的脫出（動作後位置有變），分母＝觸發次數
+        + (st.stuck_n ? `・🪃 脫困 ${st.stuck_ok||0}/${st.stuck_n}` : "");
+    el.textContent = S[0] + detail;
+    // 大字倒數:無限用 ∞,停止中就不顯示時間避免誤讀
+    const clk = $("#patrolClock");
+    if(st.overall === "stopped"){ clk.textContent = "--:--:--"; clk.style.color = "#5a5f6b"; }
+    else if(st.patrol_remaining === null || st.patrol_remaining === undefined){
+      clk.textContent = "∞ 無限巡邏"; clk.style.color = "#e6e8ee";
+    }else{
+      clk.textContent = fmtRemain(st.patrol_remaining);
+      clk.style.color = st.patrol_remaining < 300 ? "#ffb020" : "#e6e8ee";  // 剩 5 分鐘轉黃
+    }
+    // 所有開關的一覽:開了但目前不生效的用黃色警示,避免「以為開了就會動」
+    const runeIneffective = st.rune_enabled && st.overall === "stopped";
+    $("#switchRow").innerHTML = [
+      badge("巡邏", st.overall !== "stopped"),
+      badge("符文自動解除", !!st.rune_enabled,
+            runeIneffective ? "需巡邏中" : "", runeIneffective),
+      badge("跳躍攻擊", !!st.jump_atk),
+      badge("下墜攻擊", !!st.fall_atk),
+      badge(`平A ${st.attack_key ? labelFor(st.attack_key) : "--"}`, !!st.attack_key,
+            st.attack_mode || ""),
+    ].join("");
+    // 符文列的說明(測試結果顯示期間讓位)
+    const rm = $("#runeMsg");
+    if(rm && rm.dataset.hint !== "0"){
+      rm.textContent = st.rune_enabled
+        ? (runeIneffective ? "⚠ 已開啟，但只在巡邏進行中才會自動解除（目前未巡邏）"
+                           : "✓ 巡邏中遇到符文會自動前往解除")
+        : "未開啟：紫標只會通知＋暫停巡邏";
+    }
+    // 召喚（召喚流職業的主要輸出）：冷卻一好就會在每輪開頭補，先於走位
+    const sm = st.summon;
+    const smLine = sm
+      ? `<div>🔮 召喚 <b>${labelFor(sm.key)}</b>　${sm.ready ? "🟢 就緒（下一輪即放）"
+          : `🟠 ${sm.remaining}s 後可放`}　冷卻 ${sm.cd}s　已放 ${sm.n} 次</div>`
+      : "";
+    const pl = st.placements || [], box = $("#placeMon");
+    if(!pl.length){ box.innerHTML = smLine || "（此地圖無放置技能點）"; return; }
+    box.innerHTML = smLine + pl.map(p=>{
+      const s = p.ready ? "🟢 就緒（下次到點即放）" : `🟠 ${p.remaining}s 後可放`;
+      const fc = p.face === "left" ? "　⬅朝左" : (p.face === "right" ? "　➡朝右" : "");
+      return `<div>放置技能 <b>${labelFor(p.skill)}</b> @(${p.x},${p.y})${fc}　${s}　冷卻 ${p.cd}s</div>`;
+    }).join("");
+  }catch(_){}
+}
+setInterval(()=>{
+  if(!document.body.classList.contains("view-dash")) return;
+  const pane = document.querySelector('.dpane[data-pane="patrol"]');
+  if(pane && pane.classList.contains("on")){
+    placeTick();
+    expTick();
+    // 背景偵測續約:伺服器端 30s 過期,所以每 10 秒續一次。搭在既有的 1 秒輪詢上,
+    // 不另開計時器;瀏覽器關掉就不再續約,伺服器那條偵測執行緒會自己退場。
+    if((watchTick = (watchTick + 1) % 10) === 1) watchDetect(1);
+  }
+}, 1000);
 
 // ===== 編輯模式 =====
 $("#editBtn").onclick = () => {
   editMode = !editMode;
   $("#editBtn").classList.toggle("on", editMode);
-  $("#editBtn").textContent = editMode ? "✓ 完成" : "⚙ 編輯";
-  document.querySelectorAll(".key").forEach(el => el.classList.toggle("editing", editMode));
+  $("#editBtn").textContent = editMode ? "✓ 完成編輯" : "⚙ 編輯按鍵";
+  $("#addBtn").style.display = editMode ? "block" : "none";
+  if(editMode) closeMenu();          // 關抽屜，讓使用者在畫面上拖曳按鈕
+  renderButtons();
 };
-
-// ===== 按鍵行為（兩種佈局共用） =====
-document.querySelectorAll(".key").forEach(el => {
-  const slot = el.dataset.slot;
-  el.addEventListener("touchstart", e => {
-    e.preventDefault();
-    if(editMode){ openPicker(slot); return; }
-    el.classList.add("active"); send({t:"kd", k:binds[slot]});
-  }, {passive:false});
-  const up = e => { e.preventDefault(); if(editMode) return; el.classList.remove("active"); send({t:"ku", k:binds[slot]}); };
-  el.addEventListener("touchend", up, {passive:false});
-  el.addEventListener("touchcancel", up, {passive:false});
-});
+$("#addBtn").onclick = () => {
+  const id="c"+(Date.now()%1000000);
+  buttons.push({ id, key:"e", land:[50,50], port:[50,62] });
+  saveButtons(); renderButtons();
+  openPicker(buttons[buttons.length-1]);   // 新增後立即選鍵
+};
 
 // ===== 模擬鍵盤 =====
 const KBD_ROWS = [
@@ -263,90 +1898,338 @@ const KBD_ROWS = [
 (function(){ const kbd=$("#kbd");
   KBD_ROWS.forEach(row => { const r=document.createElement("div"); r.className="row";
     row.forEach(tok => { const k=document.createElement("div"); k.className="k"; k.textContent=labelFor(tok);
-      k.onclick=()=>{ if(editingSlot){ binds[editingSlot]=tok; saveBinds(); refreshLabels(); } closePicker(); };
+      k.onclick=()=>{
+        if(pickerOnPick){ const cb=pickerOnPick; closePicker(); cb(tok); return; }   // 通用選鍵(平A/放置技能)
+        if(editingBtn){ editingBtn.key=tok; saveButtons(); renderButtons(); } closePicker();
+      };
       r.appendChild(k); });
     kbd.appendChild(r); });
 })();
-function openPicker(slot){ editingSlot=slot; $("#pickerTitle").textContent=`設定「${labelFor(binds[slot])}」→ 點新按鍵`; $("#picker").classList.add("on"); }
-function closePicker(){ editingSlot=null; $("#picker").classList.remove("on"); }
+// #picker 原本在 #stage(position:fixed→自成 stacking context)內,儀表板視圖 #dashView(z110)
+// 會整個蓋住它 → 在儀表板點選鍵盤看似「沒反應沒彈窗」。移到 body 頂層脫離該 context,
+// 其 z-index:140 才會真正蓋在 #dashView 之上。
+document.body.appendChild($("#picker"));
+function openPicker(b){ editingBtn=b; pickerOnPick=null; $("#pickerClear").style.display="none";
+  $("#pickerTitle").textContent=`設定「${labelFor(b.key)}」→ 點新按鍵`; $("#picker").classList.add("on"); }
+function openKeyPicker(title, cb, clearable){   // 平A/放置技能設定用:點虛擬鍵盤選鍵
+  editingBtn=null; pickerOnPick=cb;
+  $("#pickerTitle").textContent=title;
+  $("#pickerClear").style.display = clearable ? "block" : "none";
+  $("#picker").classList.add("on");
+}
+function closePicker(){ editingBtn=null; pickerOnPick=null; $("#pickerClear").style.display="none"; $("#picker").classList.remove("on"); }
 $("#pickerClose").onclick = closePicker;
+$("#pickerClear").onclick = ()=>{ if(pickerOnPick){ const cb=pickerOnPick; closePicker(); cb(""); } };
 
-// ===== 觸控板滑鼠（參考 Steam Link「觸控板」模式，兩佈局共用 .look） =====
-// 手勢：單指拖曳→移動游標；單指輕點→左鍵；雙指輕點→右鍵；
-//       輕點後立即按住拖曳(double-tap-drag)→按住左鍵拖曳。
+// ===== 觸控板滑鼠（Steam Link 觸控板模式） =====
 let accX=0, accY=0;
-const tp = { lastX:0, lastY:0, moved:false, lastTapEnd:0,
-             dragLockPending:false, dragging:false, maxFingers:0 };
-function tpReset(){ tp.moved=false; tp.maxFingers=0; tp.dragLockPending=false; }
-
-document.querySelectorAll(".look").forEach(el => {
-  el.addEventListener("touchstart", e => {
-    if(editMode || !watching) return; e.preventDefault();
-    const now = performance.now();
-    tp.maxFingers = Math.max(tp.maxFingers, e.touches.length);
-    if(e.touches.length === 1){
-      const t = e.touches[0]; tp.lastX=t.clientX; tp.lastY=t.clientY; tp.moved=false;
-      tp.dragLockPending = (now - tp.lastTapEnd) < 300;   // 前一輕點後很快再按 = 拖曳鎖定
-    }
-  }, {passive:false});
-
-  el.addEventListener("touchmove", e => {
-    if(editMode || !watching) return; e.preventDefault();
-    const t = e.touches[0]; if(!t) return;
-    const dx = t.clientX - tp.lastX, dy = t.clientY - tp.lastY;
-    tp.lastX = t.clientX; tp.lastY = t.clientY;
-    if(Math.abs(dx)+Math.abs(dy) > 2) tp.moved = true;
-    if(e.touches.length === 1){                            // 雙指移動忽略(km.dll 無滾輪)
-      if(tp.dragLockPending && !tp.dragging && tp.moved){
-        send({t:"md", b:"left"}); tp.dragging = true; tp.dragLockPending = false;
-      }
-      accX += dx; accY += dy;
-    }
-  }, {passive:false});
-
-  const end = e => {
-    if(editMode || !watching) return; e.preventDefault();
-    if(e.touches.length > 0) return;                       // 還有手指留著
-    const now = performance.now();
-    if(tp.dragging){ send({t:"mu", b:"left"}); tp.dragging=false; }
-    else if(!tp.moved){
-      if(tp.maxFingers >= 2) send({t:"mc", b:"right"});    // 雙指輕點 = 右鍵
-      else { send({t:"mc", b:"left"}); tp.lastTapEnd = now; }  // 單指輕點 = 左鍵
-    }
-    tpReset();
-  };
-  el.addEventListener("touchend", end, {passive:false});
-  el.addEventListener("touchcancel", e => { if(tp.dragging){ send({t:"mu",b:"left"}); tp.dragging=false; } tpReset(); }, {passive:false});
-});
-function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:Math.round(accX), dy:Math.round(accY)}); accX=0; accY=0; } requestAnimationFrame(flush); }
+let sensitivity = parseFloat(localStorage.getItem("maple_sens")||"3");   // 觸控板靈敏度
+const tp = { lastX:0, lastY:0, moved:false, lastTapEnd:0, dragLockPending:false, dragging:false, maxFingers:0 };
+function tpReset(){ tp.moved=false; tp.maxFingers=0; tp.dragLockPending=false; tp.wheelAcc=0; }
+const look = $("#look");
+look.addEventListener("touchstart", e => {
+  if(editMode || !watching) return; e.preventDefault();
+  const now = performance.now();
+  tp.maxFingers = Math.max(tp.maxFingers, e.touches.length);
+  if(e.touches.length === 1){ const t=e.touches[0]; tp.lastX=t.clientX; tp.lastY=t.clientY; tp.moved=false; tp.dragLockPending=(now-tp.lastTapEnd)<300; }
+}, {passive:false});
+look.addEventListener("touchmove", e => {
+  if(editMode || !watching) return; e.preventDefault();
+  const t = e.touches[0]; if(!t) return;
+  const dx = t.clientX - tp.lastX, dy = t.clientY - tp.lastY;
+  tp.lastX = t.clientX; tp.lastY = t.clientY;
+  if(Math.abs(dx)+Math.abs(dy) > 2) tp.moved = true;
+  if(e.touches.length === 1){
+    if(tp.dragLockPending && !tp.dragging && tp.moved){ send({t:"md", b:"left"}); tp.dragging=true; tp.dragLockPending=false; }
+    const rv=rotVec(dx,dy); accX += rv[0]; accY += rv[1];   // 旋轉修正
+  } else if(e.touches.length === 2){                          // 雙指=滾輪
+    const rv=rotVec(dx,dy); tp.wheelAcc = (tp.wheelAcc||0) + rv[1];
+    while(tp.wheelAcc >= 40){ send({t:"mw", d:-1}); tp.wheelAcc -= 40; }
+    while(tp.wheelAcc <= -40){ send({t:"mw", d:1}); tp.wheelAcc += 40; }
+  }
+}, {passive:false});
+const lookEnd = e => {
+  if(editMode || !watching) return; e.preventDefault();
+  if(e.touches.length > 0) return;
+  const now = performance.now();
+  if(tp.dragging){ send({t:"mu", b:"left"}); tp.dragging=false; }
+  else if(!tp.moved){ if(tp.maxFingers >= 2) send({t:"mc", b:"right"}); else { send({t:"mc", b:"left"}); tp.lastTapEnd=now; } }
+  tpReset();
+};
+look.addEventListener("touchend", lookEnd, {passive:false});
+look.addEventListener("touchcancel", e => { if(tp.dragging){ send({t:"mu",b:"left"}); tp.dragging=false; } tpReset(); }, {passive:false});
+function flush(){ if((accX||accY) && ws && ws.readyState===1){ send({t:"mm", dx:Math.round(accX*sensitivity), dy:Math.round(accY*sensitivity)}); accX=0; accY=0; } requestAnimationFrame(flush); }
 requestAnimationFrame(flush);
 
 // ===== 畫面設定 =====
-const WIDTHS = [640,960,1280,1600,1920];
-let cfg = { monitor:1, width:1280, quality:60, fps:30, monitor_count:1 };
+let cfg = { source:"desktop", window:"", hwnd:0, monitor:1, fps:60, bitrate:25, scale:0, gray:0, monitor_count:1 };
+let windowsList = [];
+function focusTarget(){ return fetch(`/window/focus?token=${encodeURIComponent(token)}`, { method:"POST" }).catch(()=>{}); }
+function updateTarget(){ $("#mTarget").textContent = "🎯 目標：" + (cfg.source==="window" && cfg.window ? cfg.window : "全螢幕"); }
+async function syncConfig(){ try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){} updateTarget(); }
+function seg(on){ const s=document.createElement("div"); s.className="seg"+(on?" on":""); return s; }
 function renderScreenPanel(){
-  const mon=$("#monSegs"); mon.innerHTML="";
-  for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=document.createElement("div");
-    s.className="seg"+(i===cfg.monitor?" on":""); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); }
-  const ws_=$("#wSegs"); ws_.innerHTML="";
-  WIDTHS.forEach(w=>{ const s=document.createElement("div"); s.className="seg"+(w===cfg.width?" on":""); s.textContent=w;
-    s.onclick=()=>{ cfg.width=w; renderScreenPanel(); }; ws_.appendChild(s); });
-  $("#qRange").value=cfg.quality; $("#qVal").textContent=cfg.quality;
+  const src=$("#srcSegs"); src.innerHTML="";
+  [["desktop","全螢幕"],["window","視窗"]].forEach(([v,label])=>{ const s=seg(v===cfg.source); s.textContent=label; s.onclick=()=>{ cfg.source=v; renderScreenPanel(); }; src.appendChild(s); });
+  const isWin = cfg.source==="window";
+  $("#winRow").style.display = isWin ? "" : "none";
+  $("#monRow").style.display = isWin ? "none" : "";
+  if(isWin){ const w=$("#winSegs"); w.innerHTML="";
+    if(!windowsList.length){ const e=document.createElement("div"); e.style.color="#888"; e.style.fontSize="13px"; e.textContent="（無視窗，請點『畫面』重新整理）"; w.appendChild(e); }
+    windowsList.forEach(o=>{ const s=seg(o.title===cfg.window); s.style.maxWidth="86vw"; s.style.overflow="hidden"; s.style.textOverflow="ellipsis"; s.style.whiteSpace="nowrap"; s.textContent=o.title;
+      s.onclick=()=>{ cfg.source="window"; cfg.window=o.title; cfg.hwnd=o.hwnd; closeMenu(); applyVideo(); };
+      w.appendChild(s); }); }
+  else { const mon=$("#monSegs"); mon.innerHTML="";
+    for(let i=1;i<=Math.max(1,cfg.monitor_count);i++){ const s=seg(i===cfg.monitor); s.textContent=i; s.onclick=()=>{ cfg.monitor=i; renderScreenPanel(); }; mon.appendChild(s); } }
+  // 解析度
+  const sc=$("#scaleSegs"); sc.innerHTML="";
+  [[0,"原始"],[1080,"1080p"],[720,"720p"],[540,"540p"],[480,"480p"]].forEach(([h,label])=>{
+    const s=seg(h===cfg.scale); s.textContent=label; s.onclick=()=>{ cfg.scale=h; renderScreenPanel(); }; sc.appendChild(s); });
+  // 黑白
+  const gy=$("#graySegs"); gy.innerHTML="";
+  [[0,"彩色"],[1,"黑白"]].forEach(([v,label])=>{
+    const s=seg(v===cfg.gray); s.textContent=label; s.onclick=()=>{ cfg.gray=v; renderScreenPanel(); }; gy.appendChild(s); });
   $("#fRange").value=cfg.fps; $("#fVal").textContent=cfg.fps;
+  $("#bRange").value=cfg.bitrate; $("#bVal").textContent=cfg.bitrate+"M";
+  $("#sRange").value=sensitivity; $("#sVal").textContent=sensitivity+"x";
 }
-$("#qRange").oninput = e => { cfg.quality=+e.target.value; $("#qVal").textContent=cfg.quality; };
 $("#fRange").oninput = e => { cfg.fps=+e.target.value; $("#fVal").textContent=cfg.fps; };
-$("#screenBtn").onclick = async () => {
-  try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); cfg=await r.json(); }catch(e){}
-  renderScreenPanel(); $("#screen").classList.add("on");
+$("#bRange").oninput = e => { cfg.bitrate=+e.target.value; $("#bVal").textContent=cfg.bitrate+"M"; };
+$("#sRange").oninput = e => { sensitivity=+e.target.value; $("#sVal").textContent=sensitivity+"x"; localStorage.setItem("maple_sens", sensitivity); };
+// ===== 漢堡控制中心：開/關 =====
+function openMenu(){ $("#menu").classList.add("on"); $("#menuMask").classList.add("on"); }
+function closeMenu(){ $("#menu").classList.remove("on"); $("#menuMask").classList.remove("on"); }
+async function fetchStatus(){
+  try{ const s=await (await fetch(`/status?token=${encodeURIComponent(token)}`)).json();
+    const kb=s.keyboard.arduino?"Arduino✓":"鍵盤✗";
+    const ms=s.mouse.connected ? (s.mouse.software?"軟體滑鼠":"KMBox✓") : "滑鼠✗";
+    const txt = `硬體：${kb}　${ms}`;
+    $("#mHw").textContent = txt;                          // 連接管理
+    const d=$("#dHw"); if(d) d.textContent = txt;          // 儀表板
+  }catch(e){ const t="硬體：查詢失敗"; $("#mHw").textContent=t; const d=$("#dHw"); if(d) d.textContent=t; }
+}
+// 漢堡=連接管理(僅主人操作頁)：載入畫面設定 / 視窗清單 / 硬體狀態
+$("#menuBtn").onclick = async () => {
+  openMenu();
+  if(guest) return;    // 訪客選單只剩「注視/方向」，不打主人專屬 API
+  try{ const r=await fetch(`/config/video?token=${encodeURIComponent(token)}`); Object.assign(cfg, await r.json()); }catch(e){}
+  try{ const w=await fetch(`/windows?token=${encodeURIComponent(token)}`); windowsList=(await w.json()).windows||[]; }catch(e){ windowsList=[]; }
+  updateTarget(); renderScreenPanel(); fetchStatus();
 };
-$("#screenClose").onclick = () => $("#screen").classList.remove("on");
-$("#screenApply").onclick = async () => {
-  try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST",
-      headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
-  $("#screen").classList.remove("on");
-  if(watching) setWatching(true);   // 重載串流以套用新寬度
+$("#menuClose").onclick = closeMenu;
+$("#menuMask").onclick = closeMenu;
+// 剪貼簿：操作端 → 主機
+// 注意：navigator.clipboard 只在「安全情境」(HTTPS / localhost) 才存在；
+// 本專案走 Tailscale http://，屬非安全情境，readText() 會是 undefined 直接拋例外。
+// 故主力改用 paste 事件(Ctrl+V / 手機長按→貼上)擷取，非安全情境也能用、免權限。
+async function sendClip(text){
+  text = (text == null ? "" : String(text));
+  if(!text){ $("#clipMsg").textContent="沒有內容可傳（先在框內輸入或貼上）"; return false; }
+  try{
+    const r=await fetch(`/clipboard?token=${encodeURIComponent(token)}`, { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ text }) });
+    const ok=(await r.json()).ok;
+    $("#clipMsg").textContent = ok ? "已傳到主機剪貼簿（主機按 Ctrl+V 貼上）" : "傳送失敗（主機剪貼簿被佔用？）";
+    return ok;
+  }catch(e){ $("#clipMsg").textContent="傳送失敗（連線？）"; return false; }
+}
+$("#clipSend").onclick = () => sendClip($("#clipText").value);
+// 貼上即擷取並自動送出：手機長按→貼上、電腦 Ctrl+V 都走這條，免安全情境/權限
+$("#clipText").addEventListener("paste", (e) => {
+  const t = (e.clipboardData || window.clipboardData) ? (e.clipboardData || window.clipboardData).getData("text") : null;
+  if(t != null && t !== ""){ e.preventDefault(); $("#clipText").value = t; sendClip(t); }
+});
+$("#clipRead").onclick = async () => {
+  // HTTPS/localhost 才有 navigator.clipboard；有就直接讀並送出
+  if(navigator.clipboard && navigator.clipboard.readText){
+    try{ const t=await navigator.clipboard.readText(); $("#clipText").value=t; await sendClip(t); return; }
+    catch(e){ /* 權限被拒 → 落到下方引導貼上 */ }
+  }
+  $("#clipText").focus();
+  $("#clipMsg").textContent="此連線非 HTTPS 無法直接讀取；請在上方框內貼上（電腦 Ctrl+V / 手機長按→貼上），會自動傳送";
 };
+// 一鍵預設：畫質 / 流暢 / 快速
+const PRESETS = {
+  quality: { scale:1080, fps:60, bitrate:30, gray:0 },   // 畫質：1080p 高位元率
+  smooth:  { scale:720,  fps:60, bitrate:15, gray:0 },   // 流暢：720p 平衡
+  fast:    { scale:540,  fps:60, bitrate:8,  gray:0 },   // 快速：540p 低延遲
+  turbo:   { scale:480,  fps:30, bitrate:4,  gray:1 },   // 急速：480p / 30fps / 黑白，最穩最省
+};
+document.querySelectorAll("#presetSegs .seg").forEach(el => {
+  el.onclick = () => { Object.assign(cfg, PRESETS[el.dataset.preset]); renderScreenPanel(); closeMenu(); applyVideo(); };
+});
+async function applyVideo(){
+  updateTarget();
+  if(watching) freezeNow();   // 先凍住當前畫面,蓋住接下來 ffmpeg 重啟+WHEP 重連的空窗
+  try{ await fetch(`/config/video?token=${encodeURIComponent(token)}`, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(cfg) }); }catch(e){}
+  if(cfg.source==="window") focusTarget();
+  if(watching) setTimeout(()=>{ if(watching) setWatching(true); }, 1500);
+}
+$("#screenApply").onclick = () => { closeMenu(); applyVideo(); };
+
+// ===== 遠端分享中控（主人專用）：Quick Tunnel 開關 + 短密碼 產生/延長/撤銷 =====
+function fmtDur(sec){
+  if(sec<=0) return "0 分";
+  const h=Math.floor(sec/3600), m=Math.ceil((sec%3600)/60);
+  return (h?`${h} 小時 `:"") + (m?`${m} 分`:"");
+}
+let rPolling = 0;
+let rState = { url:"", password:"", remaining:0, expireAt:0 };   // 供複製與倒數讀取
+function fmtHMS(sec){ sec=Math.max(0,sec|0); const h=(sec/3600)|0, m=((sec%3600)/60)|0, s=sec%60;
+  const mm=(m<10?"0":"")+m, ss=(s<10?"0":"")+s; return h>0 ? `${h}:${mm}:${ss}` : `${m}:${ss}`; }
+// 密碼剩餘時間:伺服器回報值校準 expireAt,本地每秒遞減重繪(不吃效能又準確)。
+function renderPassLine(){
+  const el=$("#rPass"); if(!el) return;
+  if(!rState.password){ el.textContent = "🔑 密碼：未產生／已過期"; return; }
+  const left = Math.max(0, Math.round((rState.expireAt - Date.now())/1000));
+  el.textContent = left>0 ? `🔑 ${rState.password}　⏳ 此密碼剩餘 ${fmtHMS(left)}`
+                          : "🔑 密碼：已過期";
+}
+function renderRemote(r){
+  if(r.detail){ $("#rPass").textContent = "🔑 沒有有效密碼可延長，請先產生"; return; }
+  const tn = r.tunnel || {};
+  rState.url = tn.running ? (tn.url || "") : "";
+  rState.password = r.active ? (r.password || "") : "";
+  rState.remaining = r.active ? (r.remaining_seconds || 0) : 0;
+  rState.expireAt = r.active ? (Date.now() + rState.remaining*1000) : 0;   // 校準
+  $("#rTunnel").textContent = tn.running
+    ? ("🌐 " + (tn.url || "隧道啟動中，正在取得網址…"))
+    : ("🌐 隧道：未啟動" + (tn.error ? `（${tn.error}）` : ""));
+  $("#rTunnelBtn").textContent = tn.running ? "🛑 停止出租" : "🚀 啟動出租";
+  $("#rTunnelBtn").dataset.running = tn.running ? "1" : "0";
+  renderPassLine();
+  // 隧道在跑但網址還沒出來(cloudflared 要幾秒) → 輪詢直到拿到
+  if(tn.running && !tn.url && rPolling < 20){ rPolling++; setTimeout(refreshRemote, 1000); }
+  else rPolling = 0;
+}
+// 儀表板開著時:每秒本地重繪剩餘、每 30 秒向伺服器校準一次(輕量,不吃效能)。
+setInterval(() => { if(document.body.classList.contains("view-dash")) renderPassLine(); }, 1000);
+setInterval(() => { if(document.body.classList.contains("view-dash")) refreshRemote(); }, 30000);
+
+// 複製到剪貼簿：主人頁走 http(非安全情境)navigator.clipboard 多半不可用,
+// 故備援用隱藏 textarea + execCommand("copy")(需在使用者點擊事件內執行才有效)。
+async function copyText(t){
+  if(!t) return false;
+  try{ if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(t); return true; } }catch(_){}
+  try{
+    const ta=document.createElement("textarea");
+    ta.value=t; ta.style.position="fixed"; ta.style.top="-9999px"; ta.setAttribute("readonly","");
+    document.body.appendChild(ta); ta.select(); ta.setSelectionRange(0, t.length);
+    const ok=document.execCommand("copy"); document.body.removeChild(ta); return ok;
+  }catch(_){ return false; }
+}
+async function copyBtn(el, text, emptyMsg){
+  if(!el.dataset.label) el.dataset.label = el.textContent;
+  if(!text){ el.textContent = emptyMsg || "⚠ 尚無內容"; }
+  else el.textContent = (await copyText(text)) ? "✓ 已複製" : "✗ 複製失敗（請長按選取）";
+  setTimeout(()=>{ el.textContent = el.dataset.label; }, 1400);
+}
+// 統一文案(貼給訪客)。「輪迴出租」為服務名,時間用剩餘有效時間。
+function rentalText(){
+  return `輪迴出租 ${fmtDur(rState.remaining)}\n`
+       + `遠端網址：${rState.url || "（尚未啟動出租）"}\n`
+       + `遠端密碼：${rState.password || "（尚未產生）"}`;
+}
+$("#rCopyUrl").onclick  = e => copyBtn(e.currentTarget, rState.url, "⚠ 先啟動出租");
+$("#rCopyPass").onclick = e => copyBtn(e.currentTarget, rState.password, "⚠ 先產生密碼");
+$("#rCopyAll").onclick  = e => copyBtn(e.currentTarget, (rState.url && rState.password) ? rentalText() : "", "⚠ 先啟動出租並產生密碼");
+async function refreshRemote(){
+  try{ const r = await (await fetch(`/remote/info?token=${encodeURIComponent(token)}`)).json();
+    if(!r.guest) renderRemote(r); }catch(_){}
+}
+async function remoteAct(path){
+  const sep = path.includes("?") ? "&" : "?";
+  try{
+    const res = await fetch(`${path}${sep}token=${encodeURIComponent(token)}`, { method:"POST" });
+    const r = await res.json().catch(()=>({}));
+    // 任何非 2xx(409 衝突 / 400 / 500…)都只提示,不 renderRemote——否則一次瞬時
+    // 錯誤會把畫面上仍有效的隧道網址與密碼清成「未啟動/未產生」,誤導主人。
+    if(!res.ok){ $("#rTunnel").textContent = "⚠ " + (r.detail || `操作失敗（${res.status}）`); return; }
+    renderRemote(r);
+  }
+  catch(_){ $("#rTunnel").textContent = "🌐 操作失敗（連線？）"; }
+}
+$("#rTunnelBtn").onclick = () => remoteAct($("#rTunnelBtn").dataset.running==="1" ? "/remote/tunnel/stop" : "/remote/tunnel/start");
+$("#rNewBtn").onclick   = () => remoteAct(`/remote/new?hours=${parseFloat($("#rHours").value)||0.5}`);
+$("#rExtBtn").onclick   = () => remoteAct(`/remote/extend?hours=0.5`);
+$("#rRevokeBtn").onclick= () => remoteAct(`/remote/revoke`);
+$("#rHoursBtn").onclick = () => remoteAct(`/remote/extend?hours=${parseFloat($("#rHours").value)||0.5}`);
+
+renderButtons();
+
+// ===== 桌面(電腦)模式：絕對映射 + 滑鼠在影像內自動捕捉(免 Esc、免鎖定) =====
+// 訪客模式下 active() 恆為 false：實體鍵盤/滑鼠映射全面停用，只能點螢幕按鈕。
+if(!IS_TOUCH){
+  document.body.classList.add("desktop");
+  const video = $("#video");
+  const held = new Set();
+  let overVideo = false;
+  // 只有身處「主人操作頁」才捕捉實體鍵鼠(離開此 view→儀表板/登入 即完全停用)
+  const connected = () => document.body.classList.contains("view-remote");
+  const uiBlocking = () => $("#menu").classList.contains("on") || $("#picker").classList.contains("on");
+  const active = () => connected() && !uiBlocking() && !guest;
+
+  function codeToToken(code){
+    if(/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+    if(/^Digit[0-9]$/.test(code)) return code.slice(5);
+    if(/^Numpad[0-9]$/.test(code)) return "num"+code.slice(6);
+    if(/^F([1-9]|1[0-2])$/.test(code)) return code.toLowerCase();
+    const m={Space:"space",Enter:"enter",NumpadEnter:"enter",Tab:"tab",Escape:"esc",Backspace:"backspace",
+      ArrowLeft:"left",ArrowRight:"right",ArrowUp:"up",ArrowDown:"down",
+      Home:"home",End:"end",PageUp:"pageup",PageDown:"pagedown",Insert:"insert",Delete:"delete",
+      ShiftLeft:"shift",ShiftRight:"shift",ControlLeft:"ctrl",ControlRight:"ctrl",AltLeft:"alt",AltRight:"alt"};
+    return m[code]||null;
+  }
+  // 影像內容(object-fit:contain)中的正規化座標；不在內容內回 null
+  function videoNorm(e){
+    const vw=video.videoWidth, vh=video.videoHeight; if(!vw||!vh) return null;
+    const r=video.getBoundingClientRect();
+    const scale=Math.min(r.width/vw, r.height/vh);
+    const dw=vw*scale, dh=vh*scale;
+    const ox=r.left+(r.width-dw)/2, oy=r.top+(r.height-dh)/2;
+    const nx=(e.clientX-ox)/dw, ny=(e.clientY-oy)/dh;
+    if(nx<0||nx>1||ny<0||ny>1) return null;
+    return [+nx.toFixed(4), +ny.toFixed(4)];
+  }
+  const releaseKeys = () => { held.forEach(k=>send({t:"ku",k})); held.clear(); };
+  function setOver(on){
+    if(on===overVideo) return;
+    overVideo=on;
+    $("#deskhint").classList.toggle("show", connected() && !on);
+    if(!on) releaseKeys();     // 移出影像 → 自動釋放鍵盤
+  }
+  // 供 pauseAll(回儀表板)呼叫：放開電腦端 held + 重置 overVideo,避免離開遠端頁後
+  // 殘留的 overVideo 讓下一個 mouseup/keyup 誤送一筆輸入。
+  window.__releaseDesktop = () => { setOver(false); releaseKeys(); };
+
+  document.addEventListener("mousemove", e => {
+    if(!active()){ setOver(false); return; }
+    const n=videoNorm(e); setOver(!!n);
+    if(n) send({t:"ma", x:n[0], y:n[1]});          // 絕對映射
+  });
+  document.addEventListener("mousedown", e => {
+    if(!active()||!overVideo) return;
+    const n=videoNorm(e); if(n) send({t:"ma", x:n[0], y:n[1]});
+    const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"md",b});
+  });
+  document.addEventListener("mouseup", e => { if(!overVideo) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
+  document.addEventListener("contextmenu", e => { if(active()&&overVideo) e.preventDefault(); });
+  document.addEventListener("wheel", e => {                 // 滾輪
+    if(!active()||!overVideo) return; e.preventDefault();
+    send({t:"mw", d: e.deltaY>0 ? -1 : 1});
+  }, {passive:false});
+  window.addEventListener("blur", ()=> setOver(false));    // 視窗失焦 → 釋放
+  document.addEventListener("keydown", e => {
+    if(!active()||!overVideo) return; const t=codeToToken(e.code); if(!t) return;
+    e.preventDefault(); if(!held.has(t)){ held.add(t); send({t:"kd",k:t}); } });
+  document.addEventListener("keyup", e => {
+    if(!overVideo) return; const t=codeToToken(e.code); if(!t) return;
+    e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
+  setTimeout(()=>{ if(connected()) $("#deskhint").classList.add("show"); }, 800);
+}
+
+applyLayout();   // 依裝置/鎖定套用直橫佈局並繪製按鈕
+showView("login");   // 初始一律登入頁(登入後→儀表板→主人操作頁)
 </script>
 </body>
 </html>

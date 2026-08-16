@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>maple 訪客遊玩</title>
+<!--
+  訪客專用頁：與主人頁(index.html)完全分離，不含任何主人功能的程式碼
+  （無畫面設定/剪貼簿/視窗選擇/隧道管理/鍵盤滑鼠映射），縮小注入與竄改攻擊面。
+  真正的安全邊界在伺服器端：白名單(僅 4/←/→)、每鍵冷卻、密碼到期斷線、
+  隧道路徑白名單。此頁就算被 F12 改爆，也繞不過後端。
+-->
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#000; color:#eee;
+              font-family:system-ui,"Microsoft JhengHei",sans-serif; touch-action:none; }
+  #wrap { display:flex; flex-direction:column; height:100%; }
+  #vbox { flex:1; position:relative; min-height:0; background:#000; }
+  #mjpeg { width:100%; height:100%; object-fit:contain; display:block; }
+  #status { position:absolute; top:6px; left:8px; font-size:12px; color:#0f0; background:rgba(0,0,0,.5); padding:3px 10px; border-radius:10px; }
+  #status.bad { color:#f55; }
+  #badge { position:absolute; top:6px; right:8px; font-size:12px; color:#ffd479; background:rgba(0,0,0,.55); padding:3px 12px; border-radius:10px; white-space:nowrap; }
+  /* 剩餘時間:大字醒目,tabular-nums 讓數字等寬不跳動。本地每秒遞減顯示,
+     靠 WS 回報(連線/重連/每10秒)校準——準確且近乎零成本。 */
+  #countdown { position:absolute; top:31px; right:8px; font-size:15px; font-weight:700;
+               color:#7fe0b0; background:rgba(0,0,0,.6); padding:3px 12px; border-radius:10px;
+               font-variant-numeric:tabular-nums; letter-spacing:1px; white-space:nowrap; }
+  #countdown.warn   { color:#ffb020; }
+  #countdown.danger { color:#f55; }
+  #bar { flex:0 0 46px; display:flex; gap:8px; align-items:center; padding:0 10px;
+         background:#0c0c12; border-top:1px solid #23232e; }
+  .tbtn { padding:8px 14px; border-radius:8px; background:#23242e; border:1px solid #3a3d48;
+          color:#eee; font-size:13px; white-space:nowrap; }
+  .tbtn.on { background:#3a7; border-color:#3a7; color:#fff; }
+  #ctrl { flex:0 0 132px; display:flex; align-items:center; justify-content:center; gap:28px;
+          background:#101016; border-top:2px solid #23232e; padding:12px; }
+  .gbtn { width:94px; height:94px; border-radius:20px; background:#23242e; border:1px solid #3a3d48;
+          color:#fff; font-size:32px; font-weight:700; display:flex; align-items:center; justify-content:center; touch-action:none; }
+  .gbtn.active { background:#3a7; border-color:#3a7; }
+  #setup { position:fixed; inset:0; z-index:10; background:#111; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; }
+  #setup input { font-size:20px; padding:12px 16px; width:80%; max-width:320px; border-radius:8px;
+                 border:1px solid #444; background:#222; color:#fff; text-align:center; letter-spacing:2px; }
+  #setup button { font-size:18px; padding:12px 40px; border-radius:8px; border:none; background:#3a7; color:#fff; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="vbox">
+    <img id="mjpeg" alt="">
+    <div id="status" class="bad">未連線</div>
+    <div id="badge">👤 訪客：僅 4 / ← / →</div>
+    <div id="countdown">⏳ --:--</div>
+  </div>
+  <div id="bar">
+    <span style="font-size:12px;color:#8a8f99">畫質</span>
+    <div class="tbtn q" data-q="low">低</div>
+    <div class="tbtn q on" data-q="mid">中</div>
+    <div class="tbtn q" data-q="high">高</div>
+    <div style="flex:1"></div>
+    <div class="tbtn" id="focusBtn">🎯 對準視窗</div>
+    <div class="tbtn on" id="watchBtn">👁 注視中</div>
+  </div>
+  <div id="ctrl">
+    <div class="gbtn" data-k="left">←</div>
+    <div class="gbtn" data-k="4" style="font-size:19px;line-height:1.25">放置<br>輪迴</div>
+    <div class="gbtn" data-k="right">→</div>
+  </div>
+</div>
+<div id="setup">
+  <div style="font-size:22px;font-weight:700;">maple 訪客遊玩</div>
+  <input id="pw" placeholder="限時連線密碼" autocomplete="off">
+  <button id="go">連線</button>
+  <div style="font-size:12px;color:#888;max-width:320px;text-align:center;">
+    只能操作 4 / ← / → 三顆螢幕按鈕；密碼到期自動斷線</div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+let ws=null, pw="", expired=false, failStreak=0, watching=true;
+const setStatus=(t,ok)=>{ const s=$("#status"); s.textContent=t; s.className=ok?"":"bad"; };
+const send=o=>{ if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
+
+// ===== 剩餘時間 =====
+// 只信任伺服器回報的秒數(WS 連線時、之後每 10 秒各校準一次),本地拿它換算
+// 到期時戳,再每秒重繪顯示——不吃效能又準確,兩次校準間的漂移最多幾百毫秒。
+let expireAt = 0;    // epoch ms;0=未知
+function fmtClock(sec){ sec=Math.max(0,sec|0); const m=(sec/60)|0, s=sec%60;
+  return (m<10?"0":"")+m+":"+(s<10?"0":"")+s; }
+function calibrate(remain){ if(typeof remain==="number"){ expireAt=Date.now()+remain*1000; renderCountdown(); } }
+function renderCountdown(){
+  const el=$("#countdown"); if(!el) return;
+  if(expired){ el.textContent="⏳ 00:00"; el.className="danger"; return; }
+  if(!expireAt){ el.textContent="⏳ --:--"; el.className=""; return; }
+  const left=Math.round((expireAt-Date.now())/1000);
+  el.textContent="⏳ "+fmtClock(left);
+  el.className = left<=60 ? "danger" : (left<=300 ? "warn" : "");
+}
+setInterval(renderCountdown, 1000);   // 純文字重繪,近乎零成本
+
+// 威懾：右鍵選單與常見開發者工具快捷鍵(F12/Ctrl+Shift+I,J,C/Ctrl+U)。
+// 註：這只是威懾,擋不住決心繞過的人;真正的防線是伺服器端白名單+冷卻。
+document.addEventListener("contextmenu", e=>e.preventDefault());
+document.addEventListener("keydown", e=>{
+  if(e.key==="F12" || (e.ctrlKey&&e.shiftKey&&["I","J","C"].includes(e.key.toUpperCase()))
+     || (e.ctrlKey&&e.key.toUpperCase()==="U")) e.preventDefault();
+});
+["gesturestart","gesturechange","gestureend"].forEach(ev =>
+  document.addEventListener(ev, e=>e.preventDefault(), {passive:false}));
+document.addEventListener("touchmove", e=>{ if(e.touches.length>1) e.preventDefault(); }, {passive:false});
+
+function connect(){
+  const proto = location.protocol==="https:"?"wss":"ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws/input?token=${encodeURIComponent(pw)}`);
+  ws.onopen = ()=>{ failStreak=0; setStatus("已連線", true); };
+  ws.onclose = ()=>{
+    if(expired){ setStatus("密碼已過期，連線結束", false); $("#mjpeg").removeAttribute("src"); renderCountdown(); return; }
+    if(++failStreak >= 20){   // 連續失敗放棄:密碼可能已失效,別無限重試打伺服器
+      setStatus("無法連線，請向主人確認密碼是否仍有效後重新整理", false);
+      $("#mjpeg").removeAttribute("src"); return;
+    }
+    setStatus("斷線，重連中…", false); setTimeout(connect, 1500);
+  };
+  ws.onerror = ()=>setStatus("連線錯誤", false);
+  ws.onmessage = e => { try{ const m=JSON.parse(e.data);
+    if(m.t==="mode"){ calibrate(m.remain); }   // 用伺服器回報校準倒數
+    else if(m.t==="bye"){ expired = true; renderCountdown(); }   // 到期/撤銷
+  }catch(_){} };
+}
+function startVideo(){
+  if(!watching) return;
+  const im=$("#mjpeg");
+  im.onerror = ()=>{ if(!expired && watching) setTimeout(startVideo, 1500); };
+  im.src = `/video?token=${encodeURIComponent(pw)}&_=${Date.now()}`;
+}
+function stopVideo(){ const im=$("#mjpeg"); im.onerror=null; im.removeAttribute("src"); }
+
+// ===== 工具列：畫質(低/中/高) / 對準視窗 / 注視 =====
+document.querySelectorAll(".tbtn.q").forEach(el=>{
+  el.onclick = async ()=>{
+    document.querySelectorAll(".tbtn.q").forEach(x=>x.classList.toggle("on", x===el));
+    try{ await fetch(`/guest/quality?level=${el.dataset.q}&token=${encodeURIComponent(pw)}`, {method:"POST"}); }catch(_){}
+  };
+});
+$("#focusBtn").onclick = async ()=>{
+  const el=$("#focusBtn"); el.classList.add("on");
+  try{ await fetch(`/guest/focus?token=${encodeURIComponent(pw)}`, {method:"POST"}); }catch(_){}
+  setTimeout(()=>el.classList.remove("on"), 400);
+};
+$("#watchBtn").onclick = ()=>{
+  watching = !watching;
+  $("#watchBtn").textContent = watching ? "👁 注視中" : "👁 已暫停";
+  $("#watchBtn").classList.toggle("on", watching);
+  if(watching) startVideo(); else stopVideo();   // 暫停=中斷串流,實際省頻寬
+};
+
+// 螢幕按鈕：觸控 + 滑鼠(電腦端)。前端也做 0.2 秒節流(與伺服器冷卻一致,
+// 讓超頻按壓在畫面上就沒反應;伺服器端另有強制冷卻,改前端也無效)。
+const lastDown = {};
+document.querySelectorAll(".gbtn").forEach(el=>{
+  const k = el.dataset.k;
+  const down = e => { e.preventDefault();
+    const now = performance.now();
+    if(now - (lastDown[k]||0) < 200) return;   // 節流:同鍵 0.2 秒一次
+    lastDown[k] = now;
+    el.classList.add("active"); send({t:"kd", k});
+  };
+  const up = e => { e.preventDefault();
+    if(el.classList.contains("active")){ el.classList.remove("active"); send({t:"ku", k}); }
+  };
+  el.addEventListener("touchstart", down, {passive:false});
+  el.addEventListener("touchend", up, {passive:false});
+  el.addEventListener("touchcancel", up, {passive:false});
+  el.addEventListener("mousedown", down);
+  el.addEventListener("mouseup", up);
+  el.addEventListener("mouseleave", up);
+});
+
+$("#go").onclick = ()=>{
+  pw = $("#pw").value.trim(); if(!pw) return;
+  localStorage.setItem("maple_guest_pw", pw);
+  $("#setup").style.display = "none";
+  expired = false; connect(); startVideo();
+};
+(()=>{ const u = new URLSearchParams(location.search).get("token") || localStorage.getItem("maple_guest_pw");
+  if(u) $("#pw").value = u; })();
+</script>
+</body>
+</html>

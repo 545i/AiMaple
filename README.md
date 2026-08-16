@@ -128,6 +128,30 @@ Collection)、`driver/MapleVhidClient/`(User Mode CLI 與可重用封裝)、
 Arduino 是真實 USB HID 裝置,不需要動任何開機設定,反作弊相容性反而更好。
 要繼續的話,第一步是用 **EWDK**(獨立 ISO,不需安裝 Visual Studio)編譯驗證,
 而不是直接安裝驅動。
+## 出租模式（遠端訪客：Cloudflare Quick Tunnel + 限時短密碼）
+把遊戲「出租」給朋友遠端代玩，不需 Tailscale、不需 Cloudflare 帳號：
+
+出租完全由**主人頁中控**管理，沒有獨立啟動腳本——`start.bat` 這條主線隨時可開關：
+
+1. 首次先跑 `scripts/fetch-bin.ps1` 下載 `bin/cloudflared.exe`。
+2. 照常 `start.bat` 啟動 → 手機/電腦開控制中心 →「**出租管理**」分頁 → 🚀 啟動出租。伺服器會自行 spawn cloudflared，產生 8 碼短密碼並顯示 `https://xxx.trycloudflare.com` 網址。
+3. 把「網址 + 短密碼」給訪客。訪客打開網址會進入**專屬訪客頁**（與主人頁完全分離），輸入密碼即可遊玩。
+4. 「出租管理」可隨時：延長 +30 分／自訂時數、產生新密碼、撤銷密碼、🛑 停止出租。
+5. **退出徹底**：cloudflared 綁進 Job Object，伺服器不論正常關閉／Ctrl+C／直接關視窗，隧道進程與公網網址都必定一起消失；`start.bat` 另有雙保險清理。
+
+訪客頁工具列：畫質（低/中/高 預設檔）、🎯 對準視窗（只會對準 MapleStory）、👁 注視（暫停省頻寬）。
+
+**訪客安全模型（全部伺服器端強制，F12 改前端也繞不過）：**
+- 白名單：只能按 `4`／`←`／`→` 三顆螢幕按鈕；滑鼠、滾輪、其他按鍵一律丟棄
+- 出租守衛：密碼有效期間每秒強制鎖定「視窗模式＋MapleStory」（`MAPLE_GUARD_TITLE`），視窗失焦自動切回——訪客輸入永遠只進遊戲
+- 畫面隔離：訪客只能收到「視窗裁切」影格（MJPEG 依目標視窗矩形裁切）；遊戲關閉/切成全螢幕來源時一格都不給，桌面與通知絕不外洩
+- 公網直接轉發也安全：來源是公網 IP（非 LAN/Tailscale/隧道）一律降權為訪客——就算直接 port-forward 8000，主人 API 依然摸不到
+- 連點防護：同鍵按下需間隔 0.2 秒（`MAPLE_GUEST_COOLDOWN` 可調），擋自動連點器
+- 防爆破：密碼連錯 10 次鎖 60 秒（上一組舊密碼重連不計，避免換密碼後被舊頁面鎖死）；密碼預設 0.5 小時（`MAPLE_REMOTE_TTL`），到期 WS 立即斷線、影像串流中止
+- 防頻寬 DoS：訪客 WS 與 MJPEG 串流各限 2 條併發（`MAPLE_GUEST_MAX_CONN`）
+- 安全標頭：訪客頁/隧道回應帶 CSP（`default-src 'self'`）、`frame-ancestors 'none'`、nosniff——注入外部資源會被瀏覽器直接擋下
+- 隧道硬隔離:經隧道只開放訪客端點——就算主 token 外洩，從公網也打不到任何主人 API；隧道上的 WS 連線一律強制降權為訪客
+- 影像走 MJPEG（WebRTC 穿不過隧道）；在家 Tailscale 同時使用不受影響
 
 ## Roadmap
 - [ ] 影像改用 **WebRTC(aiortc, H.264 硬體編碼)** → 延遲降到 50-150ms、更省頻寬

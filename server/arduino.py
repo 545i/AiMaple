@@ -39,6 +39,16 @@ def _token(key):
     return k
 
 
+# 解除卡死用的完整按鍵清單(方向/數字/字母/修飾/常用/功能/小鍵盤)。
+_ALL_KEYS = (["left", "right", "up", "down"]
+             + [str(i) for i in range(10)]
+             + list("abcdefghijklmnopqrstuvwxyz")
+             + ["shift", "ctrl", "alt", "space", "enter", "tab", "esc",
+                "backspace", "home", "end", "pageup", "pagedown", "insert", "delete"]
+             + ["f" + str(i) for i in range(1, 13)]
+             + ["num" + str(i) for i in range(10)])
+
+
 class ArduinoKeyboard:
     def __init__(self, port=ARDUINO_PORT, baud=ARDUINO_BAUD):
         self.port = port
@@ -47,16 +57,44 @@ class ArduinoKeyboard:
         self._q = queue.Queue()
         self._worker = None
         self.connected = False
+        # 最後觸發的方向鍵 = 角色當前面向(方向預覽用)。任何來源(WS/校準/掛機/
+        # 轉向)按下 left/right 都會更新這裡,達成「最後觸發即當前方向」。
+        self.last_dir = "right"
+        self._btn_hook = None      # 實體按鈕回呼:fn(name) —— 見 set_button_hook
+        self._rx = b""             # 序列埠讀取緩衝(可能讀到半行,要自己拼)
+        self.btn_n = 0             # 收到幾次按鈕事件(供 /arduino/status 觀察)
+        self.btn_last = None       # 最後一次的時間
+
+    def set_button_hook(self, fn):
+        """註冊實體按鈕的回呼。韌體按下時送 "BTN:<name>",這裡收到就呼叫 fn(name)。
+
+        用注入而不是讓本模組直接 import navigator:這層只管序列埠,不該知道
+        「按鈕代表停止巡邏」——那是 main 的接線決定(同 minimap.set_event_hook)。"""
+        self._btn_hook = fn
+
+    def _detect_port(self):
+        """自動找 Arduino 的序列埠(依描述/VID)，避免燒錄後埠號變動。"""
+        try:
+            import serial.tools.list_ports as lp
+        except Exception:
+            return None
+        for p in lp.comports():
+            s = f"{p.description} {p.hwid} {p.manufacturer}".upper()
+            if "ARDUINO" in s or "LEONARDO" in s or "VID:PID=2341" in s or "2341:" in s:
+                return p.device
+        return None
 
     def start(self):
         if serial is None:
             print("[Arduino] pyserial 未安裝，鍵盤停用")
             return False
+        port = self._detect_port() or self.port    # 自動偵測，找不到才用設定值
         try:
-            self._ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self._ser = serial.Serial(port, self.baud, timeout=0.05)
+            self.port = port
             time.sleep(2)  # 等 Arduino 重置
             self.connected = True
-            print(f"[Arduino] 已連線 {self.port}")
+            print(f"[Arduino] 已連線 {port}")
         except Exception as e:
             print(f"[Arduino] 連線失敗: {e}")
             self.connected = False
@@ -65,34 +103,207 @@ class ArduinoKeyboard:
         self._worker.start()
         return True
 
+    @staticmethod
+    def _parse_mmove(cmd):
+        try:
+            x, y = cmd[6:].split(",", 1)
+            return int(x), int(y)
+        except Exception:
+            return 0, 0
+
+    def _feed(self, data):
+        """把剛讀到的位元組拼進緩衝、切出完整的行,認出韌體主動送來的事件。
+        回傳「不是事件」的那些行(指令的 OK/ERR 回應)。
+
+        【為什麼要逐行解析而不是整段丟棄】原本射後不理是 read(in_waiting) 直接扔掉,
+        那樣按鈕上報也一起被扔了。序列埠上現在混著兩種東西:指令的回應、板子主動送的
+        BTN: 事件,必須分開。"""
+        self._rx += data
+        if len(self._rx) > 4096:        # 異常堆積(沒有換行的雜訊)→ 丟掉,別無限長大
+            self._rx = b""
+            return []
+        others = []
+        while b"\n" in self._rx:
+            raw, self._rx = self._rx.split(b"\n", 1)
+            s = raw.decode(errors="replace").strip()
+            if not s:
+                continue
+            if s.startswith("BTN:"):
+                self._on_button(s[4:].strip() or "STOP")
+            else:
+                others.append(s)
+        return others
+
+    def _on_button(self, name):
+        self.btn_n += 1
+        self.btn_last = round(time.time(), 1)
+        print(f"[Arduino] 實體按鈕 {name}")
+        fn = self._btn_hook
+        if fn is None:
+            return
+        try:
+            fn(name)
+        except Exception as e:        # 回呼爆掉不能連累 worker,否則鍵盤整個失效
+            print(f"[Arduino] 按鈕回呼錯誤: {e!r}")
+
+    def _pump(self):
+        """讀掉序列埠上等待中的資料(順便觸發按鈕事件)。不阻塞。
+
+        由 worker 在【送完指令後】與【佇列空閒時】各呼叫一次:只有前者的話,掛機
+        沒送指令的空檔就收不到按鈕;只有後者的話,連續送指令時按鈕會被延遲。"""
+        if not self.connected or self._ser is None:
+            return
+        try:
+            n = self._ser.in_waiting
+            if n:
+                self._feed(self._ser.read(n))
+        except Exception:
+            pass
+
+    def _write_cmd(self, cmd, want_reply=False):
+        """送一筆指令。want_reply=True 時回傳板子的回應字串(給測試訊號用)。
+
+        平時刻意【不】回傳:走射後不理最快,回應只讀掉避免緩衝累積。但「測試訊號」
+        需要確認板子真的回了 OK,否則只能證明「我們寫進序列埠」而不是「韌體收到並執行」。"""
+        if not self.connected or self._ser is None:
+            return "" if want_reply else None
+        try:
+            self._ser.write((cmd + "\n").encode())
+            if want_reply:
+                old = self._ser.timeout
+                self._ser.timeout = 0.6        # 韌體處理 + 回覆的餘裕
+                try:
+                    # 【要跳過按鈕事件】板子可能剛好在這時上報 BTN:,那不是這筆指令的
+                    # 回應。讀到就交給 _feed 處理掉再繼續等真正的回應,否則測試訊號會
+                    # 顯示成 "BTN:STOP" 之類的東西而誤判成韌體壞掉。
+                    deadline = time.monotonic() + 0.6
+                    while time.monotonic() < deadline:
+                        line = self._ser.readline()
+                        if not line:
+                            break
+                        got = self._feed(line if line.endswith(b"\n") else line + b"\n")
+                        if got:
+                            return got[0]
+                    return ""
+                finally:
+                    self._ser.timeout = old
+            if ARDUINO_WAIT_ACK:
+                self._feed(self._ser.readline())       # 等 OK/ERR（較可靠、較慢）
+            self._pump()                       # 射後不理：讀掉緩衝,順便收按鈕事件
+        except Exception as e:
+            print(f"[Arduino] 送出錯誤: {e}")
+            self.connected = False
+            return "" if want_reply else None
+
+    def probe(self, cmd, timeout=2.0):
+        """同步送一筆指令並取回板子回應(測試訊號用)。回應字串;失敗回 ''。
+
+        【必須走同一條佇列】序列埠只由 worker 執行緒讀寫,從 HTTP 執行緒直接讀會與
+        worker 搶同一個 readline,兩邊都可能拿到對方的回應。把「要回應」這件事包成
+        佇列項目交給 worker 執行,順序與獨占性都由既有設計保證。"""
+        if not self.connected:
+            return ""
+        done = threading.Event()
+        box = {}
+        self._q.put(("PROBE", cmd, box, done))
+        return box.get("reply", "") if done.wait(timeout) else ""
+
+    def _dispatch_special(self, item):
+        """處理非字串的佇列項目(目前只有 PROBE)。處理掉回 True,否則回 False。
+        抽成函式是因為佇列有兩個取出點(主迴圈與 MMOVE 合併迴圈),兩邊都要能認得。"""
+        if isinstance(item, tuple) and item and item[0] == "PROBE":
+            _tag, cmd, box, done = item
+            try:
+                box["reply"] = self._write_cmd(cmd, want_reply=True) or ""
+            finally:
+                done.set()          # 一定要 set,否則呼叫端等到逾時才回
+            return True
+        return False
+
     def _run(self):
-        """單一 worker：從佇列取指令、依序送出。"""
+        """單一 worker：從佇列取指令、依序送出。
+
+        會把『連續的』MMOVE 合併成一筆再送：觸控拖曳會產生大量高頻 MMOVE，
+        115200 序列埠追不上就會在無界佇列裡越積越多、延遲只增不減。合併後
+        等效於用序列埠能負荷的速率送出「累加位移」，位移總量不變(韌體會自動
+        切成 ±127 分段)。遇到非 MMOVE(按鍵/滑鼠鍵/滾輪)即停止合併，確保順序不變。"""
         while True:
-            cmd = self._q.get()
+            try:
+                # 【不能無限阻塞】原本是 _q.get():掛機沒送指令時 worker 就停在這裡,
+                # 序列埠沒人讀,實體按鈕按了也收不到(訊息堆在緩衝直到下一筆指令)。
+                # 加上逾時,空閒時輪詢序列埠 —— 序列埠仍然只有這條執行緒在讀。
+                cmd = self._q.get(timeout=0.05)
+            except queue.Empty:
+                self._pump()
+                continue
             if cmd is None:
                 break
-            if not self.connected or self._ser is None:
+            if self._dispatch_special(cmd):
                 continue
-            try:
-                self._ser.write((cmd + "\n").encode())
-                if ARDUINO_WAIT_ACK:
-                    self._ser.readline()       # 等 OK/ERR（較可靠、較慢）
-                else:
-                    # 射後不理：仍讀掉緩衝避免累積，但不等待
-                    if self._ser.in_waiting:
-                        self._ser.read(self._ser.in_waiting)
-            except Exception as e:
-                print(f"[Arduino] 送出錯誤: {e}")
-                self.connected = False
+            if isinstance(cmd, str) and cmd.startswith("MMOVE:"):
+                dx, dy = self._parse_mmove(cmd)
+                trailing = None      # 合併時撞到的非 MMOVE 指令(合併送完後接著送)
+                closing = False
+                while True:
+                    try:
+                        nxt = self._q.get_nowait()
+                    except queue.Empty:
+                        break
+                    if nxt is None:
+                        closing = True
+                        break
+                    if not isinstance(nxt, str):
+                        # PROBE 這類非字串項目:當成「非 MMOVE」中斷合併,交給下面的
+                        # trailing 派發。少了這個判斷,下一行的 nxt.startswith 會對
+                        # tuple 拋 AttributeError,worker 執行緒直接死 → 鍵盤全失效。
+                        trailing = nxt
+                        break
+                    if nxt.startswith("MMOVE:"):
+                        ndx, ndy = self._parse_mmove(nxt)
+                        dx += ndx; dy += ndy
+                    else:
+                        trailing = nxt
+                        break
+                self._write_cmd(f"MMOVE:{dx},{dy}")
+                if trailing is not None and not self._dispatch_special(trailing):
+                    self._write_cmd(trailing)
+                if closing:
+                    break
+            else:
+                self._write_cmd(cmd)
 
     def tap(self, key):
+        if key in ("left", "right"):
+            self.last_dir = key
         self._q.put(_token(key))
 
+    # ===== 滑鼠(硬體 HID，需燒錄 arduino_kbm 韌體) =====
+    def wheel(self, n):
+        self._q.put(f"WHEEL:{int(n)}")            # 滾輪 n 格(正=上/前)
+
+    def mouse_move(self, dx, dy):
+        self._q.put(f"MMOVE:{int(dx)},{int(dy)}")
+
+    def mouse_button(self, button, down):
+        b = {"left": "L", "right": "R", "middle": "M"}.get(button, "L")
+        self._q.put(("MDOWN:" if down else "MUP:") + b)
+
     def key_down(self, key):
+        if key in ("left", "right"):
+            self.last_dir = key
         self._q.put("DOWN:" + _token(key))
 
     def key_up(self, key):
         self._q.put("UP:" + _token(key))
+
+    def release_all(self):
+        """對所有已知按鍵送 UP:(解除卡死)。用於程式被強殺後韌體仍按著某鍵、
+        一直重複輸出的情況——中控台「解除卡死」按鈕呼叫此方法一次全放開。"""
+        for k in _ALL_KEYS:
+            self._q.put("UP:" + _token(k))
+        # 順手也放開滑鼠三鍵(若燒錄了鍵鼠韌體;未支援則韌體回 ERR,無害)
+        for b in ("L", "R", "M"):
+            self._q.put("MUP:" + b)
 
     def close(self):
         try:
@@ -102,3 +313,59 @@ class ArduinoKeyboard:
         except Exception:
             pass
         self.connected = False
+
+
+class ArduinoMouse:
+    """沒有 KMBox(km.dll) 時的滑鼠降級：透過同一顆 Arduino 的 HID 滑鼠送指令。
+
+    仍是硬體 HID 訊號(反作弊偵測不到)，優於 SoftMouse(SendInput 軟體注入)。
+    介面與 KMouse/SoftMouse 相容(move_relative / button_* / click …)，讓 main.py
+    無縫替換。限制：HID 滑鼠只能相對移動，不支援絕對 move_to；本專案的絕對映射(t=ma)
+    在輸入端已轉成相對差值(video_pipeline.abs_delta)，故不受影響。
+
+    與鍵盤共用同一顆 Arduino 的序列埠佇列(單一 worker 序列送出)，不需另開連線。
+    """
+    software = False   # 硬體 HID，非軟體注入
+
+    def __init__(self, keyboard):
+        self._kb = keyboard
+        # 累積不足 1 像素的小數位移，避免慢速移動被 int() 截掉而完全不動
+        self._rx = 0.0
+        self._ry = 0.0
+
+    @property
+    def connected(self):
+        return getattr(self._kb, "connected", False)
+
+    def start(self):
+        print("[ArduinoMouse] 無 KMBox → 降級用 Arduino HID 滑鼠(硬體訊號，反作弊安全)")
+        return self.connected
+
+    def _emit(self, dx, dy):
+        self._rx += float(dx); self._ry += float(dy)
+        ix, iy = int(self._rx), int(self._ry)      # 往零截斷，保留小數餘量
+        self._rx -= ix; self._ry -= iy
+        if ix or iy:
+            self._kb.mouse_move(ix, iy)
+
+    def move_relative(self, dx, dy):
+        self._emit(dx, dy)
+
+    def move_relative_smooth(self, dx, dy, delay=8, delta=10):
+        self._emit(dx, dy)      # HID 無曲線平滑，直接相對移動
+
+    def move_to(self, x, y):
+        pass                    # HID 相對滑鼠無法絕對定位；本專案未經由此路徑
+
+    def button_down(self, button="left"):
+        self._kb.mouse_button(button, True)
+
+    def button_up(self, button="left"):
+        self._kb.mouse_button(button, False)
+
+    def click(self, button="left", min_delay=0, max_delay=0):
+        self._kb.mouse_button(button, True)
+        self._kb.mouse_button(button, False)
+
+    def close(self):
+        pass                    # 序列埠由 keyboard.close() 統一關閉

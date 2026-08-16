@@ -1,5 +1,7 @@
 # Python
 venv/
+venv-train/
+venv-detr/
 __pycache__/
 *.pyc
 *.pyo
@@ -19,3 +21,58 @@ Thumbs.db
 # 暫存
 scratch_*
 *.log
+
+# 大型第三方二進位（用 scripts/fetch-bin.ps1 下載，不進版控）
+/bin/
+
+# MediaMTX 自動產生的憑證
+auto.crt
+auto.key
+# Telegram bot token；程式會找根目錄與 server\ 兩處，兩邊都得擋
+telegram.json
+server/telegram.json
+
+# 執行期產物：使用者資料與記錄，不進版控
+# 註：.gitignore 不支援行尾註解，整行都會被當成 pattern，註解必須獨立成行
+# 各地圖巡邏點/平台座標
+layouts/
+# 具名地圖設置（「北方」等）
+profiles/
+# 職業設定（攻擊鍵＋移動參數，每個角色一份）
+jobs/
+# 移動記錄，會滾到 8MB 後輪替成 .1
+server/nav_moves.jsonl*
+# 運動校準原始數據
+server/calib_data.jsonl
+# 符文除錯圖（舊版路徑；現已改存 %TEMP%\maple_rune）
+server/rune_shot.png
+# 某次工具產生的 0 位元殘留
+*.conf.lock
+# 執行期記錄
+logs/
+
+# 打包產物：build.ps1 + PyInstaller 隨時可重建
+/build/
+/dist/
+# 韌體由 build.ps1 用 arduino-cli 從 firmware\arduino_kbm\ 重新編出
+firmware/*.hex
+
+# 符文樣本：圖檔上限 2000 筆會膨脹到數百 MB，只留標籤索引
+# 註：要反選就不能忽略整個目錄，必須寫成 rune_dataset/*
+rune_dataset/*
+!rune_dataset/index.jsonl
+# 膠囊定位真值(tools/gen_box_truth.py 產生,純文字 34KB):改進定位時的評估基準
+!rune_dataset/box_truth.json
+# 現行色度分割閘門的切分快取(tools/bench_arrow_baseline.py 產生):驗收條件的分母,
+# 固化後不得重算,必須進版控才能複驗
+!rune_dataset/gate_split.json
+
+# SDD 工作區(ledger/briefs/reports),不進版控
+.superpowers/
+
+# RT-DETR 訓練期間的 resume checkpoint(含 optimizer state,單檔 ~240MB):
+# 只有 models/rune_detr/final/(訓練完成的 HF 權重,~77MB)才進版控
+models/*/checkpoint.pt
+
+# 訓練產出的模型權重(數百 MB,可由 tools/train_rune_detr.py 重現)
+models/
