@@ -25,6 +25,12 @@
     layouts/ profiles/   ★可寫:巡邏點、地形、平A、具名設置
     rune_dataset/        ★可寫:符文自動標註樣本(會持續長大)
     logs/                ★可寫:移動記錄、校準資料
+    models/rune_detr_ar/model.onnx   符文箭頭偵測 RT-DETR 模型(ONNX,約 77MB)
+                         →【選擇性檔案,不隨 build.ps1/版控自動帶】理由與 bin/ 相同
+                         (單一檔案就 77MB,全塞進 exe 不划算),但這個不是「必須可寫」
+                         而是「太大不適合內嵌」——見 server/rune_detr.py 開頭說明。
+                         模型不在時 server/rune_cv.py::read_dirs 會自動退回現行的
+                         find_capsule + 色度分割流程,不是漏帶就會壞。
 
 【為什麼可寫資料不能進 exe】onefile 模式解壓到暫存目錄,寫進去的東西關掉就消失 ——
 使用者設好的巡邏點會「自己不見」而且沒有任何錯誤訊息。見 server/paths.py。
@@ -44,6 +50,15 @@ datas = [
     # rune_arrow.onnx【刻意不打包】:CNN 判向驗收未過(41% vs 12.8%,見 DEV_LOG.md
     # 符文章節),`server/rune_nn.py` 的 ENABLED 預設關閉。打包版就算設
     # MAPLE_RUNE_NN=1 也會因為找不到模型檔而退回色度分割 —— 這是預期行為,不是漏帶。
+    #
+    # models/rune_detr_ar/model.onnx(RT-DETR 箭頭偵測,約 77MB)【也刻意不打包,
+    # 但理由跟上面不同】:這個驗收有過(89.8%/72.8%,見 server/rune_detr.py 開頭
+    # 表格),`MAPLE_RUNE_DETR` 預設【開啟】。不打包純粹是體積考量(單一檔案就有
+    # 77MB,塞進 exe 會複製 datas 開頭那則「全塞進 exe 會讓每次啟動解壓 170MB」的
+    # 教訓)。要帶這個模型,build 後手動把它複製到
+    # dist\\MapleAuto\\assets\\models\\rune_detr_ar\\model.onnx(見
+    # server/paths.py::data_dir);沒帶的話 rune_detr.available() 回 False,
+    # read_dirs 自動退回 find_capsule + 色度分割,行為不會壞,只是準確率退回舊值。
 ]
 # km.dll 用 ctypes 載入,PyInstaller 掃不到 → 必須手動列為 binaries
 binaries = []
@@ -60,19 +75,21 @@ hiddenimports = [
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     # 本專案的延遲匯入(函式內 import,分析器抓不到)
     "frames", "audio_pipeline", "mapdata", "minimap", "pathgraph",
-    "rune_cv", "firmware", "paths", "revive", "cpu_tune", "wgc",
+    "rune_cv", "rune_detr", "firmware", "paths", "revive", "cpu_tune", "wgc",
     "serial.tools.list_ports",
 ]
 
 excludes = [
-    # 打包用不到卻很肥的東西。torch 是先前試本地 VLM 留下的,已移除但保險起見排除。
+    # 打包用不到卻很肥的東西。torch 是先前試本地 VLM 留下的,現在符文偵測(DETR)
+    # 走 ONNX(見 requirements.txt / server/rune_detr.py),CPU 推論 <100ms,不需要
+    # torch,繼續排除。
     "torch", "transformers", "matplotlib", "tkinter", "PIL.ImageTk",
     "pytest", "IPython", "notebook",
-    # onnxruntime(45MB):rune_nn.py 的 `import onnxruntime` 在函式內、try/except
-    # 裡,PyInstaller 的 bytecode 掃描仍會抓到並整包塞進 exe。但 CNN 判向驗收未過、
-    # 預設關閉(見上面 rune_arrow.onnx 那則註解),排除掉只會讓 _session() 走
-    # except 分支回 None,等同原本的「模型不在」退路,行為不變、少解壓 45MB。
-    "onnxruntime",
+    # 【onnxruntime 不再排除】以前(45MB)排除是因為 rune_nn.py 的 CNN 判向驗收
+    # 未過、預設關閉,排掉只是讓 _session() 走 except 回 None,不影響行為。現在
+    # rune_detr.py 的 RT-DETR 路徑驗收過了、預設開啟(見 server/rune_detr.py 開頭
+    # 表格),需要 onnxruntime 才能真的做 CPU 推論——排除掉的話會讓這個新路徑在
+    # 打包版裡永遠退回舊流程,跟開發環境的行為不一致,所以這次拿掉。
 ]
 
 a = Analysis(

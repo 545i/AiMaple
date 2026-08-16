@@ -5,6 +5,9 @@ pyserial          # Arduino 鍵盤 (序列埠)
 mss               # 螢幕擷取
 opencv-python     # JPEG 編碼 / 縮放
 numpy
+onnxruntime       # 符文箭頭偵測 RT-DETR 推論(CPU)。server/rune_detr.py,預設開啟
+                  # (MAPLE_RUNE_DETR=0 關閉)。模型檔本身不在版控/requirements 裡,
+                  # 見 server/paths.py::data_dir("models") 與 MapleAuto.spec 開頭說明。
 soundcard         # 系統音訊 WASAPI loopback 擷取(免虛擬音效線)→ 獨立 ffmpeg 編 Opus
 windows-capture   # WGC 視窗擷取(OBS 視窗模式同款,被遮蓋照拍/通知不入鏡),免注入
 # km.dll 為 Windows 原生 DLL，透過 ctypes 載入，無需額外套件

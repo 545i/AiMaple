@@ -456,10 +456,55 @@ def _direction(mask):
     return "down" if bot < top else "up"
 
 
+def _read_dirs_detr(frame_bgr, boxes4):
+    """新路徑:RT-DETR 偵測 + 幾何選擇挑出的 4 個框 → 既有色度分割 + 模板判向。
+
+    boxes4:4 個 (x0,y0,x1,y1)(frame_bgr 座標,已依 x 由左到右排序)。
+
+    邏輯與 `tools/eval_rune_detr.py::end_to_end_dirs` 完全一致——rune_detr.py
+    開頭表格的 89.8%/72.8% 就是照這個流程量出來的,任何偏差都代表整合走樣。
+    不對框做 AREA_OK 之類的合理性驗證:那是給 find_capsule(定位本身可能整個
+    錯位)當防呆用的,RT-DETR + 幾何選擇已經是「這 4 個框互不重疊、同一列、
+    間距合理」的挑選結果,選不出來時 `rune_detr.detect_arrows` 已經回 None
+    交給上層退回舊路徑,這裡只管判向。單支讀不出來(_seg 回 None)不觸發整組
+    退回——那正是驗收數字量測時的行為(缺一支不代表框錯,可能只是那一格被
+    特效完全蓋住),交給 `rune.py::_cv_read` 的多幀重試機制處理。"""
+    pad = 6
+    fh, fw = frame_bgr.shape[:2]
+    x0 = max(0, int(min(b[0] for b in boxes4)) - pad)
+    y0 = max(0, int(min(b[1] for b in boxes4)) - pad)
+    x1 = min(fw, int(max(b[2] for b in boxes4)) + pad)
+    y1 = min(fh, int(max(b[3] for b in boxes4)) + pad)
+    cap = frame_bgr[y0:y1, x0:x1]
+    if cap.size == 0:
+        return [], "膠囊區域為空"
+    dist = _chroma_map(cap)
+    dirs = []
+    for b in boxes4:
+        sx0 = max(0, int(b[0]) - x0 - pad // 2)
+        sx1 = min(cap.shape[1], int(b[2]) - x0 + pad // 2)
+        if sx1 <= sx0:
+            dirs.append(None)
+            continue
+        m = _seg(dist, sx0, sx1)
+        dirs.append(None if m is None else (_direction_tpl(m) or _direction(m)))
+    miss = sum(1 for d in dirs if d is None)
+    return dirs, "" if miss == 0 else f"{miss} 支讀不出來"
+
+
 def read_dirs(frame_bgr, strict=True):
     """從一張遊戲畫面讀出 4 支箭頭方向。
 
     回 (dirs, err)。dirs 是長度 4 的 list,讀不到的位置是 None;判定不是膠囊時回 []。
+
+    【優先序,2026-08:RT-DETR + 幾何選擇 → find_capsule + 色度分割 → 放棄】
+    364 張真實樣本上量過(見 rune_detr.py 開頭表格、.superpowers/detr-select.md):
+    單支 41.0%→89.8%、四支全對 38.4%→72.8%,候選不足的放棄率只有 0.3%。
+    這次驗收過了,預設開啟——跟下面 CNN 那段(驗收沒過、預設關閉)方向不同。
+    `rune_detr.detect_arrows()` 失敗(模型不可用 / 候選不足 4 支)不算錯誤,
+    是正常分流,直接落到下面【完全不變】的 find_capsule 路徑。
+    kill switch:環境變數 MAPLE_RUNE_DETR=0 整組關掉,退回現行流程(逐位元
+    一致,因為根本不會呼叫到 rune_detr)。
 
     【CNN 嘗試過,沒過驗收,預設關閉】曾試著用 CNN 取代分割那一段:膠囊定位零誤差、
     模板判向在乾淨輸入上 97.5%,但整體只有 41% —— 差距全在 _chroma_map/_seg 被怪物
@@ -469,9 +514,18 @@ def read_dirs(frame_bgr, strict=True):
 
     strict=True 會做「這真的是膠囊嗎」的驗證。**不要為了提高偵測率把它關掉**:
     誤判的代價不是漏一次,而是拿背景雜訊當箭頭去按方向鍵,白燒一次符文冷卻。
-    預覽用 strict=False 才看得到「抓到什麼」以便診斷。
+    預覽用 strict=False 才看得到「抓到什麼」以便診斷。這個驗證只用在
+    find_capsule + 色度分割那條舊路徑——RT-DETR 路徑的「選不選得出來」本身就是
+    對應的守門機制,語意上是同一件事(擋不住的就不採用),不是另外加嚴。
     """
+    import rune_detr
     import rune_nn
+    if rune_detr.available():
+        boxes4 = rune_detr.detect_arrows(frame_bgr)
+        if boxes4 is not None:
+            return _read_dirs_detr(frame_bgr, boxes4)
+        # 候選不足 4 支 —— 不是錯誤,落到下面現行路徑(完全不變)。
+
     box = find_capsule(frame_bgr)
     if box is None:
         return [], "找不到謎題膠囊(還沒開謎題?)"
