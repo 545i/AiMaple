@@ -73,3 +73,6 @@ rune_dataset/*
 # RT-DETR 訓練期間的 resume checkpoint(含 optimizer state,單檔 ~240MB):
 # 只有 models/rune_detr/final/(訓練完成的 HF 權重,~77MB)才進版控
 models/*/checkpoint.pt
+
+# 訓練產出的模型權重(數百 MB,可由 tools/train_rune_detr.py 重現)
+models/
