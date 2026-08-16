@@ -1,6 +1,7 @@
 # Python
 venv/
 venv-train/
+venv-detr/
 __pycache__/
 *.pyc
 *.pyo
@@ -68,3 +69,7 @@ rune_dataset/*
 
 # SDD 工作區(ledger/briefs/reports),不進版控
 .superpowers/
+
+# RT-DETR 訓練期間的 resume checkpoint(含 optimizer state,單檔 ~240MB):
+# 只有 models/rune_detr/final/(訓練完成的 HF 權重,~77MB)才進版控
+models/*/checkpoint.pt
