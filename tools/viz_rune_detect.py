@@ -54,7 +54,7 @@ def raw_detections(frame_bgr):
     x = rune_detr._preprocess(band)
     with torch.no_grad():
         out = model(pixel_values=torch.from_numpy(x).to(device))
-    boxes, scores = rune_detr._postprocess(
+    boxes, scores, _cls = rune_detr._postprocess(
         out.logits.detach().cpu().numpy(),
         out.pred_boxes.detach().cpu().numpy(),
         band.shape[0], band.shape[1])

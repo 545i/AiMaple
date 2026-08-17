@@ -456,7 +456,7 @@ def _direction(mask):
     return "down" if bot < top else "up"
 
 
-def _read_dirs_detr(frame_bgr, boxes4):
+def _read_dirs_detr(frame_bgr, boxes4, labels=None):
     """新路徑:RT-DETR 偵測 + 幾何選擇挑出的 4 個框 → 既有色度分割 + 模板判向。
 
     boxes4:4 個 (x0,y0,x1,y1)(frame_bgr 座標,已依 x 由左到右排序)。
@@ -488,6 +488,26 @@ def _read_dirs_detr(frame_bgr, boxes4):
             continue
         m = _seg(dist, sx0, sx1)
         dirs.append(None if m is None else (_direction_tpl(m) or _direction(m)))
+
+    # 模型的方向類別優先,色度判向退為【逐支】備援。
+    #
+    # 【為什麼】色度分割靠「離背景中位色度的距離」切出箭頭形狀,箭頭與背景色度
+    # 接近時(使用者回報的深藍色系箭頭配藍色背景)分割就殘缺,再好的模板也救不回。
+    # 模型看的是整體外觀,對背景色度不敏感。驗證集(訓練沒看過的 196 支)實測
+    # 模型 99.0% / 色度 98.0% —— 經典資料集太乾淨,分不出高下,但模型不會比較差,
+    # 而在色度分割會壞掉的情況下結構上更耐受。
+    #
+    # 【為什麼要逐支而不是整組切換】模型偶爾對某一支沒把握(label 為 None),
+    # 那一支落回色度判向比整組放棄好。
+    # 【rot 不覆寫】旋轉款的答案是連續幀上的角速度反轉,單幀的類別只說明「這支
+    # 在轉」,不是方向 —— 交給 rune.py 的旋轉分支處理,這裡保持 None。
+    if labels:
+        for i, lb in enumerate(labels[:len(dirs)]):
+            if lb in ("up", "right", "down", "left"):
+                dirs[i] = lb
+            elif lb == "rot":
+                dirs[i] = None
+
     miss = sum(1 for d in dirs if d is None)
     return dirs, "" if miss == 0 else f"{miss} 支讀不出來"
 
@@ -521,9 +541,9 @@ def read_dirs(frame_bgr, strict=True):
     import rune_detr
     import rune_nn
     if rune_detr.available():
-        boxes4 = rune_detr.detect_arrows(frame_bgr)
-        if boxes4 is not None:
-            return _read_dirs_detr(frame_bgr, boxes4)
+        det = rune_detr.detect_labeled(frame_bgr)
+        if det is not None:
+            return _read_dirs_detr(frame_bgr, det[0], det[1])
         # 候選不足 4 支 —— 不是錯誤,落到下面現行路徑(完全不變)。
 
     box = find_capsule(frame_bgr)

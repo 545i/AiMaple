@@ -107,7 +107,10 @@ def compute_info(frame_bgr, gt_boxes):
         return {"model_available": False, "elapsed_ms": round((time.time() - t0) * 1000, 1)}
 
     n_candidates = int(sum(1 for s in scores if s >= MIN_SCORE))
-    sel = rune_detr.detect_arrows(frame_bgr)
+    # 用 detect_labeled 而不是 detect_arrows:預覽的判向必須與 rune_cv.read_dirs
+    # 走【完全相同】的路徑,否則預覽顯示的方向會跟實際按下去的不一樣。
+    det = rune_detr.detect_labeled(frame_bgr)
+    sel = None if det is None else det[0]
     if sel is None:
         return {
             "model_available": True,
@@ -119,7 +122,7 @@ def compute_info(frame_bgr, gt_boxes):
             "elapsed_ms": round((time.time() - t0) * 1000, 1),
         }
 
-    dirs, err = rune_cv._read_dirs_detr(frame_bgr, sel)
+    dirs, err = rune_cv._read_dirs_detr(frame_bgr, sel, det[1])
     truth_sorted = sorted(gt_boxes or [], key=lambda b: b["x0"])
     arrows = []
     n_ok = 0

@@ -81,3 +81,6 @@ models/*/checkpoint.pt
 
 # 訓練產出的模型權重(數百 MB,可由 tools/train_rune_detr.py 重現)
 models/
+
+# 採集的原始樣本(673MB 影像),與 rune_dataset/ 同樣不進版控
+rune_collect/

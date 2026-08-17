@@ -771,6 +771,18 @@ def rune_line(token: str = Query(""), cv: int = Query(None), claude: int = Query
     return JSONResponse({"ok": ok, "msg": msg, **rune.status()})
 
 
+@app.post("/rune/collect")
+def rune_collect_once(token: str = Query(""), i: int = Query(0)):
+    """採集一筆訓練樣本:按一次 B → 連拍 → 存 band/full/meta(旋轉時另存序列)。
+
+    【只按 B,不按方向鍵、不導航】—— 使用者要求角色留在符文上不移動。
+    由外部迴圈以固定間隔呼叫(建議 15 秒,配合 10~14 秒的謎題窗)。
+    """
+    _check_owner(token)
+    import rune_collect
+    return JSONResponse(rune_collect.capture_once(i))
+
+
 @app.post("/rune/warmup")
 def rune_warmup(token: str = Query("")):
     """預熱 claude worker(第一次 ~6s,之後每次辨識降到 2.5~4.8s)。"""

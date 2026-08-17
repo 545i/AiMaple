@@ -49,6 +49,35 @@ DIRS = ["up", "right", "down", "left"]
 ID2LABEL = {i: d for i, d in enumerate(DIRS)}
 LABEL2ID = {d: i for i, d in enumerate(DIRS)}
 
+# 單類別模式(--single-class)。【為什麼要有這個】server/rune_detr.py 的
+# detect_arrows() 只回框、不回類別,所有呼叫端(rune_cv/rune.py/rune_viz)的方向
+# 都走漸層判讀,DETR 的方向類別【完全沒有下游在用】。而旋轉款樣本的方向標籤是把
+# 旋轉中的瞬間角度吸附到最近正方向,同一個外觀會拿到互相矛盾的類別 —— 實測讓
+# 分類信心從 0.97 崩到 0.06,production 的 min_score 閘門直接全濾掉。
+# 併成單一類別後:雜訊歸零,旋轉款純粹貢獻定位價值,下游行為不變。
+SINGLE_CLASS = False
+
+
+def use_single_class():
+    global DIRS, ID2LABEL, LABEL2ID, SINGLE_CLASS
+    SINGLE_CLASS = True
+    DIRS = ["arrow"]
+    ID2LABEL = {0: "arrow"}
+    LABEL2ID = {d: 0 for d in ("up", "right", "down", "left", "rot", "arrow")}
+
+
+def use_rot_class():
+    """5 類:靜態的四個方向 + 旋轉的 rot(見 rune_1cls_dataset_build.py 的說明)。
+
+    靜態判向改由模型輸出而不是色度分割 —— 遊戲的箭頭配色會跑遍整個色環,
+    寫死「綠尾紅頭」的判向器在 41% 的箭頭上讀不出角度。旋轉款只標輪廓,
+    因為它的答案是連續幀上的角速度反轉,單幀看不到。
+    """
+    global DIRS, ID2LABEL, LABEL2ID
+    DIRS = ["up", "right", "down", "left", "rot"]
+    ID2LABEL = {i: d for i, d in enumerate(DIRS)}
+    LABEL2ID = {d: i for i, d in enumerate(DIRS)}
+
 MODEL_ID = "PekingU/rtdetr_r18vd"
 
 
@@ -91,11 +120,12 @@ def make_collate(processor):
     return collate
 
 
-def load_split(ds_dir=DS_DIR, ann_path=None):
+def load_split(ds_dir=DS_DIR, ann_path=None, split_path=None):
     ann_path = ann_path or os.path.join(ds_dir, "detr_annotations.json")
     with open(ann_path, encoding="utf-8") as f:
         data = json.load(f)
-    with open(os.path.join(ds_dir, "detr_split.json"), encoding="utf-8") as f:
+    with open(split_path or os.path.join(ds_dir, "detr_split.json"),
+              encoding="utf-8") as f:
         split = json.load(f)
     by_file = {r["file"]: r for r in data["records"]}
     train = [by_file[f] for f in split["train"] if f in by_file]
@@ -148,7 +178,19 @@ def main():
                     help="標註檔路徑,預設 rune_dataset/detr_annotations.json"
                          "(blob_n>=10, 246 張)。額外實驗可指定 detr_annotations_full.json"
                          "(blob_n>=0, 364 張)。")
+    ap.add_argument("--split", default=None,
+                    help="切分檔路徑,預設 rune_dataset/detr_split.json。用新資料集時"
+                         "要一起換(例如 detr_split_1cls.json),否則新檔名不在清單裡"
+                         "會被靜默略過。")
+    ap.add_argument("--single-class", action="store_true",
+                    help="把四個方向併成單一類別 arrow(見 use_single_class 註解)")
+    ap.add_argument("--with-rot", action="store_true",
+                    help="5 類:四個方向 + rot(旋轉款只標輪廓,見 use_rot_class)")
     args = ap.parse_args()
+    if args.single_class:
+        use_single_class()
+    elif args.with_rot:
+        use_rot_class()
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -168,7 +210,7 @@ def main():
         size={"height": args.img_height, "width": args.img_width})
     print(f"image processor size = {processor.size}")
 
-    train_recs, val_recs = load_split(ann_path=args.ann)
+    train_recs, val_recs = load_split(ann_path=args.ann, split_path=args.split)
     print(f"train {len(train_recs)} / val {len(val_recs)} 張圖")
     train_ds = RuneArrowDataset(train_recs, DS_DIR, augment=True)
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,

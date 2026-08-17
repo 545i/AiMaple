@@ -79,7 +79,11 @@ def angle_of(crop_bgr):
     ys, xs = np.where(blob)
 
     red = (hh <= RED_HUE_MAX) | (hh >= HUE_HIGH_MIN)
-    green = hh >= GREEN_HUE_MIN
+    # 綠色【必須加上界】。整體遮罩是 (h<92)|(h>165),所以 blob 內含 H 165~180 的
+    # 洋紅像素 —— 那是紅色箭頭頭部在高亮度下的色相。少了上界時這些像素會【同時】
+    # 被算進 red 和 green,把綠尾重心往紅頭拉,兩心距離縮到 MIN_CENTROID_DIST 以下
+    # 而回 None。實測 rune_collect 的 1188 支箭頭有 590 支(50%)因此讀不出角度。
+    green = (hh >= GREEN_HUE_MIN) & (hh < HUE_LOW_MAX)
     if int(red.sum()) < MIN_TIP_PIXELS or int(green.sum()) < MIN_TIP_PIXELS:
         return None
 

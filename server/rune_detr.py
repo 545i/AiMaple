@@ -94,7 +94,10 @@ ENABLED = os.environ.get("MAPLE_RUNE_DETR", "1") != "0"
 
 # ---------- 模型:可寫素材目錄,不在 exe 裡 ----------
 # HuggingFace 格式的權重(safetensors),torch 推論用。
-HF_MODEL_DIR = os.path.join(paths.data_dir("models"), "rune_detr_ar", "final")
+# 可用 MAPLE_RUNE_DETR_DIR 覆寫,方便 A/B 比較不同模型而不必搬動檔案
+# (例如拿新訓的 models/rune_detr_mixed/final 跑同一套端到端驗證再決定要不要換)。
+HF_MODEL_DIR = os.environ.get("MAPLE_RUNE_DETR_DIR") or os.path.join(
+    paths.data_dir("models"), "rune_detr_ar", "final")
 # ONNX 版保留:匯出工具與圖手術修法都還在(tools/export_rune_detr_onnx.py、
 # tools/fix_rune_detr_onnx_cos.py),之後 onnxruntime 的 GPU 環境理順了可以換回去。
 MODEL_PATH = os.path.join(paths.data_dir("models"), "rune_detr_ar", "model.onnx")
@@ -356,8 +359,8 @@ def _preprocess(band_bgr):
 
 
 def _postprocess(logits, pred_boxes, band_h, band_w):
-    """logits (1,Q,4) / pred_boxes (1,Q,4 cxcywh, 0-1 正規化) → (boxes xyxy 絕對
-    像素(band-crop 座標), scores)。
+    """logits (1,Q,C) / pred_boxes (1,Q,4 cxcywh, 0-1 正規化) → (boxes xyxy 絕對
+    像素(band-crop 座標), scores, 類別索引)。
 
     複製 `RTDetrImageProcessor.post_process_object_detection(use_focal_loss=True,
     threshold=0.0)` 的邏輯(執行期沒有 transformers,手刻等價版):
@@ -384,15 +387,20 @@ def _postprocess(logits, pred_boxes, band_h, band_w):
     x1 = (cx + bw / 2.0) * band_w
     y1 = (cy + bh / 2.0) * band_h
     boxes = np.stack([x0, y0, x1, y1], axis=1)
-    return boxes, top_scores
+    return boxes, top_scores, order % c
 
 
-def detect_arrows(frame_bgr):
-    """從一張遊戲畫面(完整幀,或已裁切的搜尋帶/膠囊圖)偵測 4 支箭頭。
+def detect_labeled(frame_bgr):
+    """從一張遊戲畫面(完整幀,或已裁切的搜尋帶/膠囊圖)偵測 4 支箭頭 + 類別。
 
-    回 4 個 (x0,y0,x1,y1)(依 x 由左到右排序,frame_bgr 的座標系)組成的 list,
-    或 None(模型不可用 / 候選不足 4 支——由呼叫端 `rune_cv.read_dirs` 退回現行
-    find_capsule + 色度分割流程)。
+    回 (boxes, labels) 或 None。boxes 是 4 個 (x0,y0,x1,y1)(依 x 由左到右排序,
+    frame_bgr 的座標系);labels 與之對齊,內容取決於載入的模型:
+      5 類模型 → "up"/"right"/"down"/"left"(靜態,方向即答案)或 "rot"(旋轉,
+                 方向要交給 rune_wheel 看連續幀的角速度反轉)
+      4 類模型 → 方向,但【舊模型的方向類別未經驗證】,不要當答案用
+      1 類模型 → 一律 "arrow"
+    回 None 的條件:模型不可用 / 候選不足 4 支——由呼叫端 `rune_cv.read_dirs`
+    退回現行 find_capsule + 色度分割流程。
 
     輸入先用 `rune_cv.search_band()` 切掉不會有膠囊的上下範圍(只切 y、不切
     x)——這正是訓練資料的樣子(`server/rune.py::save_sample` 存進
@@ -417,10 +425,29 @@ def detect_arrows(frame_bgr):
     # 轉回 numpy 交給同一份手刻後處理 —— 換後端時數值路徑不變,不必重驗
     logits = out.logits.detach().cpu().numpy()
     pred_boxes = out.pred_boxes.detach().cpu().numpy()
-    boxes, scores = _postprocess(logits, pred_boxes, bh, bw)
+    boxes, scores, cls_idx = _postprocess(logits, pred_boxes, bh, bw)
 
     sel = select_arrows(boxes, scores, SELECT_PARAMS)
     if sel is None:
         return None
+
+    # 每個框對應的類別。RTDetr 用 focal loss,同一個 query 的多個類別都可能入選,
+    # 所以同一個框可能出現多次 —— 取分數最高的那個類別。
+    best = {}
+    for b, s, c in zip(boxes, scores, cls_idx):
+        k = tuple(b)
+        if k not in best or s > best[k][0]:
+            best[k] = (float(s), int(c))
+    id2label = getattr(model.config, "id2label", None) or {}
+    labels = [id2label.get(best[tuple(b)][1]) if tuple(b) in best else None
+              for b in sel]
+
     # 換回 frame_bgr 的座標系:band 只切了 y,x 不用還原,y 要加回 by0。
-    return [(x0, y0 + by0, x1, y1 + by0) for (x0, y0, x1, y1) in sel]
+    sel = [(x0, y0 + by0, x1, y1 + by0) for (x0, y0, x1, y1) in sel]
+    return sel, labels
+
+
+def detect_arrows(frame_bgr):
+    """只要框的入口。回 4 個 (x0,y0,x1,y1) 或 None,語意見 detect_labeled()。"""
+    r = detect_labeled(frame_bgr)
+    return None if r is None else r[0]
