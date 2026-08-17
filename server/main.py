@@ -419,44 +419,6 @@ def window_focus(token: str = Query("")):
     return JSONResponse({"ok": video_pipeline.focus_target()})
 
 
-# ===== 浮動視窗：真半透明 + 永遠置頂 + 完整可操作（見 server/floatwin.py） =====
-# 只有主人能開:那是一個在本機桌面上憑空出現的、可以操控遊戲的視窗。
-@app.post("/floatwin/open")
-def floatwin_open(token: str = Query(""), alpha: int = Query(None),
-                  width: int = Query(960), height: int = Query(600)):
-    _check_owner(token)
-    import floatwin
-    return JSONResponse(floatwin.open_window(PORT, alpha, width, height))
-
-
-@app.post("/floatwin/alpha")
-def floatwin_alpha(token: str = Query(""), v: int = Query(...)):
-    _check_owner(token)
-    import floatwin
-    return JSONResponse(floatwin.set_alpha(v))
-
-
-@app.post("/floatwin/topmost")
-def floatwin_topmost(token: str = Query(""), on: int = Query(1)):
-    _check_owner(token)
-    import floatwin
-    return JSONResponse(floatwin.set_topmost(bool(on)))
-
-
-@app.post("/floatwin/close")
-def floatwin_close(token: str = Query("")):
-    _check_owner(token)
-    import floatwin
-    return JSONResponse(floatwin.close_window())
-
-
-@app.get("/floatwin/status")
-def floatwin_status(token: str = Query("")):
-    _check_owner(token)
-    import floatwin
-    return JSONResponse(floatwin.status())
-
-
 # ===== 影像啟動 / 停止（注視畫面時由前端呼叫） =====
 @app.post("/video/start")
 def video_start(token: str = Query("")):
