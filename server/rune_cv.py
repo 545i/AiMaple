@@ -478,35 +478,40 @@ def _read_dirs_detr(frame_bgr, boxes4, labels=None):
     cap = frame_bgr[y0:y1, x0:x1]
     if cap.size == 0:
         return [], "膠囊區域為空"
-    dist = _chroma_map(cap)
+    # 【判向優先序:模型類別 → 色度分割備援】
+    #
+    # 色度分割靠「離背景中位色度的距離」切出箭頭形狀,箭頭與背景色度接近時
+    # (使用者回報的深藍色系箭頭配藍色背景)分割就殘缺,再好的模板也救不回。
+    # 模型看的是整體外觀,對背景色度不敏感。115 筆未參與訓練的樣本上,同一組框
+    # 只換判向方式:色度 單支 86.5%/四支全對 62.6%,模型 95.0%/85.2%。
+    #
+    # 模型給得出方向的箭頭【完全不跑色度分割】—— 不只是算完再覆寫,而是根本
+    # 不算,確保色度不會影響結果,也省掉熱路徑成本(解謎會多幀重試)。
+    # 逐支決定而非整組切換:模型偶爾對某一支沒把握(label 為 None),那一支
+    # 落回色度比整組放棄好。
+    # rot 不落回色度:旋轉款的答案是連續幀上的角速度反轉,單幀的類別只說明
+    # 「這支在轉」,不是方向 —— 留 None 交給 rune.py 的旋轉分支處理。
+    labels = list(labels or [])
+    labels += [None] * (len(boxes4) - len(labels))
+
     dirs = []
-    for b in boxes4:
+    dist = None
+    for b, lb in zip(boxes4, labels):
+        if lb in ("up", "right", "down", "left"):
+            dirs.append(lb)
+            continue
+        if lb == "rot":
+            dirs.append(None)
+            continue
         sx0 = max(0, int(b[0]) - x0 - pad // 2)
         sx1 = min(cap.shape[1], int(b[2]) - x0 + pad // 2)
         if sx1 <= sx0:
             dirs.append(None)
             continue
+        if dist is None:                       # 真的需要時才算色度圖
+            dist = _chroma_map(cap)
         m = _seg(dist, sx0, sx1)
         dirs.append(None if m is None else (_direction_tpl(m) or _direction(m)))
-
-    # 模型的方向類別優先,色度判向退為【逐支】備援。
-    #
-    # 【為什麼】色度分割靠「離背景中位色度的距離」切出箭頭形狀,箭頭與背景色度
-    # 接近時(使用者回報的深藍色系箭頭配藍色背景)分割就殘缺,再好的模板也救不回。
-    # 模型看的是整體外觀,對背景色度不敏感。驗證集(訓練沒看過的 196 支)實測
-    # 模型 99.0% / 色度 98.0% —— 經典資料集太乾淨,分不出高下,但模型不會比較差,
-    # 而在色度分割會壞掉的情況下結構上更耐受。
-    #
-    # 【為什麼要逐支而不是整組切換】模型偶爾對某一支沒把握(label 為 None),
-    # 那一支落回色度判向比整組放棄好。
-    # 【rot 不覆寫】旋轉款的答案是連續幀上的角速度反轉,單幀的類別只說明「這支
-    # 在轉」,不是方向 —— 交給 rune.py 的旋轉分支處理,這裡保持 None。
-    if labels:
-        for i, lb in enumerate(labels[:len(dirs)]):
-            if lb in ("up", "right", "down", "left"):
-                dirs[i] = lb
-            elif lb == "rot":
-                dirs[i] = None
 
     miss = sum(1 for d in dirs if d is None)
     return dirs, "" if miss == 0 else f"{miss} 支讀不出來"
