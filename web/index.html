@@ -233,10 +233,6 @@
              background:rgba(30,34,44,.9); border:1px solid rgba(255,255,255,.22);
              border-radius:8px; cursor:pointer; }
   body.camo-on #camoOff { display:block; }
-  /* 浮動視窗的不透明度/置頂控制,只在視窗開著時出現 */
-  #fwRow { display:none; }
-  #fwRow input[type=range] { width:100%; }
-  #fwTop.on { background:#1e7e34; border-color:#2ecc71; }
 </style>
 </head>
 <body class="view-login">
@@ -264,7 +260,7 @@
   <div id="quickBar">
     <div class="qbtn" id="qPatrolStart">▶<br>巡邏</div>
     <div class="qbtn" id="qPatrolStop">⏹<br>停止</div>
-    <div class="qbtn" id="qPip">🗔<br>彈出</div>
+    <div class="qbtn" id="qCamo">🖥<br>掩護</div>
   </div>
 
   <div class="look" id="look"></div>
@@ -296,14 +292,7 @@
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
       <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
-      <div class="mbtn" id="menuPipBtn" style="margin:9px 0">🗔 開啟浮動視窗（半透明置頂）</div>
-      <div id="fwRow" style="margin:9px 0">
-        <div class="mrow"><label>不透明度</label>
-          <input type="range" id="fwAlpha" min="40" max="255" step="5">
-          <span id="fwAlphaVal" style="font-size:12px;color:#8a8f99;min-width:38px"></span>
-        </div>
-        <div class="mbtn on" id="fwTop" style="margin-top:6px">📌 置頂中</div>
-      </div>
+      <div class="mbtn" id="menuCamoBtn" style="margin:9px 0">🖥 掩護畫面（假建置日誌）</div>
       <div class="mgrid2" style="margin:9px 0">
         <div class="mbtn" id="menuPatrolStart" style="background:#1e7e34">▶ 開始巡邏</div>
         <div class="mbtn" id="menuPatrolStop" style="background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
@@ -1688,74 +1677,6 @@ async function quickPatrolTick(){
   }catch(_){}
 }
 
-// ===== 浮動視窗:真半透明 + 永遠置頂 + 完整可操作 =====
-//
-// 【為什麼不用網頁的畫中畫】需求四項:鍵盤滑鼠映射、永遠置頂、完整 UI、真半透明。
-// Document PiP 的前三項勉強(實測映射不通、UI 搬不過去),第四項【完全做不到】——
-// 瀏覽器沒有任何 API 能讓網頁把自己的視窗變透明,最多把內容調暗;擴充也拿不到
-// (chrome.windows.create 沒有 alwaysOnTop,能置頂的 panel 型視窗已停用)。
-// 所以改由後端用 Win32 在【視窗層級】處理,見 server/floatwin.py。
-// 這一頁只負責下指令 —— 浮動視窗載入的就是這一頁本身,所有映射與 UI 原樣可用。
-const FW_ALPHA_KEY = "maple_fw_alpha";
-let fwOpen = false;
-
-async function fwPost(path, qs=""){
-  const r = await fetch(`/floatwin/${path}?token=${encodeURIComponent(token)}${qs}`,
-                        { method:"POST" });
-  return r.json().catch(()=>({}));
-}
-
-function fwSetUi(open){
-  fwOpen = open;
-  document.body.classList.toggle("fw-on", open);
-  const q = $("#qPip"); if(q) q.classList.toggle("on", open);
-  const m = $("#menuPipBtn");
-  if(m) m.textContent = open ? "🗔 關閉浮動視窗" : "🗔 開啟浮動視窗（半透明置頂）";
-  $("#fwRow").style.display = open ? "" : "none";
-}
-
-async function toggleFloatWin(){
-  if(fwOpen){
-    await fwPost("close");
-    fwSetUi(false);
-    camoSet(false);
-    setWatching(true);          // 收回後本頁恢復畫面
-    toast("已關閉浮動視窗");
-    return;
-  }
-  const alpha = +(localStorage.getItem(FW_ALPHA_KEY) || 235);
-  const j = await fwPost("open", `&alpha=${alpha}`);
-  if(j.err){ toast("開啟失敗：" + j.err, false); return; }
-  fwSetUi(true);
-  // 兩個視窗各自一條串流會白白多吃一份編碼,而且本頁馬上要被掩護畫面蓋住,
-  // 所以本頁停止注視。關閉浮動視窗時再恢復。
-  setWatching(false);
-  camoSet(true);
-  toast("已開啟浮動視窗（半透明・置頂）");
-}
-
-$("#qPip").onclick = toggleFloatWin;
-$("#menuPipBtn").onclick = toggleFloatWin;
-
-// 不透明度滑桿。值是 Win32 的 alpha(0~255),下限 40 免得整個看不見。
-(() => {
-  const sl = $("#fwAlpha"), lab = $("#fwAlphaVal");
-  sl.value = localStorage.getItem(FW_ALPHA_KEY) || 235;
-  const show = () => lab.textContent = Math.round(sl.value / 255 * 100) + "%";
-  show();
-  sl.oninput = () => {
-    show();
-    localStorage.setItem(FW_ALPHA_KEY, sl.value);
-    if(fwOpen) fwPost("alpha", `&v=${sl.value}`);
-  };
-  $("#fwTop").onclick = async () => {
-    const on = !$("#fwTop").classList.contains("on");
-    await fwPost("topmost", `&on=${on ? 1 : 0}`);
-    $("#fwTop").classList.toggle("on", on);
-    $("#fwTop").textContent = on ? "📌 置頂中" : "📌 未置頂";
-  };
-})();
-
 // ===== 掩護畫面:假的「程式碼執行中」終端機 =====
 //
 // 開浮動視窗時本頁會被它蓋住 —— 別人瞄到的是這台機器在跑建置,不是在玩遊戲。
@@ -1778,6 +1699,11 @@ let camoTimer = null;
 function camoSet(on){
   const el = $("#camo");
   document.body.classList.toggle("camo-on", on);
+  // 存狀態:開著掩護時重新載入頁面應該還是掩護,否則偽裝會在最需要的時候破功
+  localStorage.setItem("maple_camo", on ? "1" : "0");
+  const q = $("#qCamo"); if(q) q.classList.toggle("on", on);
+  const m = $("#menuCamoBtn");
+  if(m) m.textContent = on ? "🖥 關閉掩護畫面" : "🖥 掩護畫面（假建置日誌）";
   if(camoTimer){ clearInterval(camoTimer); camoTimer = null; }
   if(!on){ el.textContent = ""; return; }
   const push = () => {
@@ -1791,7 +1717,11 @@ function camoSet(on){
   for(let i=0;i<28;i++) push();          // 先鋪滿,免得一開始是空白很假
   camoTimer = setInterval(push, 260);
 }
-$("#camoOff").onclick = () => camoSet(false);
+$("#camoOff").onclick   = () => camoSet(false);
+$("#qCamo").onclick     = () => camoSet(!document.body.classList.contains("camo-on"));
+$("#menuCamoBtn").onclick = () => camoSet(!document.body.classList.contains("camo-on"));
+// 開機還原掩護狀態
+if(localStorage.getItem("maple_camo") === "1") camoSet(true);
 
 // ---- 符文自動解除：開關 + 辨識測試（校準用） ----
 const RUNE_ARROW = {up:"↑",down:"↓",left:"←",right:"→"};
