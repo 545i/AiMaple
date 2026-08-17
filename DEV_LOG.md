@@ -443,6 +443,45 @@ held-out 結果：方向 99.4%、`rot` 零交叉污染（先前擔心「模型�
 唯一可信的真值來源是 `purple_gone`（解謎成功即代表按對），值得接一個「解謎成功時自動存下
 該幀與確認過的答案」的機制持續累積。
 
+## ✅ 浮動客戶端：操控端的半透明置頂視窗（2026-08-17）
+
+需求四項：鍵盤滑鼠映射、永遠置頂、完整 UI、真半透明。
+
+**走過的兩條錯路，都記在這裡以免重犯：**
+
+1. **Document Picture-in-Picture**：可以置頂、可以塞 DOM，但**無法讓視窗半透明** ——
+   瀏覽器沒有任何 API 改自己視窗的 alpha，最多把內容調暗。實測把 `#stage` 搬進 PiP
+   視窗後鍵鼠映射也不通、UI 沒出現。
+2. **`server/floatwin.py`（已刪）**：用 `--app=` 開瀏覽器視窗，再用 Win32
+   `WS_EX_LAYERED` + `HWND_TOPMOST`。四項需求**實測全部達成** —— 但視窗開在
+   **伺服器那台**（跑遊戲的機器）。遠端遊玩的前提就是使用者不在那台機器前面，
+   方向根本錯了。
+
+**為什麼不能只寫外部小工具改瀏覽器視窗**：對「別人的視窗」設 alpha，Windows 可以
+（`WS_EX_LAYERED`）、Linux 可以（`_NET_WM_WINDOW_OPACITY`），**macOS 沒有公開 API**。
+使用者三平台都用，所以只能自己擁有視窗 → `client/` 的 Electron 殼。
+
+**關鍵實作決定**：
+- 半透明**不用 `setOpacity()`**（只支援 Win/Mac），改用 `transparent:true` +
+  注入 CSS `html{opacity:…}`，三平台同一條路。
+- 置頂 level 用 `floating` 不用 `screen-saver`：遊戲跑在伺服器那台，操控端沒有
+  全螢幕遊戲要蓋，而 `screen-saver` 會連系統通知一起蓋掉。
+- **Linux 的置頂在 GNOME Wayland 無效**（協議不存在），啟動時強制
+  `--ozone-platform=x11` 走 XWayland。
+- 控制條注入頁面是必要的：`frame:false` 沒有標題列可拖曳，而遊戲畫面整片都是
+  互動區，不能把整窗設成 `app-region:drag`。
+- **`sandbox: false` 是刻意的取捨**：Electron 20 之後 preload 預設沙盒化，沙盒下無法
+  `require("./overlay")` —— 而且是**靜默失敗**（控制條完全不掛，只有主控台看得到）。
+  `contextIsolation`/`nodeIntegration:false`/導覽白名單都完好，所以遠端頁面仍碰不到
+  Node；但拿掉的是渲染器行程的 OS 級沙盒，代價是「Chromium 引擎本身若被遠端內容
+  RCE，就直接等於主機 RCE，不需第二階段沙盒逃逸」。門檻高但非零。維持沙盒的替代
+  方案（overlay 內聯進 preload、或引入 bundler）都會廢掉 spec 論證過的檔案切分或
+  增加建置複雜度，故放棄。完整取捨寫在 `client/README.md`。
+
+**加值**：掩護畫面（`#camo`）——假的建置日誌蓋住整頁，別人瞄到是在跑建置。
+純前端生成不拉外部資源，狀態存 localStorage（重新載入仍是掩護，否則偽裝會在最
+需要的時候破功）。
+
 ## 下一步優先序
 1. 符文自動解除:讓紫標事件**自己觸發**跑一輪(開總開關 + 巡邏中遇到真符文)，並驗證解完接回巡邏。
 2. 用 `purple_gone` 當真值累積困難靜態樣本（複雜背景／深藍色系），現有資料集分不出高下。
