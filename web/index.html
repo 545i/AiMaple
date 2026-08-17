@@ -626,6 +626,14 @@
    <div style="font-size:12px;color:#8a8f99;margin:2px 0 10px">
      進入遠端會連線 WebSocket、開啟即時畫面,可直接操控滑鼠鍵盤（連接管理在遠端頁內）。掛機／出租時通常不需進入。</div>
    <button class="enter-btn" id="enterRemote" style="margin-top:0">▶ 進入遠端</button>
+
+   <!-- 浮動客戶端下載。客戶端是裝在【操控端】的,但建置產物在遊戲那台的專案目錄裡 ——
+        沒有這一區,使用者在手機或另一台電腦上根本拿不到它。 -->
+   <div class="msec" style="margin-top:16px">浮動客戶端（半透明置頂視窗）</div>
+   <div style="font-size:12px;color:#8a8f99;margin:2px 0 8px">
+     裝在<b>你操控的那台</b>電腦上，把這個畫面放進一個真半透明、永遠置頂的視窗。
+     首次啟動要輸入本站網址與 token（客戶端有自己的儲存空間，讀不到瀏覽器的）。</div>
+   <div id="cliList" style="font-size:12px;color:#8a8f99">載入中…</div>
    </div><!-- /#dpane remote -->
 
    <!-- Arduino 韌體維護:寫入代碼 + 測試訊號。與分頁無關(硬體層),故放在共用區。 -->
@@ -1959,8 +1967,60 @@ document.querySelectorAll(".dtab").forEach(t=>{
     // 進巡邏分頁:立刻拉一次設定,並請伺服器開始背景偵測(不必開預覽);離開就撤銷。
     if(name === "patrol"){ refreshSettings(); watchDetect(1); }
     else { watchDetect(0); }
+    if(name === "remote") refreshClientPkg();
   };
 });
+
+// ---- 浮動客戶端安裝包：狀態 / 準備（壓縮） / 下載 ----
+//
+// 客戶端裝在【操控端】,但建置產物在遊戲那台的專案目錄裡 —— 沒有這條路,使用者在手機
+// 或另一台電腦上根本拿不到它。壓縮是背景執行緒(325MB 要數十秒),所以這裡輪詢進度。
+let cliTimer = null;
+const _mb = n => (n / 1048576).toFixed(0) + " MB";
+
+async function refreshClientPkg(){
+  const box = $("#cliList");
+  if(!box) return;
+  let rows;
+  try{
+    rows = await (await fetch(`/client/status?token=${encodeURIComponent(token)}`)).json();
+  }catch(_){ box.textContent = "讀不到狀態（連線？）"; return; }
+
+  const anyBuilding = rows.some(r => r.building);
+  box.innerHTML = rows.map(r => {
+    const head = `<b style="color:#e6e8ee">${r.label}</b>`;
+    if(!r.built)
+      return `<div style="margin:6px 0">${head}<br><span style="color:#6f7480">未建置 —— 需在該平台上執行 <code>npm run dist</code></span></div>`;
+    if(r.err)
+      return `<div style="margin:6px 0">${head}<br><span style="color:#ff9a8a">壓縮失敗：${r.err}</span>
+              <div class="mbtn cli-prep" data-n="${r.name}" style="margin-top:4px">🔄 重試</div></div>`;
+    if(r.building)
+      return `<div style="margin:6px 0">${head}<br><span style="color:#ffb020">壓縮中… ${r.pct}%</span></div>`;
+    if(r.ready)
+      return `<div style="margin:6px 0">${head}<br>
+              <a href="/client/download?name=${r.name}&token=${encodeURIComponent(token)}"
+                 style="color:#7fe0b0">⬇ 下載（${_mb(r.size)}）</a>
+              ${r.stale ? '<span style="color:#ffb020">・有新建置,建議重壓</span>' : ""}
+              <div class="mbtn cli-prep" data-n="${r.name}" style="margin-top:4px">🔄 重新壓縮</div></div>`;
+    return `<div style="margin:6px 0">${head}<br>
+            <div class="mbtn cli-prep" data-n="${r.name}" style="margin-top:4px">📦 準備下載（壓縮，需數十秒）</div></div>`;
+  }).join("");
+
+  box.querySelectorAll(".cli-prep").forEach(b => {
+    b.onclick = async () => {
+      b.textContent = "啟動壓縮…";
+      const j = await (await fetch(
+        `/client/prepare?name=${b.dataset.n}&token=${encodeURIComponent(token)}`,
+        { method:"POST" })).json();
+      if(!j.ok){ toast(j.err || "無法準備", false); }
+      refreshClientPkg();
+    };
+  });
+
+  // 只有在壓縮中才輪詢,壓完就停 —— 免得儀表板一直打這支
+  if(cliTimer){ clearInterval(cliTimer); cliTimer = null; }
+  if(anyBuilding) cliTimer = setInterval(refreshClientPkg, 1500);
+}
 
 // ---- 巡邏監控：階段(平A/放置技能)＋各放置技能點下次觸發倒數 ----
 const PHASE_TXT = {idle:"待機",starting:"啟動中",patrol:"巡邏中",settle:"定位",rope_up:"上繩",

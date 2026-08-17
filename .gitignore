@@ -88,3 +88,6 @@ rune_collect/
 # Electron 客戶端
 client/node_modules/
 client/dist/
+
+# 浮動客戶端安裝包的壓縮產物(130MB,可從 client/dist 重壓)
+client_pkg/

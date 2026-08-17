@@ -419,6 +419,35 @@ def window_focus(token: str = Query("")):
     return JSONResponse({"ok": video_pipeline.focus_target()})
 
 
+# ===== 浮動客戶端的安裝包下載（見 server/client_pkg.py） =====
+# 客戶端是裝在【操控端】的,但建置產物躺在遊戲那台的專案目錄裡 —— 沒有這條路,
+# 使用者在手機或另一台電腦上打開網頁時根本拿不到它。
+# 只有主人能下載:那是一支能操控這台機器的程式。
+@app.get("/client/status")
+def client_status(token: str = Query("")):
+    _check_owner(token)
+    import client_pkg
+    return JSONResponse(client_pkg.status())
+
+
+@app.post("/client/prepare")
+def client_prepare(token: str = Query(""), name: str = Query("win")):
+    _check_owner(token)
+    import client_pkg
+    return JSONResponse(client_pkg.prepare(name))
+
+
+@app.get("/client/download")
+def client_download(token: str = Query(""), name: str = Query("win")):
+    _check_owner(token)
+    import client_pkg
+    p = client_pkg.file_of(name)
+    if p is None:
+        raise HTTPException(status_code=404, detail="尚未壓縮完成（先呼叫 /client/prepare）")
+    return FileResponse(p, media_type="application/zip",
+                        filename=client_pkg.filename_of(name))
+
+
 # ===== 影像啟動 / 停止（注視畫面時由前端呼叫） =====
 @app.post("/video/start")
 def video_start(token: str = Query("")):
