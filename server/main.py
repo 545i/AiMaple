@@ -427,7 +427,8 @@ def window_focus(token: str = Query("")):
 def client_status(token: str = Query("")):
     _check_owner(token)
     import client_pkg
-    return JSONResponse(client_pkg.status())
+    return JSONResponse({"zips": client_pkg.status(),
+                         "direct": client_pkg.direct_files()})
 
 
 @app.post("/client/prepare")
@@ -438,14 +439,23 @@ def client_prepare(token: str = Query(""), name: str = Query("win")):
 
 
 @app.get("/client/download")
-def client_download(token: str = Query(""), name: str = Query("win")):
+def client_download(token: str = Query(""), name: str = Query(""),
+                    file: str = Query("")):
+    """`file=` 取單檔產物(.AppImage/.deb/.dmg,使用者在該平台建好丟進 client/dist/)，
+    `name=` 取壓縮好的 zip(win-unpacked 那種資料夾型產物)。"""
     _check_owner(token)
     import client_pkg
-    p = client_pkg.file_of(name)
+    if file:
+        p = client_pkg.direct_path(file)     # 只接受掃出來的完全相同檔名，擋路徑穿越
+        if p is None:
+            raise HTTPException(status_code=404, detail="找不到這個產物")
+        return FileResponse(p, media_type="application/octet-stream",
+                            filename=os.path.basename(p))
+    p = client_pkg.file_of(name or "win")
     if p is None:
         raise HTTPException(status_code=404, detail="尚未壓縮完成（先呼叫 /client/prepare）")
     return FileResponse(p, media_type="application/zip",
-                        filename=client_pkg.filename_of(name))
+                        filename=client_pkg.filename_of(name or "win"))
 
 
 # ===== 影像啟動 / 停止（注視畫面時由前端呼叫） =====

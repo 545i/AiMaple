@@ -1981,13 +1981,21 @@ const _mb = n => (n / 1048576).toFixed(0) + " MB";
 async function refreshClientPkg(){
   const box = $("#cliList");
   if(!box) return;
-  let rows;
+  let j;
   try{
-    rows = await (await fetch(`/client/status?token=${encodeURIComponent(token)}`)).json();
+    j = await (await fetch(`/client/status?token=${encodeURIComponent(token)}`)).json();
   }catch(_){ box.textContent = "讀不到狀態（連線？）"; return; }
+  const rows = j.zips || [], direct = j.direct || [];
+
+  // 單檔產物(.AppImage/.deb/.dmg)直接給連結,不必壓縮 —— 那些平台的包必須在該平台上
+  // 建置,建好丟進 client/dist/ 就會出現在這裡。
+  const directHtml = direct.length ? `<div style="margin:6px 0">
+      <b style="color:#e6e8ee">現成產物</b><br>` + direct.map(d =>
+        `<a href="/client/download?file=${encodeURIComponent(d.file)}&token=${encodeURIComponent(token)}"
+            style="color:#7fe0b0">⬇ ${d.file}（${_mb(d.size)}）</a>`).join("<br>") + `</div>` : "";
 
   const anyBuilding = rows.some(r => r.building);
-  box.innerHTML = rows.map(r => {
+  box.innerHTML = directHtml + rows.map(r => {
     const head = `<b style="color:#e6e8ee">${r.label}</b>`;
     if(!r.built)
       return `<div style="margin:6px 0">${head}<br><span style="color:#6f7480">未建置 —— 需在該平台上執行 <code>npm run dist</code></span></div>`;

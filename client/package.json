@@ -19,6 +19,6 @@
     "files": ["main.js", "preload.js", "overlay.js", "settings.js", "urlguard.js", "shortcuts.js", "setup.html"],
     "win": { "target": ["portable"] },
     "mac": { "target": ["dmg"], "category": "public.app-category.utilities" },
-    "linux": { "target": ["AppImage"], "category": "Utility" }
+    "linux": { "target": ["AppImage", "deb"], "category": "Utility" }
   }
 }

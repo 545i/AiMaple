@@ -50,6 +50,38 @@ TARGETS = {
 _state = {}          # name -> {"building": bool, "err": str|None, "pct": int}
 _lock = threading.Lock()
 
+DIST = os.path.join(ROOT, "client", "dist")
+# 單檔產物直接供應,不必壓縮。使用者在自己的 Linux/Mac 上 `npm run dist` 之後把檔案
+# 丟進 client/dist/ 就會自動出現在下載頁 —— 那些平台的包必須在該平台上建,而建好的
+# 是 .AppImage/.deb/.dmg 這種【單一檔案】,壓縮它只是白費時間與空間。
+DIRECT_EXT = (".appimage", ".deb", ".dmg", ".rpm", ".exe", ".zip")
+
+
+def direct_files():
+    """client/dist/ 底下可直接下載的單檔產物。回 [{file, size}]。
+
+    只掃 dist 的第一層,不遞迴 —— 遞迴會把 win-unpacked 裡的幾百個 dll/exe 全撈進來。
+    """
+    out = []
+    if not os.path.isdir(DIST):
+        return out
+    for f in sorted(os.listdir(DIST)):
+        p = os.path.join(DIST, f)
+        if os.path.isfile(p) and f.lower().endswith(DIRECT_EXT):
+            out.append({"file": f, "size": os.path.getsize(p)})
+    return out
+
+
+def direct_path(fname):
+    """把使用者給的檔名對回實際路徑,對不上回 None。
+
+    【安全】只接受 direct_files() 掃出來的【完全相同的檔名】,不做任何路徑拼接後
+    才檢查 —— 否則 `../../server/config.py` 這種輸入就能把伺服器上的任意檔案抓走。
+    """
+    if fname in {d["file"] for d in direct_files()}:
+        return os.path.join(DIST, fname)
+    return None
+
 
 def _newest_mtime(src):
     """來源目錄裡最新的 mtime。用來判斷 zip 是不是過期的假貨。"""
