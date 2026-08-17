@@ -12,6 +12,7 @@ const path = require("path");
 const fs = require("fs");
 const S = require("./settings");
 const { allowNavigation } = require("./urlguard");
+const { nextAlpha, accelerators } = require("./shortcuts");
 
 // Wayland 沒有讓客戶端自己要求置頂的協議,setAlwaysOnTop 會是無效呼叫;X11 才有
 // _NET_WM_STATE_ABOVE。Ubuntu 22.04 之後預設 Wayland,而本視窗無邊框、沒有標題列
@@ -144,5 +145,22 @@ ipcMain.handle("fc:reload", () => { go(); });
 app.whenReady().then(() => {
   load();
   createWindow();
+
+  // 控制條可以收起,收起後只靠快速鍵操作,所以註冊失敗要讓使用者知道
+  // (通常是被其他程式佔用),不能靜默。
+  const acc = accelerators(process.platform);
+  const failed = [];
+  const reg = (key, fn) => { if (!globalShortcut.register(key, fn)) failed.push(key); };
+  reg(acc.alphaDown, () => { cfg.alpha = nextAlpha(cfg.alpha, -1); save(); applyAlpha(); });
+  reg(acc.alphaUp,   () => { cfg.alpha = nextAlpha(cfg.alpha, +1); save(); applyAlpha(); });
+  reg(acc.topmost,   () => { cfg.topmost = !cfg.topmost; save(); applyTopmost(); });
+  reg(acc.overlay,   () => {
+    cfg.overlay = !cfg.overlay; save();
+    if (win) win.webContents.executeJavaScript(
+      `(()=>{const b=document.getElementById("fcBar");if(b)b.style.display=` +
+      `${cfg.overlay ? '""' : '"none"'};})()`).catch(() => {});
+  });
+  if (failed.length) console.error("快速鍵註冊失敗（可能被其他程式佔用）:", failed.join(", "));
 });
 app.on("window-all-closed", () => app.quit());
+app.on("will-quit", () => globalShortcut.unregisterAll());

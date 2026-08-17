@@ -20,4 +20,7 @@ ipcRenderer.invoke("fc:get").then(cfg => {
   if (document.readyState === "loading")
     document.addEventListener("DOMContentLoaded", boot, { once: true });
   else boot();
+}).catch(e => {
+  // 靜默失敗會讓控制條永遠不掛而使用者完全不知道為什麼 —— 至少要留下線索。
+  console.error("控制條掛載失敗:無法取得設定", e);
 });
