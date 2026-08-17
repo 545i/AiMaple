@@ -91,3 +91,7 @@ client/dist/
 
 # 浮動客戶端安裝包的壓縮產物(130MB,可從 client/dist 重壓)
 client_pkg/
+
+# 不進版控:啟動腳本與 owner token(拿到它+遠端網址就能完全控制這台機器)
+start.bat
+local-token.txt

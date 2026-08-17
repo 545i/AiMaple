@@ -3,7 +3,7 @@
 手機遠端遊玩 + 自動巡邏掛機系統。
 
 ## 架構
-- **後端** FastAPI（`server/`），token=`***REMOVED***`（MAPLE_TOKEN）。訪客短密碼限 4/←/→。
+- **後端** FastAPI（`server/`），token 由 `MAPLE_TOKEN` 環境變數提供（實際值放在 gitignore 的 `local-token.txt`，不進版控）。訪客短密碼限 4/←/→。
 - **輸入**：Arduino HID 鍵盤（`press`=key_down→hold~60ms→key_up，**不用 tap，遊戲會漏讀**）+ km.dll 滑鼠。
 - **畫面**：WGC 視窗捕獲 maplestory.exe（只讀屏、不碰遊戲記憶體、不注入）。
 - **重啟**：`restart-admin.bat`（UAC 靜默提權，載入最新碼）。改後端必重啟；改前端硬刷新。

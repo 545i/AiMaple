@@ -5,11 +5,32 @@
 # 又是 SilentlyContinue,結果是「殺掉伺服器 → 靜默啟不起來」,比不執行還糟。
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $log = Join-Path $root "scratch_restart.log"
-$token = "***REMOVED***"          # 與 start.bat 的 MAPLE_TOKEN 保持一致
 $out = New-Object System.Collections.ArrayList
 function Say($m) { Write-Host $m; [void]$out.Add($m) }
 
 Say "[restart] root = $root"
+
+# token 不寫死在版控裡,改讀 local-token.txt(已 gitignore)。
+#
+# 【為什麼】這個 token 是 _check_owner 的憑證 —— 拿到它加上遠端網址,就能透過
+# Arduino HID 完全控制這台機器的鍵盤與滑鼠。寫死在追蹤檔案裡的話,推上任何遠端
+# (即使是私有倉庫)都會連同【整個 git 歷史】一起帶走,事後刪檔案也撈得回來。
+#
+# 【為什麼缺檔就不啟動】寧可什麼都不做,也不要「殺掉舊行程 → 起來卻沒有認證」。
+# 這支腳本開頭那段註解記著同一個教訓的另一個版本(路徑寫死 + SilentlyContinue
+# 造成殺完起不來)。
+$tokenFile = Join-Path $root "local-token.txt"
+if (-not (Test-Path $tokenFile)) {
+  Say "[restart] 找不到 $tokenFile。請建立它並放入一行 token(見 README)。不啟動。"
+  $out -join "`n" | Out-File -FilePath $log -Encoding utf8
+  exit 1
+}
+$token = (Get-Content $tokenFile -Raw).Trim()
+if (-not $token) {
+  Say "[restart] local-token.txt 是空的。不啟動。"
+  $out -join "`n" | Out-File -FilePath $log -Encoding utf8
+  exit 1
+}
 
 # 前置檢查:缺東西就別殺伺服器(寧可什麼都不做,也不要殺完起不來)
 foreach ($rel in @("bin\mediamtx.exe", "venv\Scripts\python.exe", "server\main.py")) {

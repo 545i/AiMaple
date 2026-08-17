@@ -1355,10 +1355,10 @@ Start-Process -FilePath "D:\project\maplestory_automation\restart-admin.bat" `
   -WorkingDirectory "D:\project\maplestory_automation" -Verb RunAs
 ```
 
-等 `GET /status?token=***REMOVED***` 回 200 後跑評估:
+等 `GET /status?token=$MAPLE_TOKEN` 回 200 後跑評估:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8000/rune/dataset/eval?token=***REMOVED***"
+curl -s -X POST "http://127.0.0.1:8000/rune/dataset/eval?token=$MAPLE_TOKEN"
 ```
 
 對照四條驗收條件:

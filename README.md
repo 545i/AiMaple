@@ -32,7 +32,7 @@ pip install -r requirements.txt
 ## 設定(環境變數,可選)
 | 變數 | 預設 | 說明 |
 |------|------|------|
-| `MAPLE_TOKEN` | `change-me-please` | **務必改掉**,手機連線用的密碼 |
+| `MAPLE_TOKEN` | `change-me-please` | **務必改掉**,手機連線用的密碼。見下方「token 放哪」 |
 | `MAPLE_ARDUINO_PORT` | `COM3` | Arduino 序列埠 |
 | `MAPLE_ARDUINO_ACK` | `0` | `1`=等韌體回 OK(較可靠、較慢);`0`=射後不理(低延遲) |
 | `MAPLE_VFPS` | `60` | WebRTC 影像張數 |
@@ -45,6 +45,23 @@ pip install -r requirements.txt
 ```powershell
 $env:MAPLE_TOKEN="你的隨機密碼"
 ```
+
+### token 放哪（不要寫進版控）
+
+這個 token 是主人權限的憑證——拿到它加上遠端網址，就能透過 Arduino HID **完全控制這台
+機器的鍵盤與滑鼠**。所以它不進版控，也不寫死在任何追蹤中的檔案裡：
+
+```powershell
+# 專案根目錄,一行內容就是 token。已列入 .gitignore
+"你的隨機密碼" | Out-File -NoNewline -Encoding ascii local-token.txt
+```
+
+`scripts/restart-admin.ps1` 會讀它；**檔案不存在或內容為空就拒絕啟動**，寧可什麼都不做，
+也不要「殺掉舊行程 → 起來卻沒有認證」。`start.bat` 同樣不進版控（裡面有你的 token），
+自己保存即可。
+
+> 寫死在追蹤檔案裡的危險不只是「當前版本看得到」——`git push` 會把**整個歷史**送上去，
+> 事後刪掉檔案照樣 `git log -p` 撈得回來。要換遠端或轉公開之前，先確認歷史裡沒有它。
 
 ## 啟動
 一鍵啟動(同時跑 MediaMTX 影像 + FastAPI):
