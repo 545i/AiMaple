@@ -12,5 +12,13 @@
   "devDependencies": {
     "electron": "^38.8.6",
     "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.maple.floatclient",
+    "productName": "maple 浮動客戶端",
+    "files": ["main.js", "preload.js", "overlay.js", "settings.js", "urlguard.js", "shortcuts.js", "setup.html"],
+    "win": { "target": ["portable"] },
+    "mac": { "target": ["dmg"], "category": "public.app-category.utilities" },
+    "linux": { "target": ["AppImage"], "category": "Utility" }
   }
 }
