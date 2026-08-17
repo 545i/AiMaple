@@ -255,7 +255,6 @@
     <div class="qbtn" id="qPatrolStop">⏹<br>停止</div>
     <div class="qbtn" id="qPip">🗔<br>彈出</div>
   </div>
-  <div id="pipHint">🗔 畫面已彈出至獨立視窗<br><span style="font-size:12px">（關閉該視窗即可收回）</span></div>
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
@@ -329,6 +328,10 @@
     </div>
   </div>
  </div><!-- /#stage -->
+
+ <!-- 必須放在 #stage【外面】:彈出子母畫面時整個 #stage 會被搬走,放裡面會跟著
+      被搬到彈出視窗,本頁就什麼提示都沒有。 -->
+ <div id="pipHint">🗔 畫面與控制項已彈出至獨立視窗<br><span style="font-size:12px">（關閉該視窗即可收回）</span></div>
 
  <!-- ===== 儀表板（中控頁）：出租管理 + 進入主人操作頁 ===== -->
  <div id="dashView">
@@ -639,11 +642,18 @@
  </div>
 
 <script>
-const $ = s => document.querySelector(s);
+// 彈出子母畫面時 #stage 整個被搬進獨立視窗,所以要先查那邊。留在本頁的
+// (儀表板等)查不到就落回主文件。pipWin 由下方的子母畫面那段維護。
+let pipWin = null;
+const uiWin = () => (pipWin && !pipWin.closed) ? pipWin : window;
+const $ = s => ((pipWin && !pipWin.closed && pipWin.document.querySelector(s))
+                || document.querySelector(s));
 let _toastTimer=null;
 function toast(msg, ok=true){
-  let t=document.getElementById("toast");
-  if(!t){ t=document.createElement("div"); t.id="toast"; document.body.appendChild(t); }
+  // 彈出子母畫面時操作都在那個視窗,提示也得出現在那邊 —— 掛在本頁等於看不到。
+  const d = uiWin().document;
+  let t=d.getElementById("toast");
+  if(!t){ t=d.createElement("div"); t.id="toast"; d.body.appendChild(t); }
   t.textContent=msg; t.className="show"+(ok?"":" err");
   clearTimeout(_toastTimer);
   _toastTimer=setTimeout(()=>{ t.className=t.className.replace(/show/g,"").trim(); }, 2500);
@@ -714,8 +724,11 @@ const isRotated = () => document.body.classList.contains("rotate");
 function rotVec(dx,dy){ return isRotated() ? [dy, -dx] : [dx, dy]; }
 // 內容(video)在 #cursor/#pad 座標系中的顯示矩形(旋轉時 stage 為 100vh×100vw)
 function stageRect(){
-  return isRotated() ? { left:0, top:0, width:window.innerHeight, height:window.innerWidth }
-                     : { left:0, top:0, width:window.innerWidth, height:window.innerHeight };
+  // 用 uiWin() 而不是 window:彈出子母畫面後 #stage 在獨立視窗裡,尺寸要取那邊的,
+  // 否則搖桿/游標的座標換算會照著本頁的大小算,整個偏掉。
+  const w = uiWin();
+  return isRotated() ? { left:0, top:0, width:w.innerHeight, height:w.innerWidth }
+                     : { left:0, top:0, width:w.innerWidth, height:w.innerHeight };
 }
 
 function renderButtons(){
@@ -832,6 +845,9 @@ const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 let vheld = new Set();     // 虛擬按鍵目前按住的鍵(回儀表板時全放,避免卡鍵)
 let faceTimer = null;
 function showView(name){
+  // 離開遠端頁就收回子母畫面:儀表板在【本頁】的 #dashView,不在被搬走的 #stage
+  // 裡,不收回的話彈出視窗會變空白,而儀表板出現在使用者看不到的本頁。
+  if(name !== "remote" && pipWin && !pipWin.closed) pipWin.close();
   document.body.classList.remove("view-login","view-dash","view-remote");
   document.body.classList.add("view-"+name);
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
@@ -1670,18 +1686,27 @@ async function quickPatrolTick(){
 //
 // 【注意】兩種 API 都要求安全內容(https 或 localhost)。透過 Tailscale 走純 http
 // 時瀏覽器不會提供,所以失敗要講清楚原因,不要只說「不支援」。
-let pipWin = null;
-
-function pipSource(){ return REMOTE ? $("#mjpeg") : $("#video"); }
-
 function pipSetOn(on){
   document.body.classList.toggle("pip-on", on);
-  $("#qPip").classList.toggle("on", on);
-  $("#menuPipBtn").textContent = on ? "🗔 收回畫面" : "🗔 彈出畫面（子母畫面）";
+  const q = $("#qPip"); if(q) q.classList.toggle("on", on);
+  const m = $("#menuPipBtn");
+  if(m) m.textContent = on ? "🗔 收回畫面" : "🗔 彈出畫面（子母畫面）";
+}
+
+// 把本頁所有樣式複製過去。CSS 不會跟著 DOM 搬,不複製的話彈出視窗只會是一堆
+// 沒有版面的裸元素(搖桿疊在左上角、按鈕沒有大小)。
+function pipCopyStyles(w){
+  [...document.styleSheets].forEach(sheet => {
+    try{
+      const css = [...sheet.cssRules].map(r => r.cssText).join("\n");
+      const el = w.document.createElement("style");
+      el.textContent = css;
+      w.document.head.appendChild(el);
+    }catch(_){ /* 跨網域樣式讀不到,本頁全是內嵌樣式所以不會發生 */ }
+  });
 }
 
 async function togglePip(){
-  // 已經彈出 → 收回
   if(pipWin && !pipWin.closed){ pipWin.close(); return; }
   if(document.pictureInPictureElement){
     try{ await document.exitPictureInPicture(); }catch(_){}
@@ -1689,41 +1714,77 @@ async function togglePip(){
     return;
   }
 
-  const el = pipSource();
-  if(!el || (REMOTE ? !el.getAttribute("src") : !el.srcObject)){
+  const src = REMOTE ? $("#mjpeg") : $("#video");
+  if(!src || (REMOTE ? !src.getAttribute("src") : !src.srcObject)){
     toast("畫面還沒連上，先連線再彈出", false); return;
   }
 
   if(window.documentPictureInPicture){
     try{
-      const w = await documentPictureInPicture.requestWindow({ width:640, height:380 });
+      const w = await documentPictureInPicture.requestWindow({ width:960, height:600 });
+      pipCopyStyles(w);
       w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
-      const st = w.document.createElement("style");
-      // 本頁的 CSS 不會跟著過去,所以獨立視窗要自帶樣式
-      st.textContent = "video,img{width:100%;height:100%;object-fit:contain;display:block;background:#000}";
-      w.document.head.appendChild(st);
+      // 版面 CSS 全是 body.view-remote / body.lay-port 這種前綴,所以彈出視窗的
+      // body 要帶同一組 class,而且本頁一改就要跟著改(切直橫、進出遠端頁)。
+      const syncCls = () => { w.document.body.className = document.body.className; };
+      syncCls();
+      const obs = new MutationObserver(syncCls);
+      obs.observe(document.body, { attributes:true, attributeFilter:["class"] });
 
-      // 記住原位置,關閉時要放回【原本的順序】—— 直接 append 回 #stage 會跑到
-      // 疊在最上層的觸控層之上,把搖桿與按鍵蓋掉。
-      const home = el.parentElement, next = el.nextSibling;
-      w.document.body.appendChild(el);
+      // 搬【整個 #stage】而不是只搬畫面 —— 搖桿、按鍵、漢堡選單都在裡面,
+      // 只搬畫面的話彈出視窗看得到卻按不了。DOM 節點搬家不會掉事件監聽,
+      // 所以觸控那些綁在元素上的照樣有效;綁在 document 上的實體鍵鼠要重綁。
+      // 彈出視窗自己的小工具列。Document PiP 的視窗【規格上就是永遠置頂】,
+      // 網頁沒有 API 可以開關,所以這裡只做明示 + 尺寸/收回,不做假的釘選開關。
+      const bar = w.document.createElement("div");
+      bar.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:200;display:flex;"
+        + "gap:6px;align-items:center;padding:5px 8px;border-radius:10px;"
+        + "background:rgba(20,20,26,.72);border:1px solid rgba(255,255,255,.2);"
+        + "color:#cfd3db;font-size:12px;font-family:system-ui,sans-serif";
+      bar.innerHTML = '<span style="color:#7fe0b0">📌 已置頂</span>'
+        + [["小",560],["中",860],["大",1200]].map(([t,px]) =>
+            `<button data-w="${px}">${t}</button>`).join("")
+        + '<button data-back="1">✕ 收回</button>';
+      bar.querySelectorAll("button").forEach(b => {
+        b.style.cssText = "padding:4px 8px;font-size:12px;color:#fff;background:#2a2f3a;"
+          + "border:1px solid rgba(255,255,255,.25);border-radius:8px;cursor:pointer";
+        b.onclick = () => {
+          if(b.dataset.back){ w.close(); return; }
+          const px = +b.dataset.w;
+          try{ w.resizeTo(px, Math.round(px * 0.625)); }
+          catch(_){ toast("這個瀏覽器不允許程式調整彈出視窗大小，請手動拖曳邊框", false); }
+        };
+      });
+      w.document.body.appendChild(bar);
+
+      const stage = document.getElementById("stage");
+      const home = stage.parentElement, next = stage.nextSibling;
+      w.document.body.appendChild(stage);
+      if(window.__bindDeskTo) window.__bindDeskTo(w.document, w);
+
       pipWin = w;
       pipSetOn(true);
+      applyLayout();            // 依彈出視窗的尺寸重畫按鈕與直橫版面
+      w.addEventListener("resize", applyLayout);
       w.addEventListener("pagehide", ()=>{
-        home.insertBefore(el, next);
+        obs.disconnect();
+        home.insertBefore(stage, next);
         pipWin = null;
         pipSetOn(false);
+        applyLayout();
       });
       return;
     }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); return; }
   }
 
-  // 退路:原生 video PiP(只有 WebRTC 模式有 <video>)
-  if(!REMOTE && el.requestPictureInPicture){
+  // 退路:原生 video PiP。只吃 <video>,而且【沒有 DOM】—— 只能看不能操作,
+  // 手機就只有這條路。桌面 Chrome/Edge 一般走得到上面的 Document PiP。
+  if(!REMOTE && src.requestPictureInPicture){
     try{
-      await el.requestPictureInPicture();
+      await src.requestPictureInPicture();
       pipSetOn(true);
-      el.addEventListener("leavepictureinpicture", ()=> pipSetOn(false), { once:true });
+      toast("此瀏覽器只支援影片畫中畫，彈出視窗無法操作", false);
+      src.addEventListener("leavepictureinpicture", ()=> pipSetOn(false), { once:true });
     }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); }
     return;
   }
@@ -2493,29 +2554,36 @@ if(!IS_TOUCH){
   // 殘留的 overVideo 讓下一個 mouseup/keyup 誤送一筆輸入。
   window.__releaseDesktop = () => { setOver(false); releaseKeys(); };
 
-  document.addEventListener("mousemove", e => {
-    if(!active()){ setOver(false); return; }
-    const n=videoNorm(e); setOver(!!n);
-    if(n) send({t:"ma", x:n[0], y:n[1]});          // 絕對映射
-  });
-  document.addEventListener("mousedown", e => {
-    if(!active()||!overVideo) return;
-    const n=videoNorm(e); if(n) send({t:"ma", x:n[0], y:n[1]});
-    const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"md",b});
-  });
-  document.addEventListener("mouseup", e => { if(!overVideo) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
-  document.addEventListener("contextmenu", e => { if(active()&&overVideo) e.preventDefault(); });
-  document.addEventListener("wheel", e => {                 // 滾輪
-    if(!active()||!overVideo) return; e.preventDefault();
-    send({t:"mw", d: e.deltaY>0 ? -1 : 1});
-  }, {passive:false});
-  window.addEventListener("blur", ()=> setOver(false));    // 視窗失焦 → 釋放
-  document.addEventListener("keydown", e => {
-    if(!active()||!overVideo) return; const t=codeToToken(e.code); if(!t) return;
-    e.preventDefault(); if(!held.has(t)){ held.add(t); send({t:"kd",k:t}); } });
-  document.addEventListener("keyup", e => {
-    if(!overVideo) return; const t=codeToToken(e.code); if(!t) return;
-    e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
+  // 綁定實體鍵鼠。抽成函式是因為【子母畫面】會把 #stage 搬進獨立視窗,那邊的
+  // 事件不會冒泡到本頁的 document,不重新綁一次就完全不能操作。
+  // 同一組 held/overVideo 狀態兩邊共用 —— 滑鼠只會在其中一個視窗裡,不會打架。
+  function bindDesk(doc, win){
+    doc.addEventListener("mousemove", e => {
+      if(!active()){ setOver(false); return; }
+      const n=videoNorm(e); setOver(!!n);
+      if(n) send({t:"ma", x:n[0], y:n[1]});          // 絕對映射
+    });
+    doc.addEventListener("mousedown", e => {
+      if(!active()||!overVideo) return;
+      const n=videoNorm(e); if(n) send({t:"ma", x:n[0], y:n[1]});
+      const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"md",b});
+    });
+    doc.addEventListener("mouseup", e => { if(!overVideo) return; const b={0:"left",1:"middle",2:"right"}[e.button]; if(b) send({t:"mu",b}); });
+    doc.addEventListener("contextmenu", e => { if(active()&&overVideo) e.preventDefault(); });
+    doc.addEventListener("wheel", e => {                 // 滾輪
+      if(!active()||!overVideo) return; e.preventDefault();
+      send({t:"mw", d: e.deltaY>0 ? -1 : 1});
+    }, {passive:false});
+    win.addEventListener("blur", ()=> setOver(false));    // 視窗失焦 → 釋放
+    doc.addEventListener("keydown", e => {
+      if(!active()||!overVideo) return; const t=codeToToken(e.code); if(!t) return;
+      e.preventDefault(); if(!held.has(t)){ held.add(t); send({t:"kd",k:t}); } });
+    doc.addEventListener("keyup", e => {
+      if(!overVideo) return; const t=codeToToken(e.code); if(!t) return;
+      e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
+  }
+  bindDesk(document, window);
+  window.__bindDeskTo = bindDesk;   // 子母畫面開啟時對新視窗再綁一次
   setTimeout(()=>{ if(connected()) $("#deskhint").classList.add("show"); }, 800);
 }
 
