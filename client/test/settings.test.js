@@ -43,3 +43,26 @@ test("merge 保留合法的 bounds", () => {
   assert.deepStrictEqual(s.merge({ bounds: b }).bounds, b);
   assert.strictEqual(s.merge({ bounds: { x: 1 } }).bounds, null);
 });
+
+test("boundsOnAnyDisplay 與任一螢幕重疊即算合法", () => {
+  const displays = [
+    { x: 0, y: 0, width: 1920, height: 1080 },
+    { x: 1920, y: 0, width: 1920, height: 1080 },
+  ];
+  assert.strictEqual(
+    s.boundsOnAnyDisplay({ x: 100, y: 100, width: 800, height: 500 }, displays), true);
+  // 外接螢幕拔掉後,舊的 bounds(第二螢幕的座標)不再落在僅剩的第一螢幕範圍內
+  assert.strictEqual(
+    s.boundsOnAnyDisplay({ x: 2560, y: 100, width: 800, height: 500 },
+      [{ x: 0, y: 0, width: 1920, height: 1080 }]), false);
+});
+
+test("boundsOnAnyDisplay 邊界與缺漏輸入", () => {
+  assert.strictEqual(s.boundsOnAnyDisplay(null, [{ x: 0, y: 0, width: 1920, height: 1080 }]), false);
+  // 拿不到螢幕清單時保守相信舊設定,不強制重設
+  assert.strictEqual(s.boundsOnAnyDisplay({ x: 100, y: 100, width: 800, height: 500 }, []), true);
+  // 部分重疊(視窗一半掛在螢幕外)也算合法,使用者還拖得回來
+  assert.strictEqual(
+    s.boundsOnAnyDisplay({ x: -400, y: 100, width: 800, height: 500 },
+      [{ x: 0, y: 0, width: 1920, height: 1080 }]), true);
+});

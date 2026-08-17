@@ -43,6 +43,31 @@ function _bounds(b) {
            width: Number(b.width), height: Number(b.height) };
 }
 
+// 兩個矩形是否有重疊(半開區間比較,邊對邊不算重疊,但這裡只是「大致還在螢幕上」
+// 的粗略判斷,邊界情況不重要)。
+function _rectsOverlap(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x &&
+         a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+// 存下來的視窗位置是否還落在「目前接著的任一螢幕」範圍內。
+//
+// 【為什麼要查】使用者在外接螢幕上用(例如 bounds.x = 2560),之後拔掉螢幕再啟動,
+// 存檔裡的位置就會落在畫面外 —— 而這個視窗 frame:false 沒有標題列可以拖回來、
+// transparent:true 讓「畫面外」跟「還沒畫出來」肉眼難以分辨,使用者會看到一個
+// 完全沒有反應的程式,連錯誤訊息都沒有。
+//
+// 【拿不到螢幕清單時為什麼回 true(視為合法)】displays 是呼叫端從
+// screen.getAllDisplays() 拿來的,理論上不會是空陣列,但這裡刻意保守:資訊不可信時
+// 「相信舊設定」比「每次都重設位置」安全 —— 誤判成「不在任何螢幕上」會讓使用者
+// 存好的視窗位置無端消失,誤判成「在螢幕上」頂多是視窗位置沒被自動修正,使用者
+// 還能用控制條的 ⋮⋮ 拖回來。
+function boundsOnAnyDisplay(bounds, displays) {
+  if (!bounds) return false;
+  if (!Array.isArray(displays) || displays.length === 0) return true;
+  return displays.some(d => _rectsOverlap(bounds, d));
+}
+
 function merge(raw) {
   const r = (raw && typeof raw === "object") ? raw : {};
   return {
@@ -56,4 +81,4 @@ function merge(raw) {
 }
 
 module.exports = { DEFAULTS, ALPHA_MIN, ALPHA_MAX, TOP_LEVELS,
-                   clampAlpha, normalizeUrl, originOf, merge };
+                   clampAlpha, normalizeUrl, originOf, merge, boundsOnAnyDisplay };

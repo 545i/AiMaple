@@ -208,8 +208,13 @@
                font-size:14px; color:#fff; background:rgba(40,40,50,.72);
                border:1px solid rgba(255,255,255,.25); border-radius:10px; }
 
-  /* 遠端頁快捷列(漢堡按鈕正下方)。巡邏開關與畫面彈出是遠端遊玩時最常按的三個
-     動作,放進抽屜要多兩次點擊,所以提到外面直接可按。只在遠端頁出現。 */
+  /* 遠端頁快捷列(漢堡按鈕正下方)。巡邏開關(啟動/停止)與掩護畫面是遠端遊玩時
+     最常按的三個動作,放進抽屜要多兩次點擊,所以提到外面直接可按。只在遠端頁出現。
+     (這裡原本還有一顆「畫面彈出」:那是浮動視窗還跑在伺服器端的舊設計
+     (server/floatwin.py)留下的入口,浮動視窗已經改成獨立的原生桌面客戶端
+     (client/,見 docs/superpowers/specs/2026-08-17-floating-client-design.md),
+     那支伺服器端程式與這顆按鈕都已隨之移除 —— 桌面客戶端是直接把這個網頁整個
+     裝進它自己的視窗,不需要網頁這邊再彈出任何東西。) */
   #quickBar { position:fixed; top:54px; right:10px; z-index:60; display:none;
               flex-direction:column; gap:6px; }
   body.view-remote #quickBar { display:flex; }
@@ -909,9 +914,15 @@ $("#logout").onclick = () => {
   const q=new URLSearchParams(location.search);
   const u=q.get("token")||localStorage.getItem("maple_token");
   if(u) $("#token").value=u;
-  // ?auto=1 → 自動連線並直接進遠端頁。給 server/floatwin.py 開的浮動視窗用:
-  // 它讀的是【使用者原本瀏覽器設定檔】的 localStorage,所以 token 不必經過命令列
-  // 參數(那會讓本機任何行程都看得到)。沒有存過 token 時就停在登入頁,手動輸入。
+  // ?auto=1 → 自動連線並直接進遠端頁。原本是給 server/floatwin.py(已移除,見
+  // docs/superpowers/specs/2026-08-17-floating-client-design.md)在伺服器端開的
+  // 瀏覽器視窗用:它讀的是【使用者原本瀏覽器設定檔】的 localStorage,所以 token
+  // 不必經過命令列參數(那會讓本機任何行程都看得到)。
+  // 【目前已無呼叫者】浮動視窗改成獨立的 client/ 桌面客戶端後,它載入的是設定裡
+  // 不帶 query 的 cfg.url(見 client/main.js 的 go()),不會自己加上 ?auto=1。
+  // 保留這個參數是為了讓使用者可以自己在 client 設定的網址後面手動加
+  // ?auto=1,達到「開啟即自動連線」的效果 —— 沒有存過 token 時仍會停在登入頁,
+  // 手動輸入。
   if(u && q.get("auto") === "1"){
     setTimeout(()=>{ $("#go").click(); setTimeout(()=>{ const b=$("#enterRemote"); if(b) b.click(); }, 700); }, 60);
   }
@@ -1679,7 +1690,12 @@ async function quickPatrolTick(){
 
 // ===== 掩護畫面:假的「程式碼執行中」終端機 =====
 //
-// 開浮動視窗時本頁會被它蓋住 —— 別人瞄到的是這台機器在跑建置,不是在玩遊戲。
+// 觸發點是手動(快捷列 #qCamo 或漢堡選單 #menuCamoBtn 的開關),不是自動。原本是
+// 「開浮動視窗時自動開啟」,但浮動視窗已經從伺服器端(server/floatwin.py)搬到
+// 獨立的 client/ 桌面客戶端(見 docs/superpowers/specs 的設計文件),那個自動觸發
+// 的掛鉤已經不存在,掩護畫面本身是網頁自己的功能、跟客戶端無關,所以留著但改成
+// 手動開關。狀態存 localStorage 下次沿用(開著掩護時重新載入頁面應該還是掩護,
+// 否則偽裝會在最需要的時候破功)。
 // 內容純前端生成,不拉任何外部資源。行是預先寫好的樣板 + 隨機數字,不用真的
 // 去執行什麼,也不會洩漏這台機器的任何資訊。
 const CAMO_LINES = [

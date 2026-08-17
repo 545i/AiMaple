@@ -27,6 +27,21 @@ function mount(doc, api, cfg) {
   const BTN = "padding:4px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.25);"
             + "background:#2a2f3a;color:#fff;font-size:12px;cursor:pointer";
 
+  // 【必要】頁面在 document 上把滑鼠/鍵盤映射成【真的遊戲輸入】(web/index.html 的桌面
+  // 模式:絕對座標 + 實體鍵盤)。控制條的子元素是 no-drag,事件會照常冒泡上去 —— 不攔的話
+  // 拖一次不透明度滑桿,等於在遊戲畫面左下角做了一次真的左鍵拖曳,可能拖走技能圖示。
+  // 【必須是冒泡階段,不能用 capture】一開始想比照「攔截」的直覺用 capture 階段攔,
+  // 實測發現整組控制條(按鈕/滑桿)全部失靈:capture 階段的事件是從 document 往下
+  // 傳到目標節點,若在 bar(祖先節點)這一層就 stopPropagation(),事件根本傳不到
+  // 按鈕/滑桿本身,它們自己的 onclick/oninput 也就永遠不會觸發。改成冒泡階段
+  // (預設,不傳 true)才對:冒泡階段是「先在目標節點觸發完(按鈕的 onclick、滑桿
+  // 原生的拖曳都已經處理完)」,事件才開始往上冒泡經過 bar,這時候在 bar 上
+  // stopPropagation() 攔下的,只是「不要再往上冒泡到 document」,不影響它已經在
+  // 目標節點完成的處理 —— 控制條自己的互動不受影響,只有 document 上的遊戲映射
+  // 監聽器收不到。
+  ["mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup"]
+    .forEach(t => bar.addEventListener(t, e => e.stopPropagation()));
+
   bar.appendChild(mk("span", "cursor:move;opacity:.7", "⋮⋮"));
 
   const sl = mk("input", "width:96px");
@@ -42,13 +57,40 @@ function mount(doc, api, cfg) {
 
   const top = mk("button", BTN, cfg.topmost ? "📌 置頂中" : "📌 未置頂");
   top.onclick = async () => {
-    const on = !(top.textContent.indexOf("置頂中") >= 0);
-    const r = await api.setTopmost(on);
+    // 【不能從按鈕文字反推現值】Ctrl/Cmd+Alt+T 快速鍵只改主行程的 cfg.topmost,
+    // 不會回頭同步這顆按鈕的文字 —— 用快速鍵關掉置頂後,按鈕仍寫「置頂中」(指示器
+    // 說謊),此時若照舊法用文字反推,點下去等於又送一次「開」,置頂沒回來,
+    // 第一次點擊被吃掉。改成每次點擊先問主行程現值,再送相反值。
+    const cur = (await api.getSettings()).topmost;
+    const r = await api.setTopmost(!cur);
     top.textContent = r ? "📌 置頂中" : "📌 未置頂";
     // Wayland 下這個請求不會生效,明示比靜默失敗好
     if (r && cfg.platform === "linux") top.title = "Wayland 工作階段可能無效,請改用 X11";
   };
   bar.appendChild(top);
+
+  // ⚙ 開設定頁。存過網址後,原本唯一回設定頁的路徑只剩「連線失敗的錯誤頁」——
+  // 若打錯的 port 剛好有別的東西在回應 200(不是我們要連的服務,但連得上),
+  // 使用者就永遠回不去設定頁,只能手改 settings.json。這顆鈕補上這條路。
+  const settingsBtn = mk("button", BTN, "⚙");
+  settingsBtn.title = "改設定(重新輸入網址)";
+  settingsBtn.onclick = () => api.openSettings();
+  bar.appendChild(settingsBtn);
+
+  // ⚠ 只在啟動時就有 notices(快速鍵註冊失敗、Linux 透明度提示等)才出現 ——
+  // 這些訊息原本只進 console.error,打包後的 exe 是 GUI 程式沒有主控台,訊息等於
+  // 消失在使用者永遠看不到的地方。用 alert() 最省事且一定看得見,不必做漂亮面板。
+  // 每次點擊都重新問一次主行程(而不是用掛載當下的 cfg 快照),這樣掛載之後才發生
+  // 的 notices(例如設定存檔失敗、setUrl 被擋)也能看到。
+  if (cfg.notices && cfg.notices.length) {
+    const warn = mk("button", BTN.replace("#2a2f3a", "#6b4a1a"), "⚠");
+    warn.title = "有需要注意的訊息";
+    warn.onclick = async () => {
+      const s = await api.getSettings();
+      alert((s.notices && s.notices.length) ? s.notices.join("\n\n") : "(暫無提示)");
+    };
+    bar.appendChild(warn);
+  }
 
   const hide = mk("button", BTN, "▾");
   hide.title = "收起（Ctrl/Cmd+Alt+O 再打開）";

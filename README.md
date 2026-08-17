@@ -170,3 +170,4 @@ Arduino 是真實 USB HID 裝置,不需要動任何開機設定,反作弊相容�
 | `server/config.py` | 集中設定(環境變數覆寫) |
 | `web/index.html` | 手機操作介面(自帶 CSS/JS) |
 | `arduino_keyboard.ino` | Arduino 韌體(已燒錄,供參考) |
+| `client/` | 浮動客戶端(Electron):把 `web/index.html` 裝進無邊框、真半透明、永遠置頂的原生桌面視窗,方便一邊工作一邊掛機。伺服器與網頁零改動,設計文件見 `docs/superpowers/specs/2026-08-17-floating-client-design.md`,用法見 `client/README.md` |

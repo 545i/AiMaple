@@ -102,6 +102,21 @@ Electron 20 之後 preload script 預設會被沙盒化，沙盒環境下 preloa
 - 引入 bundler（esbuild/webpack 之類）把 preload 依賴打包成沙盒允許的單一內建
   格式。放棄原因：這支客戶端目前刻意維持零建置工具鏈的簡單架構，引入 bundler
   對這個專案規模而言成本大於效益。
+- 由 `main.js` 讀 `overlay.js` 的檔案內容，用 `webContents.executeJavaScript`
+  把它注入頁面，而不是靠 preload 的 `require`。這條路其實可行：控制條本身不需要
+  任何特權，它只用 `window.fc`（contextBridge 已經曝露給頁面的東西），所以就算
+  跑在 main world（沒有 preload 的隔離 world 可用）也不會多拿到任何 Node 能力；
+  代價是要用一個小 wrapper 把 `overlay.js` 的 `module.exports = { pct, mount }`
+  餵掉（那一行在瀏覽器頁面環境裡沒有 `module`，直接注入會噴錯），做法上不難，
+  例如包成 `(function(){ const module={exports:{}}; <overlay.js 原始內容>
+  ; return module.exports.mount; })()(document, window.fc, cfg)` 這種形式。
+  這樣做同時保住了沙盒、保住了檔案切分、也不需要任何 build step，三個訴求都不用
+  犧牲。**目前沒有採用**——原因不是這條路不可行，而是 `sandbox: false` 的取捨
+  已經如上文完整記錄、代價與範圍都寫清楚了，可見度已經足夠，現階段沒有急迫性
+  去換掉一個「有明確理由的權衡」，換掉它本身也有風險（main world 注入的時機、
+  跟頁面自己的全域變數衝突之類）需要重新驗證。留著這個選項是為了：如果之後
+  `sandbox: false` 的代價被認為不可接受，這裡已經有一條驗證過可行的退路，不用
+  重新設計。
 
 ### 3. 測試指令是 `npm test`，不是 `node --test test/`
 
