@@ -1,0 +1,12 @@
+{
+  "name": "maple-float-client",
+  "version": "1.0.0",
+  "description": "maple 遠端遊玩的浮動客戶端(無邊框半透明置頂)",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/",
+    "dist": "electron-builder"
+  }
+}
