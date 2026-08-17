@@ -65,6 +65,12 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true, nodeIntegration: false,
+      // 沙盒化的 preload(Electron 20 起預設)只准 require 白名單內的內建模組,
+      // 連 require("./overlay") 這種本機相對路徑都會直接載入失敗(靜默不掛控制條,
+      // 只有主控台看得到 "module not found")。關掉 sandbox 讓 preload 能用完整
+      // Node API,contextIsolation 仍然擋著,頁面本身還是只看得到 contextBridge
+      // 曝露的 window.fc,不會多拿到 require/ipcRenderer。
+      sandbox: false,
     },
   });
   applyTopmost();
