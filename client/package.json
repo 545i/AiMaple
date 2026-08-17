@@ -6,7 +6,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/",
+    "test": "node --test",
     "dist": "electron-builder"
   },
   "devDependencies": {
