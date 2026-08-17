@@ -84,3 +84,7 @@ models/
 
 # 採集的原始樣本(673MB 影像),與 rune_dataset/ 同樣不進版控
 rune_collect/
+
+# Electron 客戶端
+client/node_modules/
+client/dist/

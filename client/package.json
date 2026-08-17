@@ -8,5 +8,9 @@
     "start": "electron .",
     "test": "node --test test/",
     "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^38.8.6",
+    "electron-builder": "^25.1.8"
   }
 }
