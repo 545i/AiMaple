@@ -36,6 +36,12 @@ function save() {
   } catch (e) { console.error("設定存檔失敗", e); }
 }
 
+// 錯誤頁要把 desc/url 內插進 innerHTML,必須先跳脫 —— 外層的 JSON.stringify 只保證
+// 整段作為 JS 字串字面量安全,不會跳脫 < > " 這些 HTML 特殊字元。而這個頁面上下文
+// 暴露著 window.fc,注入進去的腳本可以直接呼叫它。
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
 function applyAlpha() {
   if (!win) return;
   // 套在 html 而不是 body:body 可能被頁面設了背景色,套在 html 才能讓視窗背景
@@ -72,16 +78,19 @@ function createWindow() {
     if (!allowNavigation(url, cfg.url)) e.preventDefault();
   });
   // 憑證錯誤【不自動忽略】—— 那等於把 https 的意義丟掉。讓它照常失敗並顯示錯誤頁。
-  win.webContents.on("did-fail-load", (_e, code, desc, url) => {
+  win.webContents.on("did-fail-load", (_e, code, desc, url, isMainFrame) => {
     if (code === -3) return;                       // ERR_ABORTED,使用者自己取消
+    // 子資源(圖片/script/iframe)失敗也會觸發這個事件,不擋的話遠端頁面壞一張圖
+    // 就會被錯誤頁整頁蓋掉 —— 那正是 spec 說「不要白畫面」要避免的。
+    if (!isMainFrame) return;
     win.webContents.executeJavaScript(
       `document.body.innerHTML=${JSON.stringify(
         `<div style="height:100vh;display:flex;flex-direction:column;gap:10px;` +
         `align-items:center;justify-content:center;background:#12151c;color:#e6e8ee;` +
         `font:14px system-ui,'Microsoft JhengHei',sans-serif;-webkit-app-region:drag">` +
         `<div style="font-size:16px">連不上遠端</div>` +
-        `<div style="color:#8a8f99;font-size:12px">${desc} (${code})</div>` +
-        `<div style="color:#8a8f99;font-size:12px">${url}</div>` +
+        `<div style="color:#8a8f99;font-size:12px">${esc(desc)} (${code})</div>` +
+        `<div style="color:#8a8f99;font-size:12px">${esc(url)}</div>` +
         `<button style="-webkit-app-region:no-drag;padding:8px 18px;border-radius:8px;` +
         `border:1px solid #3a4150;background:#1b1f28;color:#e6e8ee;cursor:pointer" ` +
         `onclick="window.fc.reload()">重試</button>` +
