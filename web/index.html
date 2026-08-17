@@ -207,6 +207,25 @@
                align-items:center; justify-content:center; height:40px; padding:0 14px;
                font-size:14px; color:#fff; background:rgba(40,40,50,.72);
                border:1px solid rgba(255,255,255,.25); border-radius:10px; }
+
+  /* 遠端頁快捷列(漢堡按鈕正下方)。巡邏開關與畫面彈出是遠端遊玩時最常按的三個
+     動作,放進抽屜要多兩次點擊,所以提到外面直接可按。只在遠端頁出現。 */
+  #quickBar { position:fixed; top:54px; right:10px; z-index:60; display:none;
+              flex-direction:column; gap:6px; }
+  body.view-remote #quickBar { display:flex; }
+  #quickBar .qbtn { min-width:46px; padding:7px 8px; text-align:center; font-size:12px;
+                    line-height:1.2; color:#fff; background:rgba(40,40,50,.72);
+                    border:1px solid rgba(255,255,255,.25); border-radius:10px;
+                    -webkit-user-select:none; user-select:none; cursor:pointer; }
+  #quickBar .qbtn:active { transform:scale(.94); }
+  /* 目前狀態用顏色回饋:巡航中→開始鈕轉綠,停止中→停止鈕轉紅,免得盲按 */
+  #quickBar .qbtn.on { background:#1e7e34; border-color:#2ecc71; }
+  #quickBar .qbtn.off { background:#5a2320; border-color:#c0392b; }
+  /* 畫面彈到獨立視窗後,本頁的 video/img 被搬走了,留一行字說明避免以為斷線 */
+  #pipHint { position:fixed; inset:0; z-index:1; display:none; align-items:center;
+             justify-content:center; color:#8a8f99; font-size:15px; text-align:center;
+             pointer-events:none; }
+  body.pip-on #pipHint { display:flex; }
 </style>
 </head>
 <body class="view-login">
@@ -229,6 +248,14 @@
 
   <div id="menuBtn">☰</div>
   <div id="toDashTop">≡ 儀表板</div>
+
+  <!-- 漢堡按鈕正下方的快捷列(只在遠端頁) -->
+  <div id="quickBar">
+    <div class="qbtn" id="qPatrolStart">▶<br>巡邏</div>
+    <div class="qbtn" id="qPatrolStop">⏹<br>停止</div>
+    <div class="qbtn" id="qPip">🗔<br>彈出</div>
+  </div>
+  <div id="pipHint">🗔 畫面已彈出至獨立視窗<br><span style="font-size:12px">（關閉該視窗即可收回）</span></div>
 
   <div class="look" id="look"></div>
   <div id="pad"></div>
@@ -259,7 +286,11 @@
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
       <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
-      <div class="mbtn" id="menuPatrolStop" style="margin:9px 0;background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
+      <div class="mbtn" id="menuPipBtn" style="margin:9px 0">🗔 彈出畫面（子母畫面）</div>
+      <div class="mgrid2" style="margin:9px 0">
+        <div class="mbtn" id="menuPatrolStart" style="background:#1e7e34">▶ 開始巡邏</div>
+        <div class="mbtn" id="menuPatrolStop" style="background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
+      </div>
       <div id="menuPatrolMsg" style="font-size:12px;color:#8a8f99;margin:4px 0"></div>
       <div class="mrow" id="layRow"><label>方向</label><div class="segs" id="layGroup">
         <div class="seg" data-lay="auto">自動</div><div class="seg" data-lay="port">直向</div><div class="seg" data-lay="land">橫向</div>
@@ -1605,9 +1636,103 @@ async function doPatrolStop(sel){
   document.querySelectorAll(sel).forEach(e=>e.textContent = "⏹ 已停止巡邏");
   toast("⏹ 已停止巡邏");
 }
-$("#patrolStartBtn").onclick = ()=> doPatrolStart("#patrolMsg,#menuPatrolMsg");
-$("#patrolStopBtn").onclick  = ()=> doPatrolStop("#patrolMsg,#menuPatrolMsg");
-$("#menuPatrolStop").onclick  = ()=> doPatrolStop("#menuPatrolMsg,#patrolMsg");
+const PATROL_MSG = "#patrolMsg,#menuPatrolMsg";
+$("#patrolStartBtn").onclick   = ()=> doPatrolStart(PATROL_MSG);
+$("#patrolStopBtn").onclick    = ()=> doPatrolStop(PATROL_MSG);
+$("#menuPatrolStart").onclick  = ()=> doPatrolStart(PATROL_MSG);
+$("#menuPatrolStop").onclick   = ()=> doPatrolStop(PATROL_MSG);
+// 漢堡按鈕正下方的快捷列。走的是同一組函式,不另開一條路徑 —— 否則兩邊行為
+// 會慢慢分岔(時限沒帶到、toast 沒彈之類)。
+$("#qPatrolStart").onclick = ()=> doPatrolStart(PATROL_MSG);
+$("#qPatrolStop").onclick  = ()=> doPatrolStop(PATROL_MSG);
+
+// 快捷列的狀態回饋。遠端頁沒有儀表板那條 1 秒輪詢(只在 patrol 分頁跑),
+// 這裡自己用 3 秒輪詢,頻率壓低是因為遠端頁的頻寬要留給畫面串流。
+async function quickPatrolTick(){
+  try{
+    const st = await (await fetch(`/nav/status?token=${encodeURIComponent(token)}`)).json();
+    const running = st.overall === "patrol" || st.overall === "solving";
+    $("#qPatrolStart").classList.toggle("on", running);
+    $("#qPatrolStop").classList.toggle("off", !running);
+  }catch(_){}
+}
+
+// ===== 子母畫面:把遊戲畫面彈到瀏覽器外的獨立視窗 =====
+//
+// 【為什麼優先用 Document Picture-in-Picture】原生的 video.requestPictureInPicture()
+// 只吃 <video>,但遠端模式(Cloudflare Tunnel)走的是 MJPEG 的 <img>,原生 PiP 完全
+// 無解。Document PiP 給的是一個真正的 window,可以把【任何元素】搬進去,兩種來源
+// 都適用。不支援時才退回原生 PiP(此時只有 WebRTC 模式能用)。
+//
+// 【為什麼是「搬移」而不是複製】複製一個 <video> 沒辦法共用 srcObject,等於要再開
+// 一條 WebRTC 連線;<img> 複製則會再拉一條 MJPEG 串流,兩者都是雙倍頻寬。直接搬
+// DOM 節點可以沿用同一條串流,關閉時再搬回原位。
+//
+// 【注意】兩種 API 都要求安全內容(https 或 localhost)。透過 Tailscale 走純 http
+// 時瀏覽器不會提供,所以失敗要講清楚原因,不要只說「不支援」。
+let pipWin = null;
+
+function pipSource(){ return REMOTE ? $("#mjpeg") : $("#video"); }
+
+function pipSetOn(on){
+  document.body.classList.toggle("pip-on", on);
+  $("#qPip").classList.toggle("on", on);
+  $("#menuPipBtn").textContent = on ? "🗔 收回畫面" : "🗔 彈出畫面（子母畫面）";
+}
+
+async function togglePip(){
+  // 已經彈出 → 收回
+  if(pipWin && !pipWin.closed){ pipWin.close(); return; }
+  if(document.pictureInPictureElement){
+    try{ await document.exitPictureInPicture(); }catch(_){}
+    pipSetOn(false);
+    return;
+  }
+
+  const el = pipSource();
+  if(!el || (REMOTE ? !el.getAttribute("src") : !el.srcObject)){
+    toast("畫面還沒連上，先連線再彈出", false); return;
+  }
+
+  if(window.documentPictureInPicture){
+    try{
+      const w = await documentPictureInPicture.requestWindow({ width:640, height:380 });
+      w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
+      const st = w.document.createElement("style");
+      // 本頁的 CSS 不會跟著過去,所以獨立視窗要自帶樣式
+      st.textContent = "video,img{width:100%;height:100%;object-fit:contain;display:block;background:#000}";
+      w.document.head.appendChild(st);
+
+      // 記住原位置,關閉時要放回【原本的順序】—— 直接 append 回 #stage 會跑到
+      // 疊在最上層的觸控層之上,把搖桿與按鍵蓋掉。
+      const home = el.parentElement, next = el.nextSibling;
+      w.document.body.appendChild(el);
+      pipWin = w;
+      pipSetOn(true);
+      w.addEventListener("pagehide", ()=>{
+        home.insertBefore(el, next);
+        pipWin = null;
+        pipSetOn(false);
+      });
+      return;
+    }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); return; }
+  }
+
+  // 退路:原生 video PiP(只有 WebRTC 模式有 <video>)
+  if(!REMOTE && el.requestPictureInPicture){
+    try{
+      await el.requestPictureInPicture();
+      pipSetOn(true);
+      el.addEventListener("leavepictureinpicture", ()=> pipSetOn(false), { once:true });
+    }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); }
+    return;
+  }
+  toast(location.protocol === "https:" || location.hostname === "localhost"
+        ? "此瀏覽器不支援畫中畫" : "畫中畫需要 https（或 localhost）", false);
+}
+
+$("#qPip").onclick = togglePip;
+$("#menuPipBtn").onclick = togglePip;
 
 // ---- 符文自動解除：開關 + 辨識測試（校準用） ----
 const RUNE_ARROW = {up:"↑",down:"↓",left:"←",right:"→"};
@@ -2015,7 +2140,13 @@ async function placeTick(){
     }).join("");
   }catch(_){}
 }
+let quickTick = 0;
 setInterval(()=>{
+  // 遠端頁:只更新快捷列的巡邏狀態(3 秒一次)
+  if(document.body.classList.contains("view-remote")){
+    if((quickTick = (quickTick + 1) % 3) === 0) quickPatrolTick();
+    return;
+  }
   if(!document.body.classList.contains("view-dash")) return;
   const pane = document.querySelector('.dpane[data-pane="patrol"]');
   if(pane && pane.classList.contains("on")){
