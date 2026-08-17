@@ -221,11 +221,22 @@
   /* 目前狀態用顏色回饋:巡航中→開始鈕轉綠,停止中→停止鈕轉紅,免得盲按 */
   #quickBar .qbtn.on { background:#1e7e34; border-color:#2ecc71; }
   #quickBar .qbtn.off { background:#5a2320; border-color:#c0392b; }
-  /* 畫面彈到獨立視窗後,本頁的 video/img 被搬走了,留一行字說明避免以為斷線 */
-  #pipHint { position:fixed; inset:0; z-index:1; display:none; align-items:center;
-             justify-content:center; color:#8a8f99; font-size:15px; text-align:center;
-             pointer-events:none; }
-  body.pip-on #pipHint { display:flex; }
+  /* 掩護畫面:假的建置日誌,蓋住整頁。z-index 要壓過觸控層(最高 140)但低於
+     漢堡選單抽屜(126→這裡取 150),讓人能從選單關掉它。 */
+  #camo { position:fixed; inset:0; z-index:150; display:none; margin:0;
+          padding:14px 16px; overflow:hidden; white-space:pre-wrap;
+          background:#0b0e14; color:#8fbf7f;
+          font:12px/1.55 ui-monospace,Consolas,"Courier New",monospace; }
+  body.camo-on #camo { display:block; }
+  #camoOff { position:fixed; right:10px; bottom:10px; z-index:151; display:none;
+             padding:6px 10px; font-size:12px; color:#cfd3db;
+             background:rgba(30,34,44,.9); border:1px solid rgba(255,255,255,.22);
+             border-radius:8px; cursor:pointer; }
+  body.camo-on #camoOff { display:block; }
+  /* 浮動視窗的不透明度/置頂控制,只在視窗開著時出現 */
+  #fwRow { display:none; }
+  #fwRow input[type=range] { width:100%; }
+  #fwTop.on { background:#1e7e34; border-color:#2ecc71; }
 </style>
 </head>
 <body class="view-login">
@@ -285,7 +296,14 @@
         <div class="mbtn" id="focusBtn">🎯 對準視窗</div>
       </div>
       <div class="mbtn" id="releaseBtn2" style="margin:9px 0;background:#5a2320;border-color:#c0392b">🆘 解除卡死（放開所有按鍵）</div>
-      <div class="mbtn" id="menuPipBtn" style="margin:9px 0">🗔 彈出畫面（子母畫面）</div>
+      <div class="mbtn" id="menuPipBtn" style="margin:9px 0">🗔 開啟浮動視窗（半透明置頂）</div>
+      <div id="fwRow" style="margin:9px 0">
+        <div class="mrow"><label>不透明度</label>
+          <input type="range" id="fwAlpha" min="40" max="255" step="5">
+          <span id="fwAlphaVal" style="font-size:12px;color:#8a8f99;min-width:38px"></span>
+        </div>
+        <div class="mbtn on" id="fwTop" style="margin-top:6px">📌 置頂中</div>
+      </div>
       <div class="mgrid2" style="margin:9px 0">
         <div class="mbtn" id="menuPatrolStart" style="background:#1e7e34">▶ 開始巡邏</div>
         <div class="mbtn" id="menuPatrolStop" style="background:#5a2320;border-color:#c0392b">⏹ 停止巡邏</div>
@@ -329,9 +347,9 @@
   </div>
  </div><!-- /#stage -->
 
- <!-- 必須放在 #stage【外面】:彈出子母畫面時整個 #stage 會被搬走,放裡面會跟著
-      被搬到彈出視窗,本頁就什麼提示都沒有。 -->
- <div id="pipHint">🗔 畫面與控制項已彈出至獨立視窗<br><span style="font-size:12px">（關閉該視窗即可收回）</span></div>
+ <!-- 掩護畫面。放在 #stage 外面,語意上它蓋住整個頁面而不屬於遊戲畫面那一層。 -->
+ <div id="camo"></div>
+ <div id="camoOff">✕ 關閉掩護</div>
 
  <!-- ===== 儀表板（中控頁）：出租管理 + 進入主人操作頁 ===== -->
  <div id="dashView">
@@ -642,18 +660,11 @@
  </div>
 
 <script>
-// 彈出子母畫面時 #stage 整個被搬進獨立視窗,所以要先查那邊。留在本頁的
-// (儀表板等)查不到就落回主文件。pipWin 由下方的子母畫面那段維護。
-let pipWin = null;
-const uiWin = () => (pipWin && !pipWin.closed) ? pipWin : window;
-const $ = s => ((pipWin && !pipWin.closed && pipWin.document.querySelector(s))
-                || document.querySelector(s));
+const $ = s => document.querySelector(s);
 let _toastTimer=null;
 function toast(msg, ok=true){
-  // 彈出子母畫面時操作都在那個視窗,提示也得出現在那邊 —— 掛在本頁等於看不到。
-  const d = uiWin().document;
-  let t=d.getElementById("toast");
-  if(!t){ t=d.createElement("div"); t.id="toast"; d.body.appendChild(t); }
+  let t=document.getElementById("toast");
+  if(!t){ t=document.createElement("div"); t.id="toast"; document.body.appendChild(t); }
   t.textContent=msg; t.className="show"+(ok?"":" err");
   clearTimeout(_toastTimer);
   _toastTimer=setTimeout(()=>{ t.className=t.className.replace(/show/g,"").trim(); }, 2500);
@@ -724,11 +735,8 @@ const isRotated = () => document.body.classList.contains("rotate");
 function rotVec(dx,dy){ return isRotated() ? [dy, -dx] : [dx, dy]; }
 // 內容(video)在 #cursor/#pad 座標系中的顯示矩形(旋轉時 stage 為 100vh×100vw)
 function stageRect(){
-  // 用 uiWin() 而不是 window:彈出子母畫面後 #stage 在獨立視窗裡,尺寸要取那邊的,
-  // 否則搖桿/游標的座標換算會照著本頁的大小算,整個偏掉。
-  const w = uiWin();
-  return isRotated() ? { left:0, top:0, width:w.innerHeight, height:w.innerWidth }
-                     : { left:0, top:0, width:w.innerWidth, height:w.innerHeight };
+  return isRotated() ? { left:0, top:0, width:window.innerHeight, height:window.innerWidth }
+                     : { left:0, top:0, width:window.innerWidth, height:window.innerHeight };
 }
 
 function renderButtons(){
@@ -845,9 +853,6 @@ const send = o => { if(ws && ws.readyState===1) ws.send(JSON.stringify(o)); };
 let vheld = new Set();     // 虛擬按鍵目前按住的鍵(回儀表板時全放,避免卡鍵)
 let faceTimer = null;
 function showView(name){
-  // 離開遠端頁就收回子母畫面:儀表板在【本頁】的 #dashView,不在被搬走的 #stage
-  // 裡,不收回的話彈出視窗會變空白,而儀表板出現在使用者看不到的本頁。
-  if(name !== "remote" && pipWin && !pipWin.closed) pipWin.close();
   document.body.classList.remove("view-login","view-dash","view-remote");
   document.body.classList.add("view-"+name);
   if(name !== "dash" && typeof stopMonitor === "function") stopMonitor();  // 離開儀表板停監視刷新
@@ -911,7 +916,17 @@ $("#logout").onclick = () => {
   disconnectWS(); setWatching(false); resetGuestState();
   showView("login");
 };
-(() => { const u=new URLSearchParams(location.search).get("token")||localStorage.getItem("maple_token"); if(u) $("#token").value=u; })();
+(() => {
+  const q=new URLSearchParams(location.search);
+  const u=q.get("token")||localStorage.getItem("maple_token");
+  if(u) $("#token").value=u;
+  // ?auto=1 → 自動連線並直接進遠端頁。給 server/floatwin.py 開的浮動視窗用:
+  // 它讀的是【使用者原本瀏覽器設定檔】的 localStorage,所以 token 不必經過命令列
+  // 參數(那會讓本機任何行程都看得到)。沒有存過 token 時就停在登入頁,手動輸入。
+  if(u && q.get("auto") === "1"){
+    setTimeout(()=>{ $("#go").click(); setTimeout(()=>{ const b=$("#enterRemote"); if(b) b.click(); }, 700); }, 60);
+  }
+})();
 if(REMOTE){
   $("#token").placeholder = "限時連線密碼";
   $("#setupHint").textContent = "遠端模式（Cloudflare Tunnel）：輸入主機顯示的限時密碼";
@@ -1673,127 +1688,110 @@ async function quickPatrolTick(){
   }catch(_){}
 }
 
-// ===== 子母畫面:把遊戲畫面彈到瀏覽器外的獨立視窗 =====
+// ===== 浮動視窗:真半透明 + 永遠置頂 + 完整可操作 =====
 //
-// 【為什麼優先用 Document Picture-in-Picture】原生的 video.requestPictureInPicture()
-// 只吃 <video>,但遠端模式(Cloudflare Tunnel)走的是 MJPEG 的 <img>,原生 PiP 完全
-// 無解。Document PiP 給的是一個真正的 window,可以把【任何元素】搬進去,兩種來源
-// 都適用。不支援時才退回原生 PiP(此時只有 WebRTC 模式能用)。
-//
-// 【為什麼是「搬移」而不是複製】複製一個 <video> 沒辦法共用 srcObject,等於要再開
-// 一條 WebRTC 連線;<img> 複製則會再拉一條 MJPEG 串流,兩者都是雙倍頻寬。直接搬
-// DOM 節點可以沿用同一條串流,關閉時再搬回原位。
-//
-// 【注意】兩種 API 都要求安全內容(https 或 localhost)。透過 Tailscale 走純 http
-// 時瀏覽器不會提供,所以失敗要講清楚原因,不要只說「不支援」。
-function pipSetOn(on){
-  document.body.classList.toggle("pip-on", on);
-  const q = $("#qPip"); if(q) q.classList.toggle("on", on);
+// 【為什麼不用網頁的畫中畫】需求四項:鍵盤滑鼠映射、永遠置頂、完整 UI、真半透明。
+// Document PiP 的前三項勉強(實測映射不通、UI 搬不過去),第四項【完全做不到】——
+// 瀏覽器沒有任何 API 能讓網頁把自己的視窗變透明,最多把內容調暗;擴充也拿不到
+// (chrome.windows.create 沒有 alwaysOnTop,能置頂的 panel 型視窗已停用)。
+// 所以改由後端用 Win32 在【視窗層級】處理,見 server/floatwin.py。
+// 這一頁只負責下指令 —— 浮動視窗載入的就是這一頁本身,所有映射與 UI 原樣可用。
+const FW_ALPHA_KEY = "maple_fw_alpha";
+let fwOpen = false;
+
+async function fwPost(path, qs=""){
+  const r = await fetch(`/floatwin/${path}?token=${encodeURIComponent(token)}${qs}`,
+                        { method:"POST" });
+  return r.json().catch(()=>({}));
+}
+
+function fwSetUi(open){
+  fwOpen = open;
+  document.body.classList.toggle("fw-on", open);
+  const q = $("#qPip"); if(q) q.classList.toggle("on", open);
   const m = $("#menuPipBtn");
-  if(m) m.textContent = on ? "🗔 收回畫面" : "🗔 彈出畫面（子母畫面）";
+  if(m) m.textContent = open ? "🗔 關閉浮動視窗" : "🗔 開啟浮動視窗（半透明置頂）";
+  $("#fwRow").style.display = open ? "" : "none";
 }
 
-// 把本頁所有樣式複製過去。CSS 不會跟著 DOM 搬,不複製的話彈出視窗只會是一堆
-// 沒有版面的裸元素(搖桿疊在左上角、按鈕沒有大小)。
-function pipCopyStyles(w){
-  [...document.styleSheets].forEach(sheet => {
-    try{
-      const css = [...sheet.cssRules].map(r => r.cssText).join("\n");
-      const el = w.document.createElement("style");
-      el.textContent = css;
-      w.document.head.appendChild(el);
-    }catch(_){ /* 跨網域樣式讀不到,本頁全是內嵌樣式所以不會發生 */ }
-  });
-}
-
-async function togglePip(){
-  if(pipWin && !pipWin.closed){ pipWin.close(); return; }
-  if(document.pictureInPictureElement){
-    try{ await document.exitPictureInPicture(); }catch(_){}
-    pipSetOn(false);
+async function toggleFloatWin(){
+  if(fwOpen){
+    await fwPost("close");
+    fwSetUi(false);
+    camoSet(false);
+    setWatching(true);          // 收回後本頁恢復畫面
+    toast("已關閉浮動視窗");
     return;
   }
-
-  const src = REMOTE ? $("#mjpeg") : $("#video");
-  if(!src || (REMOTE ? !src.getAttribute("src") : !src.srcObject)){
-    toast("畫面還沒連上，先連線再彈出", false); return;
-  }
-
-  if(window.documentPictureInPicture){
-    try{
-      const w = await documentPictureInPicture.requestWindow({ width:960, height:600 });
-      pipCopyStyles(w);
-      w.document.body.style.cssText = "margin:0;background:#000;overflow:hidden";
-      // 版面 CSS 全是 body.view-remote / body.lay-port 這種前綴,所以彈出視窗的
-      // body 要帶同一組 class,而且本頁一改就要跟著改(切直橫、進出遠端頁)。
-      const syncCls = () => { w.document.body.className = document.body.className; };
-      syncCls();
-      const obs = new MutationObserver(syncCls);
-      obs.observe(document.body, { attributes:true, attributeFilter:["class"] });
-
-      // 搬【整個 #stage】而不是只搬畫面 —— 搖桿、按鍵、漢堡選單都在裡面,
-      // 只搬畫面的話彈出視窗看得到卻按不了。DOM 節點搬家不會掉事件監聽,
-      // 所以觸控那些綁在元素上的照樣有效;綁在 document 上的實體鍵鼠要重綁。
-      // 彈出視窗自己的小工具列。Document PiP 的視窗【規格上就是永遠置頂】,
-      // 網頁沒有 API 可以開關,所以這裡只做明示 + 尺寸/收回,不做假的釘選開關。
-      const bar = w.document.createElement("div");
-      bar.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:200;display:flex;"
-        + "gap:6px;align-items:center;padding:5px 8px;border-radius:10px;"
-        + "background:rgba(20,20,26,.72);border:1px solid rgba(255,255,255,.2);"
-        + "color:#cfd3db;font-size:12px;font-family:system-ui,sans-serif";
-      bar.innerHTML = '<span style="color:#7fe0b0">📌 已置頂</span>'
-        + [["小",560],["中",860],["大",1200]].map(([t,px]) =>
-            `<button data-w="${px}">${t}</button>`).join("")
-        + '<button data-back="1">✕ 收回</button>';
-      bar.querySelectorAll("button").forEach(b => {
-        b.style.cssText = "padding:4px 8px;font-size:12px;color:#fff;background:#2a2f3a;"
-          + "border:1px solid rgba(255,255,255,.25);border-radius:8px;cursor:pointer";
-        b.onclick = () => {
-          if(b.dataset.back){ w.close(); return; }
-          const px = +b.dataset.w;
-          try{ w.resizeTo(px, Math.round(px * 0.625)); }
-          catch(_){ toast("這個瀏覽器不允許程式調整彈出視窗大小，請手動拖曳邊框", false); }
-        };
-      });
-      w.document.body.appendChild(bar);
-
-      const stage = document.getElementById("stage");
-      const home = stage.parentElement, next = stage.nextSibling;
-      w.document.body.appendChild(stage);
-      if(window.__bindDeskTo) window.__bindDeskTo(w.document, w);
-
-      pipWin = w;
-      pipSetOn(true);
-      applyLayout();            // 依彈出視窗的尺寸重畫按鈕與直橫版面
-      w.addEventListener("resize", applyLayout);
-      w.addEventListener("pagehide", ()=>{
-        obs.disconnect();
-        home.insertBefore(stage, next);
-        pipWin = null;
-        pipSetOn(false);
-        applyLayout();
-      });
-      return;
-    }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); return; }
-  }
-
-  // 退路:原生 video PiP。只吃 <video>,而且【沒有 DOM】—— 只能看不能操作,
-  // 手機就只有這條路。桌面 Chrome/Edge 一般走得到上面的 Document PiP。
-  if(!REMOTE && src.requestPictureInPicture){
-    try{
-      await src.requestPictureInPicture();
-      pipSetOn(true);
-      toast("此瀏覽器只支援影片畫中畫，彈出視窗無法操作", false);
-      src.addEventListener("leavepictureinpicture", ()=> pipSetOn(false), { once:true });
-    }catch(e){ toast("彈出失敗：" + (e && e.message || e), false); }
-    return;
-  }
-  toast(location.protocol === "https:" || location.hostname === "localhost"
-        ? "此瀏覽器不支援畫中畫" : "畫中畫需要 https（或 localhost）", false);
+  const alpha = +(localStorage.getItem(FW_ALPHA_KEY) || 235);
+  const j = await fwPost("open", `&alpha=${alpha}`);
+  if(j.err){ toast("開啟失敗：" + j.err, false); return; }
+  fwSetUi(true);
+  // 兩個視窗各自一條串流會白白多吃一份編碼,而且本頁馬上要被掩護畫面蓋住,
+  // 所以本頁停止注視。關閉浮動視窗時再恢復。
+  setWatching(false);
+  camoSet(true);
+  toast("已開啟浮動視窗（半透明・置頂）");
 }
 
-$("#qPip").onclick = togglePip;
-$("#menuPipBtn").onclick = togglePip;
+$("#qPip").onclick = toggleFloatWin;
+$("#menuPipBtn").onclick = toggleFloatWin;
+
+// 不透明度滑桿。值是 Win32 的 alpha(0~255),下限 40 免得整個看不見。
+(() => {
+  const sl = $("#fwAlpha"), lab = $("#fwAlphaVal");
+  sl.value = localStorage.getItem(FW_ALPHA_KEY) || 235;
+  const show = () => lab.textContent = Math.round(sl.value / 255 * 100) + "%";
+  show();
+  sl.oninput = () => {
+    show();
+    localStorage.setItem(FW_ALPHA_KEY, sl.value);
+    if(fwOpen) fwPost("alpha", `&v=${sl.value}`);
+  };
+  $("#fwTop").onclick = async () => {
+    const on = !$("#fwTop").classList.contains("on");
+    await fwPost("topmost", `&on=${on ? 1 : 0}`);
+    $("#fwTop").classList.toggle("on", on);
+    $("#fwTop").textContent = on ? "📌 置頂中" : "📌 未置頂";
+  };
+})();
+
+// ===== 掩護畫面:假的「程式碼執行中」終端機 =====
+//
+// 開浮動視窗時本頁會被它蓋住 —— 別人瞄到的是這台機器在跑建置,不是在玩遊戲。
+// 內容純前端生成,不拉任何外部資源。行是預先寫好的樣板 + 隨機數字,不用真的
+// 去執行什麼,也不會洩漏這台機器的任何資訊。
+const CAMO_LINES = [
+  () => `[INFO] resolving dependencies… ${(Math.random()*900+100|0)} packages`,
+  () => `webpack: compiled ${(Math.random()*40+8|0)} modules in ${(Math.random()*900+120|0)}ms`,
+  () => `pytest: ${(Math.random()*300+40|0)} passed, 0 failed in ${(Math.random()*90+5).toFixed(2)}s`,
+  () => `docker: layer ${Math.random().toString(16).slice(2,14)} pushed`,
+  () => `[trace] gc pause ${(Math.random()*8+0.4).toFixed(2)}ms  heap ${(Math.random()*900+200|0)}MB`,
+  () => `tsc --watch: found 0 errors. watching for file changes…`,
+  () => `[worker-${Math.random()*8+1|0}] batch ${(Math.random()*9000|0)} ok  lat ${(Math.random()*40+2|0)}ms`,
+  () => `git: fetching origin… ${(Math.random()*30|0)} objects, done`,
+  () => `INFO  uvicorn: 127.0.0.1 - "GET /health HTTP/1.1" 200`,
+  () => `[cache] hit ${(Math.random()*40+55).toFixed(1)}%  evicted ${(Math.random()*200|0)}`,
+];
+let camoTimer = null;
+
+function camoSet(on){
+  const el = $("#camo");
+  document.body.classList.toggle("camo-on", on);
+  if(camoTimer){ clearInterval(camoTimer); camoTimer = null; }
+  if(!on){ el.textContent = ""; return; }
+  const push = () => {
+    const line = CAMO_LINES[Math.random()*CAMO_LINES.length|0]();
+    el.textContent += line + "\n";
+    // 只留最後 200 行,不然長時間跑下來會吃掉記憶體
+    const lines = el.textContent.split("\n");
+    if(lines.length > 200) el.textContent = lines.slice(-200).join("\n");
+    el.scrollTop = el.scrollHeight;
+  };
+  for(let i=0;i<28;i++) push();          // 先鋪滿,免得一開始是空白很假
+  camoTimer = setInterval(push, 260);
+}
+$("#camoOff").onclick = () => camoSet(false);
 
 // ---- 符文自動解除：開關 + 辨識測試（校準用） ----
 const RUNE_ARROW = {up:"↑",down:"↓",left:"←",right:"→"};
@@ -2554,9 +2552,7 @@ if(!IS_TOUCH){
   // 殘留的 overVideo 讓下一個 mouseup/keyup 誤送一筆輸入。
   window.__releaseDesktop = () => { setOver(false); releaseKeys(); };
 
-  // 綁定實體鍵鼠。抽成函式是因為【子母畫面】會把 #stage 搬進獨立視窗,那邊的
-  // 事件不會冒泡到本頁的 document,不重新綁一次就完全不能操作。
-  // 同一組 held/overVideo 狀態兩邊共用 —— 滑鼠只會在其中一個視窗裡,不會打架。
+  // 綁定實體鍵鼠。抽成函式只是為了把這一整組事件圈在一起看得清楚。
   function bindDesk(doc, win){
     doc.addEventListener("mousemove", e => {
       if(!active()){ setOver(false); return; }
@@ -2583,7 +2579,6 @@ if(!IS_TOUCH){
       e.preventDefault(); if(held.has(t)){ held.delete(t); send({t:"ku",k:t}); } });
   }
   bindDesk(document, window);
-  window.__bindDeskTo = bindDesk;   // 子母畫面開啟時對新視窗再綁一次
   setTimeout(()=>{ if(connected()) $("#deskhint").classList.add("show"); }, 800);
 }
 
