@@ -65,10 +65,14 @@ new BrowserWindow({
   transparent: true, frame: false, alwaysOnTop: true, resizable: true,
   webPreferences: { contextIsolation: true, nodeIntegration: false, preload }
 })
-win.setAlwaysOnTop(true, "screen-saver")
+win.setAlwaysOnTop(true, "floating")
 ```
 
-`"screen-saver"` level 是必要的 —— 一般 level 蓋不過全螢幕遊戲與其他置頂視窗。
+**level 用 `"floating"`，不是 `"screen-saver"`。** 曾考慮用最高階以蓋過全螢幕遊戲，
+但**遊戲跑在伺服器那台**，操控端上沒有全螢幕遊戲要蓋 —— 這裡只需要浮在使用者的
+編輯器/瀏覽器之上。`"screen-saver"` 會連系統通知一起蓋掉，太霸道。
+保留成設定選項（`topLevel: "floating" | "screen-saver"`），給「客戶端與遊戲同一台」
+的情況用。
 
 **半透明不用 `setOpacity()`**：那個 API 只支援 Windows 與 macOS。改由 preload
 注入 CSS 設定 `html { opacity: <值> }`，搭配 `transparent: true` 讓視窗背景真的
@@ -146,7 +150,8 @@ Ubuntu 22.04 之後預設 Wayland，而本設計的視窗無邊框、沒有標�
 
 **保留**掩護畫面（`#camo`）：它是網頁功能，跟客戶端無關，使用者要求當加值功能留著。
 但觸發點改成手動 —— 原本是「開浮動視窗時自動開啟」，浮動視窗移出伺服器後那個
-掛鉤不存在了。在快捷列與漢堡選單各放一顆開關。
+掛鉤不存在了。在快捷列與漢堡選單各放一顆開關，狀態存 localStorage 下次沿用
+（開著掩護時重新載入頁面應該還是掩護，否則偽裝會在最需要的時候破功）。
 
 ## 測試
 
