@@ -840,6 +840,39 @@ def rune_collect_once(token: str = Query(""), i: int = Query(0)):
     return JSONResponse(rune_collect.capture_once(i))
 
 
+@app.post("/fiona/start")
+def fiona_start(token: str = Query(""), save_bands: int = Query(1)):
+    """啟動菲歐娜解謎的【觀察模式】—— 只記錄「我會選哪個」,不點擊、不按鍵。
+
+    為什麼先不接點擊:單輪正確率目前 11/12(91.7%),12 輪的 95% 信賴區間是
+    [64.6%, 98.5%],寬到無法判斷能不能用;而一場 4 輪錯一輪就受懲罰。先累積
+    對照資料(真值來自遊戲自己畫的計分格),數字夠了再談下注。
+
+    save_bands=0 可省磁碟,但之後就無法拿原始資料重跑改進後的追蹤器。
+    """
+    _check_owner(token)
+    import fiona_live
+    return JSONResponse(fiona_live.start(save_bands=bool(save_bands)))
+
+
+@app.post("/fiona/stop")
+def fiona_stop(token: str = Query("")):
+    """停止觀察。已累積的資料留著,不會清掉。"""
+    _check_owner(token)
+    import fiona_live
+    return JSONResponse(fiona_live.stop())
+
+
+@app.get("/fiona/status")
+def fiona_status(token: str = Query("")):
+    """即時狀態 + 本次啟動後的統計 + 最近幾輪的預測/真值對照。"""
+    _check_owner(token)
+    import fiona_live
+    s = fiona_live.status()
+    s["summary"] = fiona_live.summary()      # 跨啟停的累計(掃採集目錄)
+    return JSONResponse(s)
+
+
 @app.post("/rune/warmup")
 def rune_warmup(token: str = Query("")):
     """預熱 claude worker(第一次 ~6s,之後每次辨識降到 2.5~4.8s)。"""
