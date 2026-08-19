@@ -318,10 +318,28 @@ async def tunnel_guard(request: Request, call_next):
 _NO_CACHE = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
 
 
+# 新版前端(React,原始碼在 webapp/,建置產物在 web/dist/)。舊版單檔 index.html
+# 保留在 /legacy —— 新版還沒補齊的功能可以先回去用,不必一次切死。
+_DIST_ASSETS = os.path.join(WEB, "dist", "assets")
+if os.path.isdir(_DIST_ASSETS):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/assets", StaticFiles(directory=_DIST_ASSETS), name="assets")
+
+
 @app.get("/")
 def index(request: Request):
-    page = "guest.html" if _untrusted(request.headers, request.client) else "index.html"
-    return FileResponse(os.path.join(WEB, page), headers=_NO_CACHE)
+    if _untrusted(request.headers, request.client):
+        return FileResponse(os.path.join(WEB, "guest.html"), headers=_NO_CACHE)
+    dist = os.path.join(WEB, "dist", "index.html")
+    if os.path.exists(dist):
+        return FileResponse(dist, headers=_NO_CACHE)
+    return FileResponse(os.path.join(WEB, "index.html"), headers=_NO_CACHE)
+
+
+@app.get("/legacy")
+def index_legacy():
+    """舊版單檔介面(2600 行 index.html)。新版缺的功能先用這個。"""
+    return FileResponse(os.path.join(WEB, "index.html"), headers=_NO_CACHE)
 
 
 @app.get("/guest")

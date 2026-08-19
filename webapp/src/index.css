@@ -1,0 +1,121 @@
+/* ══════════════════════════════════════════════════════════════════
+   設計系統 — CyberDeck / Steam Deck 風
+   ──────────────────────────────────────────────────────────────────
+   舊版是 2600 行單檔、CSS 全靠覆寫堆疊,結果同一個選擇器有三四處規則
+   互相打架(實際踩過:三個 @media(min-width:900px) 彼此覆蓋,面板黏在角落)。
+   這裡改成【只有一份 token + 一套元件樣式】,不再有覆寫層。
+   ══════════════════════════════════════════════════════════════════ */
+:root {
+  --bg: #0f111a;
+  --stream-bg: #05060a;
+  --panel: #1e2233;
+  --card: rgba(255, 255, 255, 0.03);
+  --card-solid: #171a27;
+  --line: rgba(255, 255, 255, 0.08);
+  --primary: #00f2ad;
+  --orange: #ff8c00;
+  --danger: #ff4d4d;
+  --text: #e6e8ee;
+  --dim: #8b93a7;
+  --radius: 16px;
+  --nav-w: 168px;
+  --hud-h: 58px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body, #root { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Rajdhani', 'Chakra Petch', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+
+/* 細捲軸 */
+.scroll { overflow-y: auto; scrollbar-width: thin; }
+.scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.scroll::-webkit-scrollbar-track { background: rgba(0, 0, 0, 0.2); }
+.scroll::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 99px; }
+.scroll::-webkit-scrollbar-thumb:hover { background: rgba(0, 242, 173, 0.4); }
+
+/* ── 元件:卡片 ───────────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  break-inside: avoid;
+}
+.card-h {
+  display: flex; align-items: center; gap: 9px;
+  font-size: 11px; font-weight: 800; letter-spacing: 1.6px; text-transform: uppercase;
+  color: var(--dim); margin-bottom: 10px;
+}
+.card-h::before { content: ''; width: 3px; height: 13px; border-radius: 2px; background: var(--primary); }
+.card-h .sp { flex: 1; }
+
+/* ── 元件:按鈕 ───────────────────────────────────────────────── */
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  padding: 12px 14px; border-radius: 13px; font-size: 13.5px; font-weight: 700;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); color: var(--text);
+  transition: transform .12s, background .18s, box-shadow .18s;
+  min-height: 44px;   /* 手機可觸控的最小尺寸 */
+}
+.btn:hover { background: rgba(255, 255, 255, 0.12); }
+.btn:active { transform: scale(.97); }
+.btn.on, .btn.primary { background: var(--primary); color: #0f111a; border-color: transparent;
+                        box-shadow: 0 4px 16px rgba(0, 242, 173, .22); }
+.btn.danger { background: rgba(255, 77, 77, .16); color: #ff8f8f; border-color: rgba(255, 77, 77, .35); }
+.btn.danger:hover { background: rgba(255, 77, 77, .26); }
+.btn.warn { background: rgba(255, 140, 0, .16); color: #ffb45c; border-color: rgba(255, 140, 0, .35); }
+.btn.sm { padding: 8px 11px; font-size: 12px; min-height: 36px; border-radius: 10px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.row { display: flex; gap: 9px; }
+.row > * { flex: 1; min-width: 0; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+
+/* ── 元件:狀態數值 ───────────────────────────────────────────── */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; }
+.stat { background: rgba(0, 0, 0, .28); border: 1px solid var(--line); border-radius: 14px; padding: 11px 13px; }
+.stat label { display: block; font-size: 9.5px; letter-spacing: 1.6px; text-transform: uppercase;
+              color: var(--dim); margin-bottom: 5px; }
+.stat .v { font-size: 20px; font-weight: 800; color: var(--primary); line-height: 1.15;
+           font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat.warn .v { color: var(--orange); }
+.stat.off .v { color: var(--dim); }
+
+/* ── 元件:開關 / 欄位 ────────────────────────────────────────── */
+.toggle {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  background: rgba(0, 0, 0, .28); border: 1px solid var(--line); border-radius: 13px;
+  padding: 11px 13px; font-size: 13.5px; min-height: 44px;
+}
+.toggle:hover { background: rgba(255, 255, 255, .05); }
+.toggle input { width: 19px; height: 19px; accent-color: var(--primary); flex: 0 0 auto; }
+.toggle .sub { font-size: 11px; color: var(--dim); }
+
+.field { display: flex; align-items: center; gap: 9px; margin: 7px 0; font-size: 13px; }
+.field > label { color: var(--dim); flex: 1; }
+.field input, .field select, input.inp, select.inp {
+  background: rgba(0, 0, 0, .35); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 11px; color: var(--text); max-width: 100%; min-width: 0;
+}
+.field input:focus, .field select:focus, input.inp:focus, select.inp:focus {
+  outline: none; border-color: var(--primary); box-shadow: 0 0 0 2px rgba(0, 242, 173, .15);
+}
+
+.hint { font-size: 11.5px; line-height: 1.6; color: var(--dim); }
+.note { font-size: 11.5px; line-height: 1.6; color: var(--dim);
+        background: rgba(0, 242, 173, .06); border-left: 2px solid rgba(0, 242, 173, .35);
+        border-radius: 0 10px 10px 0; padding: 9px 11px; margin: 8px 0; }
+.msg { font-size: 12px; color: var(--dim); margin-top: 7px; min-height: 1em; }
+.mono { font-variant-numeric: tabular-nums; }
