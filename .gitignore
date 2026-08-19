@@ -95,3 +95,16 @@ client_pkg/
 # 不進版控:啟動腳本與 owner token(拿到它+遠端網址就能完全控制這台機器)
 start.bat
 local-token.txt
+
+# 菲歐娜解謎的觀察模式採集(原始帶序列),與 rune_collect/ 同樣不進版控
+fiona_collect/
+
+# 新版前端(React/Vite)
+webapp/node_modules/
+# vite 建置產物,由 webapp 執行 npm run build 重建(server/main.py 找不到時退回 web/index.html)
+web/dist/
+# tsc 增量編譯快取
+webapp/tsconfig.tsbuildinfo
+
+# Claude Code 的本機設定與 worktree 工作區
+.claude/
