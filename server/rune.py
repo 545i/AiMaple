@@ -209,6 +209,10 @@ ROTATE_BOX_JITTER = 12                 # 判定「框位置穩定」的最大位
 WHEEL_CAPTURE_SECS = 3.0               # 全速連拍時長:週期約 0.9s,涵蓋約 3 圈
 WHEEL_POLL_GAP = 0.01                  # 連拍輪詢間隔上限,避免忙等(見 _solve_wheel)
 WHEEL_MIN_FRAMES = 10                  # 連拍樣本數低於此,直接判定旋轉路徑失敗
+WHEEL_BOX_FRAMES = 5                   # 判到解放輪後,拿幾幀去定位那 4 支箭頭的框
+WHEEL_BOX_GAP = 0.05                   # 上述幾幀之間的間隔(要換到不同動畫相位)
+WHEEL_BOX_MIN_HITS = 2                 # 上述幾幀裡至少要有幾幀選得出 4 支才算定位成功
+                                       # (要 >=2 才算得出「框穩不穩」;見 _wheel_boxes)
 WHEEL_BOX_PAD = 8                      # 四支箭頭聯集裁切框往外擴一點,避免箭頭尖端貼邊被切
 
 # ---------- 2 線後端 ----------
@@ -861,12 +865,21 @@ def _rotating_signal(frames):
         boxes_hist.append(b)
     if len(boxes_hist) < 2:
         return False, None
+    avg = _stable_avg_boxes(boxes_hist)
+    return (True, avg) if avg else (False, None)
+
+
+def _stable_avg_boxes(boxes_hist):
+    """幾幀各自的 4 支箭頭框 → 一組平均框(依 x 由左到右)。框在抖就回 None。
+
+    平均是為了降雜訊;「抖」的定義是任一支的中心點在幀間位移超過
+    ROTATE_BOX_JITTER —— 箭頭原地旋轉不會位移,會位移就代表定位跟著雜訊亂跳,
+    那組框拿去裁切只會裁到別的東西。"""
     for k in range(4):
         cxs = [(b[k][0] + b[k][2]) / 2.0 for b in boxes_hist]
         cys = [(b[k][1] + b[k][3]) / 2.0 for b in boxes_hist]
         if max(cxs) - min(cxs) > ROTATE_BOX_JITTER or max(cys) - min(cys) > ROTATE_BOX_JITTER:
-            return False, None
-    # 用歷史框的平均當代表框(降一點雜訊),四支依 x 由左到右排序回傳。
+            return None
     avg_boxes = []
     for k in range(4):
         x0 = sum(b[k][0] for b in boxes_hist) / len(boxes_hist)
@@ -875,7 +888,7 @@ def _rotating_signal(frames):
         y1 = sum(b[k][3] for b in boxes_hist) / len(boxes_hist)
         avg_boxes.append((x0, y0, x1, y1))
     avg_boxes.sort(key=lambda b: b[0])
-    return True, avg_boxes
+    return avg_boxes
 
 
 def _solve_wheel(boxes4):
@@ -923,8 +936,62 @@ def _solve_wheel(boxes4):
     return dirs, ""
 
 
+def _wheel_boxes(frames):
+    """解放輪專用的箭頭定位:回 4 支的平均框,定位不到回 None。
+
+    【與 _rotating_signal 的差別:允許部分幀失敗】那個函式是用來【判斷是不是
+    旋轉款】的,所以「任一幀選不滿 4 支」本身就是「不是旋轉款」的證據,要求全中
+    才合理。這裡旋轉款已經由橫幅判定完畢,剩下的只是定位 —— 而實機畫面會有怪物、
+    傷害數字、玩家名牌壓在箭頭上,個別幀選不滿是常態:2026-08-19 21:24 那張
+    (女皇之路,箭頭正好疊在一排怪物與 MISS 字樣上)detr 與 find_capsule 兩邊
+    都定位不到。要求全中會讓忙碌畫面永遠進不了連拍。
+    實測(300 張真實解放輪):單幀選得出 4 支的比例 297/300 = 99.0%。
+
+    【為什麼不退回 rune_cv.find_capsule + slots 當備援】試過,不能用:膠囊四等分
+    的格子有 82px 寬而箭頭只有 28px,rune_wheel.angle_of 在那麼寬的裁切裡讀到的
+    紅心/綠心會混進隔壁箭頭與膠囊描邊。實測 50 張、196 支:兩種框都讀得到角度的
+    只有 23 支,而且角度差中位數 99.7°(等於完全不同的東西)。定位必須是緊框。
+    """
+    import rune_detr
+    if not rune_detr.available():
+        return None
+    hits = []
+    for f in frames:
+        try:
+            b = rune_detr.detect_arrows(f)
+        except Exception:
+            continue
+        if b is not None and len(b) == 4:
+            hits.append(b)
+    if len(hits) < WHEEL_BOX_MIN_HITS:
+        return None
+    return _stable_avg_boxes(hits)
+
+
+def _wheel_path(frame):
+    """已由橫幅判定是解放輪:定位 4 支箭頭 → 全速連拍 3 秒 → rune_wheel 判向。
+    回 (dirs, err)。
+
+    先定位再連拍,而不是連拍完再定位:框都框不出來就沒有東西可以裁切,早點失敗
+    比白白連拍 3 秒再失敗省時間(謎題窗只有 10~14 秒)。
+    """
+    import minimap
+    frames = [frame]
+    for _ in range(WHEEL_BOX_FRAMES - 1):
+        time.sleep(WHEEL_BOX_GAP)
+        f = minimap._grab_window()
+        if f is not None:
+            frames.append(f)
+    boxes4 = _wheel_boxes(frames)
+    if not boxes4:
+        _stat("wheel_no_boxes")
+        return [], f"解放輪:{len(frames)} 幀裡定位不到穩定的 4 支箭頭(箭頭被怪物/名牌擋住?)"
+    return _solve_wheel(boxes4)
+
+
 def _detect():
-    """抓幀 → 1 線 CV(最多 5 幀、要兩幀一致),失敗才退 2 線 claude。回 (dirs, err, 毫秒)。
+    """抓幀 → 解放輪判別(判到就走 3 秒連拍)→ 否則 1 線 CV(最多 5 幀、要兩幀一致),
+    失敗才退 2 線 claude。回 (dirs, err, 毫秒)。
 
     【為什麼現在可以「失敗後銜接」】先前的設計是啟動時擇一,理由是延遲會疊加 ——
     第一個後端逾時 13s 之後再跑第二個,10~14 秒的謎題窗早就關了。現在 1 線是純 CV,
@@ -941,7 +1008,41 @@ def _detect():
     line, cv_err = "", ""
     dirs = []
     _last["cv_tries"] = 0          # 1 線關掉時要歸零,否則狀態頁一直掛著上一輪的次數
-    if _line_cv:
+
+    # ---- 解放輪(旋轉款)要【搶在 1 線之前】判別 ----
+    # 【為什麼不能等 1 線失敗再問】原本只有下面那個 rotating 分支,而它的前提是
+    # 「1 線讀不出一致答案」。但旋轉的箭頭每 CV_GAP(0.12s)轉約 48°,判向只有 90°
+    # 一格,五幀裡有兩幀落在同一格是常態 —— 1 線會【自信地給出錯答案】而根本不進
+    # 那個分支,3 秒連拍永遠不會發生。實測 2026-08-19 21:24 的解放輪:cv_tries=3
+    # 就收工,697ms 按下去,錯;整段 21 輪的 by_line 裡一次 wheel 都沒有。
+    # 改成先用遊戲自己畫的「解放輪」橫幅判別(rune_wheel.looks_like_wheel,
+    # 真實樣本 260/385 張驗收:99.6% 判到、0 誤判),判到就直接走旋轉路徑。
+    _last["wheel_score"] = None
+    _last["wheel"] = ""
+    if WHEEL_ENABLED:
+        import rune_wheel
+        is_wheel, wscore = rune_wheel.looks_like_wheel(frame)
+        _last["wheel_score"] = round(wscore, 3)
+        if is_wheel:
+            wdirs, werr = _wheel_path(frame)
+            if wdirs:
+                dirs, line = wdirs, "wheel"
+                _detect_frame = frame
+                _last["wheel"] = "ok"
+            else:
+                # 【判到是解放輪但旋轉路徑失敗時,不退回 1/2 線】兩條線讀的都是
+                # 「單一瞬間箭頭指哪」,對持續旋轉的箭頭那個值沒有意義 —— 退線等於
+                # 拿 1/256 的機率去賭,賭輸還要賠上符文冷卻。這一輪直接判失敗,
+                # 讓上層重試(重試會重新連拍 3 秒),比按下去便宜。
+                _stat("wheel_fail")
+                _last["wheel"] = werr
+                ms = int((time.perf_counter() - t0) * 1000)
+                _last.update({"ts": time.time(), "dirs": [], "err": werr,
+                              "ms": ms, "line": "wheel"})
+                _stats["by_line"]["wheel"] = _stats["by_line"].get("wheel", 0) + 1
+                return [], werr, ms
+
+    if not dirs and _line_cv:
         dirs, cv_err, tried, hit_frame, rotating, wheel_boxes = _cv_read(frame)
         _last["cv_tries"] = tried
         if dirs:

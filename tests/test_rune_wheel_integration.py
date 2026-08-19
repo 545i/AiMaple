@@ -286,3 +286,172 @@ def test_detect_ignores_wheel_when_kill_switch_off(monkeypatch):
     dirs, err, ms = rune._detect()
     assert dirs == []
     assert "2 線未開啟,無法退線" in err
+
+
+# ---------- 橫幅判到解放輪時的優先路徑(2026-08-19 的實機失敗) ----------
+# 【這組測試在守什麼】原本旋轉分支的前提是「1 線讀不出一致答案」,但旋轉的箭頭
+# 每 0.12 秒轉約 48°、判向只有 90° 一格,五幀撞到同一格是常態 —— 1 線會自信地
+# 給出錯答案,3 秒連拍永遠不會執行(實機 21 輪的 by_line 裡一次 wheel 都沒有)。
+# 所以判別必須搶在 1 線之前,而且判到之後不准退回 1/2 線。
+def _wheel_frame(monkeypatch, is_wheel, score=0.9):
+    import rune_wheel
+    monkeypatch.setattr(rune_wheel, "looks_like_wheel", lambda f: (is_wheel, score))
+
+
+def test_detect_takes_wheel_path_before_cv_when_title_matches(monkeypatch):
+    """判到「解放輪」橫幅 → 直接走旋轉路徑,連 _cv_read 都不該被呼叫。"""
+    frame = _dummy_frame()
+    monkeypatch.setattr(rune, "_grab_frame", lambda: (frame, True, ""))
+    _wheel_frame(monkeypatch, True)
+    monkeypatch.setattr(rune, "_wheel_path", lambda f: (["up", "left", "down", "right"], ""))
+
+    def _boom(f):
+        raise AssertionError("判到解放輪時不該先讓 1 線靜態判向亂猜")
+    monkeypatch.setattr(rune, "_cv_read", _boom)
+
+    dirs, err, ms = rune._detect()
+
+    assert dirs == ["up", "left", "down", "right"]
+    assert err == ""
+    assert rune._last["line"] == "wheel"
+    assert rune._last["wheel"] == "ok"
+    assert rune._last["wheel_score"] == 0.9
+
+
+def test_detect_does_not_fall_back_to_static_lines_when_wheel_path_fails(monkeypatch):
+    """判到是解放輪但旋轉路徑失敗 —— 【不准】退回 1/2 線。兩條線讀的都是單一
+    瞬間的箭頭指向,對持續旋轉的箭頭沒有意義,按下去等於拿 1/256 賭符文冷卻。"""
+    frame = _dummy_frame()
+    monkeypatch.setattr(rune, "_grab_frame", lambda: (frame, True, ""))
+    _wheel_frame(monkeypatch, True)
+    monkeypatch.setattr(rune, "_wheel_path", lambda f: ([], "旋轉路徑判不出方向"))
+
+    def _boom_cv(f):
+        raise AssertionError("解放輪失敗時不該退回 1 線")
+    def _boom_crop(f):
+        raise AssertionError("解放輪失敗時不該退回 2 線")
+    monkeypatch.setattr(rune, "_cv_read", _boom_cv)
+    monkeypatch.setattr(rune, "_write_crop", _boom_crop)
+
+    dirs, err, ms = rune._detect()
+
+    assert dirs == []
+    assert err == "旋轉路徑判不出方向"
+    assert rune._last["line"] == "wheel"
+
+
+def test_detect_keeps_static_path_when_title_does_not_match(monkeypatch):
+    """沒有橫幅(舊款符文)→ 完全走原本的靜態路徑,新程式碼不得插手。"""
+    frame = _dummy_frame()
+    monkeypatch.setattr(rune, "_grab_frame", lambda: (frame, True, ""))
+    _wheel_frame(monkeypatch, False, score=0.21)
+    monkeypatch.setattr(
+        rune, "_cv_read",
+        lambda f: (["up", "down", "left", "right"], "", 2, frame, False, None))
+
+    def _boom(f):
+        raise AssertionError("沒判到橫幅時不該走旋轉路徑")
+    monkeypatch.setattr(rune, "_wheel_path", _boom)
+
+    dirs, err, ms = rune._detect()
+
+    assert dirs == ["up", "down", "left", "right"]
+    assert rune._last["line"] == "cv"
+    assert rune._last["wheel_score"] == 0.21
+
+
+def test_detect_skips_title_check_when_kill_switch_off(monkeypatch):
+    """MAPLE_RUNE_WHEEL=0 時連判別都不做,行為與加這段之前一致。"""
+    monkeypatch.setattr(rune, "WHEEL_ENABLED", False)
+    frame = _dummy_frame()
+    monkeypatch.setattr(rune, "_grab_frame", lambda: (frame, True, ""))
+
+    import rune_wheel
+    def _boom(f):
+        raise AssertionError("關閉開關時不該做橫幅判別")
+    monkeypatch.setattr(rune_wheel, "looks_like_wheel", _boom)
+    monkeypatch.setattr(
+        rune, "_cv_read",
+        lambda f: (["up", "down", "left", "right"], "", 2, frame, False, None))
+
+    dirs, err, ms = rune._detect()
+    assert dirs == ["up", "down", "left", "right"]
+    assert rune._last["line"] == "cv"
+
+
+def test_wheel_path_reports_failure_when_arrows_not_located(monkeypatch):
+    """_wheel_path:定位不到穩定的 4 支箭頭時,要在連拍 3 秒【之前】就失敗。"""
+    import minimap
+    frame = _dummy_frame()
+    monkeypatch.setattr(minimap, "_grab_window", lambda: frame)
+    monkeypatch.setattr(rune, "WHEEL_BOX_GAP", 0.0)
+    monkeypatch.setattr(rune, "_wheel_boxes", lambda frames: None)
+
+    def _boom(boxes4):
+        raise AssertionError("定位失敗就不該進入 3 秒連拍")
+    monkeypatch.setattr(rune, "_solve_wheel", _boom)
+
+    dirs, err = rune._wheel_path(frame)
+    assert dirs == []
+    assert "定位不到穩定的 4 支箭頭" in err
+
+
+def test_wheel_path_passes_averaged_boxes_to_solver(monkeypatch):
+    """定位成功時,_rotating_signal 產生的平均框要原封不動交給 _solve_wheel,
+    而且用來定位的幀數要是 WHEEL_BOX_FRAMES(單幀給不出穩定度)。"""
+    import minimap
+    frame = _dummy_frame()
+    seen = {}
+    monkeypatch.setattr(minimap, "_grab_window", lambda: frame)
+    monkeypatch.setattr(rune, "WHEEL_BOX_GAP", 0.0)
+    boxes = [(1.0, 2.0, 3.0, 4.0)] * 4
+
+    def _boxes(frames):
+        seen["n"] = len(frames)
+        return boxes
+    monkeypatch.setattr(rune, "_wheel_boxes", _boxes)
+    monkeypatch.setattr(rune, "_solve_wheel",
+                        lambda b: (["down", "down", "up", "up"], "") if b is boxes else ([], "框不對"))
+
+    dirs, err = rune._wheel_path(frame)
+    assert dirs == ["down", "down", "up", "up"]
+    assert err == ""
+    assert seen["n"] == rune.WHEEL_BOX_FRAMES
+
+
+def test_wheel_boxes_tolerates_frames_where_detection_misses(monkeypatch):
+    """定位允許部分幀失敗:實機畫面會有怪物/傷害數字/名牌壓在箭頭上,要求每幀都
+    選得出 4 支會讓忙碌畫面永遠進不了連拍(2026-08-19 21:24 那張就是這樣)。
+    只要有 WHEEL_BOX_MIN_HITS 幀選得出來就該定位成功。"""
+    import rune_detr
+    monkeypatch.setattr(rune_detr, "available", lambda: True)
+    good = [(10.0, 10.0, 20.0, 20.0), (30.0, 10.0, 40.0, 20.0),
+            (50.0, 10.0, 60.0, 20.0), (70.0, 10.0, 80.0, 20.0)]
+    seq = [None, good, None, good, None]          # 5 幀只有 2 幀選得出 4 支
+    it = iter(seq)
+    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+
+    boxes = rune._wheel_boxes([_dummy_frame()] * 5)
+    assert boxes == good
+
+
+def test_wheel_boxes_needs_at_least_two_hits(monkeypatch):
+    """只有一幀選得出來就算不出「框穩不穩」,寧可失敗也不要拿沒驗證過的框去裁切。"""
+    import rune_detr
+    monkeypatch.setattr(rune_detr, "available", lambda: True)
+    good = [(10.0, 10.0, 20.0, 20.0)] * 4
+    seq = [None, good, None]
+    it = iter(seq)
+    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+    assert rune._wheel_boxes([_dummy_frame()] * 3) is None
+
+
+def test_wheel_boxes_rejects_jittering_boxes(monkeypatch):
+    """框在幀間亂跳 = 定位跟著雜訊走,拿去裁切只會裁到別的東西 —— 要回 None。"""
+    import rune_detr
+    monkeypatch.setattr(rune_detr, "available", lambda: True)
+    a = [(10.0, 10.0, 20.0, 20.0)] * 4
+    b = [(10.0 + rune.ROTATE_BOX_JITTER * 3, 10.0, 20.0, 20.0)] * 4
+    it = iter([a, b])
+    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+    assert rune._wheel_boxes([_dummy_frame()] * 2) is None

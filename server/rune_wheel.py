@@ -32,6 +32,7 @@ HSV 遮罩必須含黃色(使用者已踩過的坑)
 紅/綠重心對應到形狀完全不同的兩個小 blob,方向會整個算錯。
 """
 import math
+import os
 
 import cv2
 import numpy as np
@@ -331,3 +332,61 @@ def solve(frames, boxes4):
         per_arrow_angles.append(angs)
 
     return solve_from_angles(per_arrow_angles, frame_idxs)
+
+
+# ---------- 「這是不是解放輪」判別 ----------
+# 【為什麼需要這個】舊符文與解放輪【同時存在】(2026-08-19 實測:21:08 解掉的是舊款
+# 「要想解放符文,請按順序輸入方向鍵。」,21:24 遇到的是解放輪「找尋箭頭晃動的方向
+# 並依序輸入方向鍵。」),而且兩者的膠囊、觸發鍵、紫標驗證全部一樣,只有箭頭會不會
+# 轉不一樣。分不出來的代價很實際:解放輪被當成舊款讀,靜態判向讀到的只是「箭頭轉到
+# 那一瞬間剛好指哪」,按下去必錯。
+#
+# 【為什麼不用「CV 多幀讀不出一致答案」當判別】那是 rune.py::_rotating_signal 原本的
+# 做法,只在 1 線失敗的分支才會被問到 —— 但旋轉的箭頭每 0.12 秒轉約 48°,而判向只有
+# 90° 一格,五幀裡撞到同一格是常態,1 線因此會【自信地給出錯答案】而根本不進那個分支。
+# 實測 2026-08-19 21:24:cv_tries=3 就「兩幀一致」收工,697ms 按下去,錯。
+#
+# 【為什麼用遊戲自己畫的標題橫幅】解放輪在畫面上緣正中央有「解放輪」橫幅,舊款沒有。
+# 這是遊戲自己給的、與我方推論無關的訊號,比任何從畫面反推的啟發式都硬。
+# 驗收(真實樣本,模板取自另外 40 張、與評估樣本不重疊):
+#   解放輪 260 張(rune_collect/*/full.png):259/260 判到(99.6%)
+#   舊符文 385 張(rune_dataset/*.png,全部是紫標消失驗證過的):0/385 誤判
+#   分數分布 解放輪 p1=0.567 / 舊符文 max=0.420 → 門檻取 0.50,兩邊都有餘裕
+TITLE_TPL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rune_wheel_title.png")
+TITLE_MIN_SCORE = 0.50
+_title_tpl = None
+_title_tpl_loaded = False
+
+
+def _load_title_tpl():
+    global _title_tpl, _title_tpl_loaded
+    if not _title_tpl_loaded:
+        _title_tpl_loaded = True
+        _title_tpl = cv2.imread(TITLE_TPL)
+        if _title_tpl is None:
+            print(f"[rune_wheel] 找不到 {TITLE_TPL},無法判別解放輪,一律當成舊款符文")
+    return _title_tpl
+
+
+def title_score(frame_bgr):
+    """畫面上緣「解放輪」橫幅的比對分數(TM_CCOEFF_NORMED 最大值)。
+
+    只在 rune_cv.search_band 的縱向範圍內找 —— 橫幅與膠囊同屬上緣那一層 UI,
+    掃整張只會多引入雜訊。模板缺檔或畫面比模板還小時回 -1.0。
+    """
+    tpl = _load_title_tpl()
+    if tpl is None or frame_bgr is None:
+        return -1.0
+    import rune_cv          # 延遲匯入:本模組只做分析,不該在載入期綁住 rune_cv
+    h = frame_bgr.shape[0]
+    y0, y1 = rune_cv.search_band(h)
+    band = frame_bgr[y0:y1]
+    if band.shape[0] < tpl.shape[0] or band.shape[1] < tpl.shape[1]:
+        return -1.0
+    return float(cv2.matchTemplate(band, tpl, cv2.TM_CCOEFF_NORMED).max())
+
+
+def looks_like_wheel(frame_bgr):
+    """這一幀是不是解放輪(旋轉款)?回 (bool, 分數)。"""
+    s = title_score(frame_bgr)
+    return s >= TITLE_MIN_SCORE, s

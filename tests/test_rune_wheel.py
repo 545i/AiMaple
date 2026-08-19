@@ -173,3 +173,58 @@ def test_circular_r_separates_static_from_rotating():
     rotating_r = rw._circular_r([(-13.0 * i) % 360.0 for i in range(n)])
     assert static_r >= rw.STATIC_R_MIN
     assert rotating_r < rw.STATIC_R_MIN
+
+
+# ---------- 「這是不是解放輪」判別(真實影像) ----------
+# 【期望值的來源】人工目視確認過的畫面內容:
+#   wheel  = 畫面上緣有「解放輪」橫幅、提示文字是「找尋箭頭晃動的方向並依序輸入方向鍵。」
+#            (wheel0 就是 2026-08-19 21:24 那次判錯的實機畫面)
+#   static = 舊款符文,提示文字是「要想解放符文,請按順序輸入方向鍵。」,沒有橫幅
+#            (static0 是同一天 21:08 靠靜態判向解掉、紫標消失驗證過的那顆)
+# 存的是橫幅四周 80x300 的裁切(整幀 1368x800 存 8 張會有數 MB),
+# looks_like_wheel 對小圖不分層(rune_cv.search_band 的行為),整張都會找。
+import os
+
+import cv2
+import numpy as np
+import pytest
+
+REF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "rune_wheel_title_ref.npz")
+
+
+@pytest.fixture(scope="module")
+def title_ref():
+    if not os.path.exists(REF):
+        pytest.skip("缺 tests/rune_wheel_title_ref.npz")
+    d = np.load(REF)
+    return {k[4:]: cv2.imdecode(d[k], cv2.IMREAD_COLOR) for k in d.files}
+
+
+@pytest.mark.parametrize("key", ["wheel0", "wheel1", "wheel2", "wheel3"])
+def test_looks_like_wheel_true_on_real_wheel_frames(title_ref, key):
+    ok, score = rw.looks_like_wheel(title_ref[key])
+    assert ok, f"{key} 分數只有 {score:.3f}(門檻 {rw.TITLE_MIN_SCORE})"
+
+
+@pytest.mark.parametrize("key", ["static0", "static1", "static2", "static3"])
+def test_looks_like_wheel_false_on_real_old_rune_frames(title_ref, key):
+    ok, score = rw.looks_like_wheel(title_ref[key])
+    assert not ok, f"{key} 被誤判成解放輪(分數 {score:.3f})"
+
+
+def test_title_score_margin_is_not_marginal(title_ref):
+    """兩類的分數要真的分得開,不是靠門檻剛好卡在中間。
+
+    全量驗收(不在測試裡跑,素材不進版控):解放輪 260 張 held-out 最低 0.324、
+    p1=0.567;舊符文 364 張(高度夠、含得下橫幅的)最高 0.420。這裡守的是
+    「手上這 8 張的最差情況仍有明顯間隔」,門檻若被改到夾在中間就會紅。"""
+    wheel = [rw.title_score(title_ref[k]) for k in ("wheel0", "wheel1", "wheel2", "wheel3")]
+    static = [rw.title_score(title_ref[k]) for k in ("static0", "static1", "static2", "static3")]
+    assert min(wheel) - max(static) > 0.3
+    assert max(static) < rw.TITLE_MIN_SCORE < min(wheel)
+
+
+def test_title_score_returns_minus_one_on_tiny_image():
+    """比模板還小的圖(單元測試常用的 dummy frame)不能讓 matchTemplate 拋例外。"""
+    assert rw.title_score(np.zeros((10, 10, 3), dtype=np.uint8)) == -1.0
+    assert rw.looks_like_wheel(None) == (False, -1.0)
