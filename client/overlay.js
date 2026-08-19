@@ -42,7 +42,20 @@ function mount(doc, api, cfg) {
   ["mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup"]
     .forEach(t => bar.addEventListener(t, e => e.stopPropagation()));
 
-  bar.appendChild(mk("span", "cursor:move;opacity:.7", "⋮⋮"));
+  // 明確、夠寬的拖曳握把。【不走 mk()】—— mk() 會統一補上 -webkit-app-region:no-drag,
+  // 那正是先前 ⋮⋮ 看得到卻拖不動的原因(整條 bar 是 drag,唯獨這顆被標成 no-drag)。
+  // 這顆刻意保持 drag,並用 padding + align-self:stretch 撐出一塊夠大的抓取區,
+  // 解決「可拖曳區域太少」。
+  const grip = doc.createElement("span");
+  grip.textContent = "⠿⠿";
+  grip.title = "拖曳這裡移動視窗";
+  grip.style.cssText = [
+    "cursor:move", "opacity:.55", "user-select:none", "letter-spacing:1px",
+    "padding:6px 12px", "margin:-6px 4px -6px -3px", "align-self:stretch",
+    "display:flex", "align-items:center", "font-size:15px",
+    "-webkit-app-region:drag",
+  ].join(";");
+  bar.appendChild(grip);
 
   const sl = mk("input", "width:96px");
   sl.type = "range"; sl.min = "15"; sl.max = "100"; sl.step = "1";
@@ -92,9 +105,30 @@ function mount(doc, api, cfg) {
     bar.appendChild(warn);
   }
 
+  // 收合後的重開分頁。【為什麼需要它】原本 ▾ 收起後只靠全域快速鍵(Ctrl/Cmd+Alt+O)
+  // 叫回控制條 —— 但該快速鍵在 Wayland 註冊失敗(見啟動 notices),等於收起後永遠
+  // 叫不回來,控制條就此消失。改成收合時不整條隱藏,而是留一顆一定看得見、一定點得
+  // 到的小分頁重開,徹底擺脫對全域快速鍵的依賴。分頁與控制條同一角落,互斥顯示。
+  const tab = doc.createElement("div");
+  tab.id = "fcTab";
+  tab.textContent = "▸";
+  tab.title = "展開控制條";
+  tab.style.cssText = [
+    "position:fixed", "left:8px", "bottom:8px", "z-index:2147483000",
+    "display:none", "align-items:center", "justify-content:center",
+    "width:26px", "height:26px", "border-radius:9px",
+    "background:rgba(20,20,26,.78)", "border:1px solid rgba(255,255,255,.22)",
+    "color:#cfd3db", "font:15px system-ui,'Microsoft JhengHei',sans-serif",
+    "cursor:pointer", "user-select:none", "-webkit-app-region:no-drag",
+  ].join(";");
+  // 同 bar:攔住冒泡,別讓點分頁變成一次遊戲輸入。
+  ["mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup"]
+    .forEach(t => tab.addEventListener(t, e => e.stopPropagation()));
+  tab.onclick = () => { bar.style.display = "flex"; tab.style.display = "none"; api.setOverlay(true); };
+
   const hide = mk("button", BTN, "▾");
-  hide.title = "收起（Ctrl/Cmd+Alt+O 再打開）";
-  hide.onclick = () => { bar.style.display = "none"; api.setOverlay(false); };
+  hide.title = "收起（點左下的 ▸ 展開）";
+  hide.onclick = () => { bar.style.display = "none"; tab.style.display = "flex"; api.setOverlay(false); };
   bar.appendChild(hide);
 
   const close = mk("button", BTN.replace("#2a2f3a", "#5a2320"), "✕");
@@ -102,7 +136,9 @@ function mount(doc, api, cfg) {
   bar.appendChild(close);
 
   doc.body.appendChild(bar);
-  if (!cfg.overlay) bar.style.display = "none";
+  doc.body.appendChild(tab);
+  // 收合狀態(cfg.overlay=false):藏控制條、露出重開分頁,兩者互斥。
+  if (!cfg.overlay) { bar.style.display = "none"; tab.style.display = "flex"; }
   return bar;
 }
 

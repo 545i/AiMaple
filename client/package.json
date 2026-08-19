@@ -2,6 +2,8 @@
   "name": "maple-float-client",
   "version": "1.0.0",
   "description": "maple 遠端遊玩的浮動客戶端(無邊框半透明置頂)",
+  "homepage": "https://github.com/545i/AiMaple",
+  "author": "545i <noreply@github.com>",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -15,10 +17,10 @@
   },
   "build": {
     "appId": "com.maple.floatclient",
-    "productName": "maple 浮動客戶端",
+    "productName": "maple浮動客戶端",
     "files": ["main.js", "preload.js", "overlay.js", "settings.js", "urlguard.js", "shortcuts.js", "setup.html"],
     "win": { "target": ["portable"] },
     "mac": { "target": ["dmg"], "category": "public.app-category.utilities" },
-    "linux": { "target": ["AppImage", "deb"], "category": "Utility" }
+    "linux": { "target": ["AppImage", "deb"], "category": "Utility", "maintainer": "545i <noreply@github.com>" }
   }
 }

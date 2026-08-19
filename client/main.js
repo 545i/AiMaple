@@ -15,10 +15,15 @@ const { allowNavigation } = require("./urlguard");
 const { nextAlpha, accelerators } = require("./shortcuts");
 
 // Wayland 沒有讓客戶端自己要求置頂的協議,setAlwaysOnTop 會是無效呼叫;X11 才有
-// _NET_WM_STATE_ABOVE。Ubuntu 22.04 之後預設 Wayland,而本視窗無邊框、沒有標題列
-// 可以右鍵手動設定置頂,所以強制走 XWayland 取得 X11 語意。
+// _NET_WM_STATE_ABOVE。理想上強制走 XWayland 取得 X11 語意就能置頂 —— 但實測在
+// 某些 Wayland 工作階段(尤其疊了遠端桌面/軟體渲染時),強制 XWayland 會讓透明無邊框
+// 視窗根本建立不出來(x11_software_bitmap_presenter 取不到視窗 → 畫面全空、看起來
+// 像沒開)。因此改為依工作階段選擇:X11 工作階段仍強制 x11 拿到置頂;Wayland 工作
+// 階段走原生 Wayland,保證視窗看得見(mutter 本身是合成器,透明正常),代價是這種
+// 情況下沒有置頂協議、setAlwaysOnTop 無效。想要置頂請改用 Xorg 工作階段登入。
 if (process.platform === "linux") {
-  app.commandLine.appendSwitch("ozone-platform", "x11");
+  const wayland = process.env.XDG_SESSION_TYPE === "wayland" || !!process.env.WAYLAND_DISPLAY;
+  app.commandLine.appendSwitch("ozone-platform", wayland ? "wayland" : "x11");
 }
 
 const CFG = () => path.join(app.getPath("userData"), "settings.json");
