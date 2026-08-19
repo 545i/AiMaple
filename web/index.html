@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>maple 遠端遊玩</title>
+<!-- 字型走 Google Fonts;離線或被擋時自動落回 system-ui(見 body 的 font-family),
+     不會影響任何功能。 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-tap-highlight-color:transparent; }
   html,body { width:100%; height:100%; overflow:hidden; background:#000; font-family:system-ui,"Microsoft JhengHei",sans-serif; touch-action:none; }
@@ -197,6 +202,208 @@
   .ptrow .ptskill { flex:1 1 auto; min-width:0; padding:6px; border-radius:6px;
                     border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px;
                     cursor:pointer; text-align:left; }
+  /* ══════════════════════════════════════════════════════════════════
+     CyberDeck 主題層(追加覆寫,不動既有佈局規則與任何 DOM id)
+     ──────────────────────────────────────────────────────────────────
+     為什麼是「覆寫」而不是重寫整份 CSS:這份檔案 2600+ 行,佈局規則彼此
+     牽連,而所有 JS 綁定都靠 $("#id")。同名覆寫只換視覺、不碰結構,壞掉
+     的風險最低而且隨時可整段拿掉還原。
+     ══════════════════════════════════════════════════════════════════ */
+  :root{
+    --cd-bg:#0f111a; --cd-panel:#1e2233; --cd-primary:#00f2ad;
+    --cd-orange:#ff8c00; --cd-danger:#ff4d4d; --cd-text:#e6e8ee;
+    --cd-dim:#8b93a7; --cd-line:rgba(255,255,255,.08);
+    --cd-card:rgba(0,0,0,.28);
+  }
+  body{ font-family:"Rajdhani","Chakra Petch",system-ui,-apple-system,"Segoe UI",sans-serif; }
+
+  #dashView{ background:linear-gradient(180deg,#0f111a 0%,#141826 100%); color:var(--cd-text);
+             padding:0; }
+  .dash-card{ max-width:1080px; padding:18px 16px 48px; }
+  .dash-h{ font-size:20px; font-weight:700; letter-spacing:.5px; }
+  .dash-h::before{ content:""; display:inline-block; width:8px; height:8px; border-radius:50%;
+                   background:var(--cd-primary); box-shadow:0 0 10px var(--cd-primary);
+                   margin-right:9px; vertical-align:middle; }
+  .dash-sub{ color:var(--cd-dim); font-size:12px; letter-spacing:.3px; }
+
+  /* ── 導覽:手機橫列、桌機左側直欄 ── */
+  .dtabs{ gap:6px; background:rgba(0,0,0,.25); padding:6px; border-radius:16px;
+          border:1px solid var(--cd-line); }
+  .dtab{ background:transparent; border:none; color:var(--cd-dim); border-radius:12px;
+         padding:11px 4px; font-size:12px; letter-spacing:.4px; transition:all .18s; }
+  .dtab:hover{ color:var(--cd-text); background:rgba(255,255,255,.05); }
+  .dtab.on{ background:var(--cd-primary); color:#0f111a; border-color:transparent;
+            font-weight:800; box-shadow:0 4px 14px rgba(0,242,173,.22); }
+
+  /* ── 可摺疊區塊:把「全部攤平」改成「常用在上、進階收起」 ── */
+  .msec-toggle{ cursor:pointer; user-select:none; transition:color .15s; }
+  .msec-toggle:hover{ color:var(--cd-text); }
+  .msec-toggle .msec-caret{ flex:0 0 auto; font-size:10px; color:var(--cd-dim);
+                            transition:transform .2s; }
+  .msec-toggle.open .msec-caret{ transform:rotate(90deg); color:var(--cd-primary); }
+  .msec-body{ display:none; padding:2px 0 10px; }
+  .msec-body.open{ display:block; animation:secIn .18s ease; }
+  @keyframes secIn{ from{ opacity:0; transform:translateY(-4px); } to{ opacity:1; transform:none; } }
+  /* 主要操作區(第一個區塊標題之前的內容)永遠可見,不收合 */
+  .dpane-primary{ background:var(--cd-card); border:1px solid var(--cd-line);
+                  border-radius:16px; padding:12px; margin-bottom:6px; }
+
+  /* ── 狀態儀表:數字大、單位小,一眼掃完 ── */
+  .stat-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+              gap:10px; margin:8px 0 12px; }
+  .stat-item{ background:var(--cd-card); border:1px solid var(--cd-line);
+              border-radius:14px; padding:11px 13px; }
+  .stat-item label{ display:block; font-size:9.5px; letter-spacing:1.6px;
+                    text-transform:uppercase; color:var(--cd-dim); margin-bottom:5px; }
+  .stat-item .value{ font-size:19px; font-weight:800; color:var(--cd-primary);
+                     font-variant-numeric:tabular-nums; line-height:1.15;
+                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stat-item.warn .value{ color:var(--cd-orange); }
+  .stat-item.off  .value{ color:var(--cd-dim); }
+
+  /* ── 區塊標題:改成有色標記的小標,取代一整排純文字 ── */
+  .msec{ margin:18px 0 8px; font-size:11px; font-weight:800; letter-spacing:1.6px;
+         text-transform:uppercase; color:var(--cd-dim);
+         display:flex; align-items:center; gap:8px; }
+  .msec::before{ content:""; width:3px; height:13px; border-radius:2px;
+                 background:var(--cd-primary); flex:0 0 auto; }
+  .msec::after{ content:""; flex:1; height:1px; background:var(--cd-line); }
+
+  /* ── 狀態列:卡片化,不再是散落的文字行 ── */
+  .mstat{ background:var(--cd-card); border:1px solid var(--cd-line); border-radius:12px;
+          padding:11px 13px; margin:6px 0; font-size:13px; color:var(--cd-text); line-height:1.5; }
+
+  /* ── 按鈕:加大、可觸控、狀態用顏色說話 ── */
+  .mbtn{ background:rgba(255,255,255,.06); border:1px solid var(--cd-line); border-radius:14px;
+         padding:13px 10px; font-size:13.5px; font-weight:700; color:var(--cd-text);
+         transition:transform .12s, background .18s, box-shadow .18s; }
+  .mbtn:hover{ background:rgba(255,255,255,.12); }
+  .mbtn:active{ transform:scale(.97); }
+  .mbtn.on{ background:var(--cd-primary); color:#0f111a;
+            box-shadow:0 4px 16px rgba(0,242,173,.25); border-color:transparent; }
+  .mapply{ background:var(--cd-primary); color:#0f111a; border:none; border-radius:14px;
+           padding:14px; font-weight:800; letter-spacing:.5px;
+           box-shadow:0 6px 20px rgba(0,242,173,.22); }
+  .enter-btn{ background:var(--cd-primary); color:#0f111a; border-radius:14px; font-weight:800;
+              box-shadow:0 8px 24px rgba(0,242,173,.25); }
+  .logout-btn{ background:transparent; border:1px solid var(--cd-line); color:var(--cd-dim);
+               border-radius:12px; }
+
+  /* ── 輸入欄位 ── */
+  .mrow{ gap:8px; }
+  .mrow label{ color:var(--cd-dim); font-size:12.5px; letter-spacing:.3px; }
+  .mfield, .mrow input, .mrow select{ background:rgba(0,0,0,.35); border:1px solid var(--cd-line);
+           border-radius:10px; color:var(--cd-text); }
+  .mfield:focus, .mrow input:focus, .mrow select:focus{ outline:none; border-color:var(--cd-primary);
+           box-shadow:0 0 0 2px rgba(0,242,173,.15); }
+
+  /* ── 巡邏的技能列:從擁擠的一整排控件改成卡片 ── */
+  .ptrow{ background:var(--cd-card); border:1px solid var(--cd-line); border-radius:14px;
+          padding:9px 10px; margin:7px 0; gap:8px; }
+  .ptrow .ptidx{ background:var(--cd-orange); box-shadow:0 0 10px rgba(255,140,0,.35);
+                 flex:0 0 22px; height:22px; }
+  .ptrow .ptxy{ color:var(--cd-dim); font-variant-numeric:tabular-nums; }
+  .ptrow .ptskill, .ptrow .ptpick, .ptrow .ptcd{ background:rgba(0,0,0,.35);
+                 border-color:var(--cd-line); border-radius:9px; color:var(--cd-text); }
+  .ptrow .ptprec.on{ background:var(--cd-primary); color:#0f111a; border-color:transparent; }
+  .ptrow .ptskip.on{ background:var(--cd-orange); color:#0f111a; border-color:transparent; }
+  .ptrow .ptdel{ background:rgba(255,77,77,.18); color:var(--cd-danger); border-radius:9px; }
+
+  /* ── 桌機:導覽移到左側,內容兩欄,大幅降低縱向捲動 ── */
+  @media (min-width:900px){
+    .dash-card{ display:grid; grid-template-columns:150px 1fr; gap:20px; align-items:start; }
+    .dash-h, .dash-sub, #dHw{ grid-column:1 / -1; }
+    .dtabs{ flex-direction:column; position:sticky; top:14px; }
+    .dtab{ text-align:left; padding:12px 14px; font-size:13px; }
+    .dpane.on{ display:block; min-width:0; }
+    .dpane{ grid-column:2; }
+  }
+  /* ── 頂部 HUD ───────────────────────────────────────────────── */
+  #remote-hud{ position:fixed; top:0; left:0; right:0; z-index:115; display:none;
+    align-items:center; justify-content:space-between; gap:10px;
+    padding:calc(env(safe-area-inset-top,0px) + 8px) 14px 14px;
+    background:linear-gradient(180deg,#0f111a 0%,rgba(15,17,26,.82) 55%,transparent 100%);
+    pointer-events:none; }
+  body.view-dash #remote-hud, body.view-remote #remote-hud{ display:flex; }
+  #remote-hud button{ pointer-events:auto; }
+  .hud-left,.hud-right{ display:flex; align-items:center; gap:10px; flex:0 0 auto; }
+  .hud-center{ flex:1 1 auto; max-width:380px; min-width:120px; display:flex;
+               flex-direction:column; gap:4px; }
+  .hud-col{ display:flex; flex-direction:column; line-height:1.15; }
+  .hud-k{ font-size:9px; letter-spacing:2px; text-transform:uppercase; color:rgba(255,255,255,.5); }
+  .hud-v{ font-size:13px; font-weight:700; color:#fff; }
+  .mono{ font-variant-numeric:tabular-nums; }
+  .hud-dot{ width:11px; height:11px; border-radius:50%; background:var(--cd-primary);
+            box-shadow:0 0 10px var(--cd-primary); flex:0 0 auto; }
+  .hud-dot.bad{ background:var(--cd-danger); box-shadow:0 0 10px var(--cd-danger); }
+  .hud-pill{ display:none; align-items:center; gap:6px; padding:5px 11px; border-radius:11px;
+             font-size:11px; letter-spacing:.5px; border:1px solid var(--cd-line);
+             background:rgba(255,255,255,.05); color:rgba(255,255,255,.55); }
+  .hud-pill.on{ background:rgba(0,242,173,.10); border-color:rgba(0,242,173,.32); color:var(--cd-primary); }
+  .hud-exp-top{ display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .hud-exp-val{ font-size:12px; font-weight:800; color:var(--cd-primary); font-variant-numeric:tabular-nums; }
+  .hud-exp-bar{ height:5px; border-radius:99px; background:var(--cd-panel); overflow:hidden; }
+  .hud-exp-fill{ height:100%; width:0%; border-radius:99px; background:var(--cd-primary);
+                 box-shadow:0 0 8px var(--cd-primary); transition:width .4s ease; }
+  .hud-btn{ width:38px; height:38px; flex:0 0 auto; border-radius:12px; cursor:pointer;
+            background:var(--cd-panel); border:1px solid var(--cd-line); color:rgba(255,255,255,.75);
+            font-size:15px; display:flex; align-items:center; justify-content:center;
+            transition:all .16s; }
+  .hud-btn:hover{ color:#fff; background:rgba(255,255,255,.1); }
+  .hud-btn.on{ background:var(--cd-primary); color:#0f111a; border-color:transparent;
+               box-shadow:0 0 14px rgba(0,242,173,.4); }
+  .hud-uptime{ display:none; }
+  @media (min-width:720px){ .hud-pill{ display:flex; } .hud-uptime{ display:flex; } }
+
+  /* ── 右下浮動操作 ───────────────────────────────────────────── */
+  #quick-actions{ position:fixed; right:16px; bottom:calc(env(safe-area-inset-bottom,0px) + 92px);
+                  z-index:118; display:none; flex-direction:column; gap:12px; }
+  body.view-dash #quick-actions, body.view-remote #quick-actions{ display:flex; }
+  .fab{ width:56px; height:56px; border-radius:18px; cursor:pointer; gap:1px;
+        display:flex; flex-direction:column; align-items:center; justify-content:center;
+        background:rgba(255,255,255,.10); border:1px solid rgba(255,255,255,.2); color:#fff;
+        backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+        box-shadow:0 8px 24px rgba(0,0,0,.4); transition:transform .12s, background .18s; }
+  .fab:active{ transform:scale(.93); }
+  .fab.on{ background:var(--cd-primary); color:#0f111a; border-color:var(--cd-primary);
+           box-shadow:0 0 18px rgba(0,242,173,.5); }
+  .fab-danger{ background:var(--cd-danger); border-color:var(--cd-danger);
+               box-shadow:0 8px 24px rgba(255,77,77,.3); }
+  .fab-i{ font-size:19px; line-height:1; }
+  .fab-t{ font-size:9.5px; font-weight:800; letter-spacing:.5px; opacity:.92; }
+  /* 浮動手把鈕:收起螢幕虛擬按鍵,把畫面完全讓出來 */
+  body.pad-hidden #pad, body.pad-hidden #padbg, body.pad-hidden #look{ display:none !important; }
+
+  /* ── 控制中心抽屜 ───────────────────────────────────────────── */
+  #dashView{ top:auto; height:78vh; border-radius:26px 26px 0 0; z-index:112;
+    background:rgba(30,34,51,.90); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    border-top:1px solid rgba(255,255,255,.10); box-shadow:0 -18px 50px rgba(0,0,0,.55);
+    transition:transform .38s cubic-bezier(.4,0,.2,1); overflow:hidden; }
+  body.view-dash #dashView, body.view-remote #dashView{ display:flex; flex-direction:column; }
+  /* 抽屜本身就是「進入/離開遠端」的操作,不再需要這三顆重複的按鈕 */
+  #enterRemote, #toDashTop, #toDashBtn{ display:none !important; }
+  body.panel-collapsed #dashView{ transform:translateY(calc(100% - 46px)); }
+  #panelHandle{ height:46px; flex:0 0 46px; display:flex; align-items:center;
+    justify-content:space-between; padding:0 18px; cursor:pointer; user-select:none;
+    border-bottom:1px solid rgba(255,255,255,.06); }
+  #panelHandle:hover{ background:rgba(255,255,255,.04); }
+  .ph-left{ display:flex; align-items:center; gap:9px; font-size:10px; font-weight:800;
+            letter-spacing:2px; color:rgba(255,255,255,.55); }
+  .ph-dot{ width:8px; height:8px; border-radius:50%; background:var(--cd-primary);
+           box-shadow:0 0 8px var(--cd-primary); }
+  .ph-grip{ width:58px; height:5px; border-radius:99px; background:rgba(255,255,255,.22); }
+  .ph-right{ font-size:10px; letter-spacing:2px; color:rgba(255,255,255,.4);
+             font-variant-numeric:tabular-nums; }
+  #dashView .dash-card{ flex:1 1 auto; overflow-y:auto; -webkit-overflow-scrolling:touch; }
+  /* 捲軸細化(參考專案的 custom-scrollbar) */
+  #dashView .dash-card::-webkit-scrollbar{ width:5px; }
+  #dashView .dash-card::-webkit-scrollbar-track{ background:rgba(0,0,0,.2); }
+  #dashView .dash-card::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.12); border-radius:99px; }
+  #dashView .dash-card::-webkit-scrollbar-thumb:hover{ background:rgba(0,242,173,.4); }
+  /* 抽屜展開時,把返回鈕讓開,避免和把手打架 */
+  body.view-dash #toDashTop{ display:none; }
+  @media (min-width:900px){ #dashView{ height:min(560px,80vh); } }
+
   .ptrow .ptcd { flex:0 0 56px; padding:6px; border-radius:6px;
                  border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
   .ptrow .ptsave { flex:0 0 auto; padding:6px 10px; border:none; border-radius:6px;
@@ -341,12 +548,60 @@
   </div>
  </div><!-- /#stage -->
 
+ <!-- ══ 頂部 HUD:狀態 / EXP / 系統控制。永遠疊在畫面上,不必開選單就看得到。 ══
+      資料來源都是既有的:狀態燈同步 #status、EXP 同步 expTick() 拉的 /exp/status。
+      這裡只做鏡射顯示,不新增任何 API。 -->
+ <header id="remote-hud">
+   <div class="hud-left">
+     <div id="hudDot" class="hud-dot"></div>
+     <div class="hud-col">
+       <span class="hud-k">NETWORK</span>
+       <span class="hud-v" id="hudNet">未連線</span>
+     </div>
+     <div class="hud-pill" id="hudPatrol">◇ PATROL STANDBY</div>
+   </div>
+
+   <div class="hud-center">
+     <div class="hud-exp-top">
+       <span class="hud-k" id="hudMap">未辨識地圖</span>
+       <span class="hud-exp-val" id="hudExpVal">--%</span>
+     </div>
+     <div class="hud-exp-bar"><div class="hud-exp-fill" id="hudExpFill"></div></div>
+   </div>
+
+   <div class="hud-right">
+     <div class="hud-col hud-uptime">
+       <span class="hud-k">UPTIME</span>
+       <span class="hud-v mono" id="hudUptime">00:00:00</span>
+     </div>
+     <button class="hud-btn" id="hudFreezeBtn" title="凍結畫面(防窺靜態幀)">❄</button>
+     <button class="hud-btn" id="hudFullBtn" title="全螢幕">⛶</button>
+     <button class="hud-btn" id="hudPanelBtn" title="展開/收合控制中心">▤</button>
+   </div>
+ </header>
+
+ <!-- ══ 右下浮動操作:最常用且要「隨時可按」的三個 ══ -->
+ <div id="quick-actions">
+   <button class="fab" id="fabPad" title="顯示/隱藏螢幕虛擬按鍵">
+     <span class="fab-i">🎮</span><span class="fab-t">按鍵</span></button>
+   <button class="fab" id="fabCamo" title="用假畫面蓋住螢幕(老闆鍵)">
+     <span class="fab-i">🖥</span><span class="fab-t">掩護</span></button>
+   <button class="fab fab-danger" id="fabRelease" title="立刻放開所有被按住的鍵">
+     <span class="fab-i">🆘</span><span class="fab-t">鬆鍵</span></button>
+ </div>
+
  <!-- 掩護畫面。放在 #stage 外面,語意上它蓋住整個頁面而不屬於遊戲畫面那一層。 -->
  <div id="camo"></div>
  <div id="camoOff">✕ 關閉掩護</div>
 
  <!-- ===== 儀表板（中控頁）：出租管理 + 進入主人操作頁 ===== -->
  <div id="dashView">
+  <!-- 抽屜把手:點擊或上下滑收合。收合後只留這條,遊戲畫面完整露出。 -->
+  <div id="panelHandle">
+    <div class="ph-left"><span class="ph-dot"></span><span>CONTROL CENTER</span></div>
+    <div class="ph-grip"></div>
+    <div class="ph-right" id="phHint">COLLAPSE ▼</div>
+  </div>
   <div class="dash-card">
    <div class="dash-h">maple 儀表板</div>
    <div class="dash-sub">出租中控與進入遠端（連接管理在遠端頁內）</div>
@@ -357,6 +612,7 @@
      <div class="dtab" data-tab="idle">🤖 閒置</div>
      <div class="dtab" data-tab="patrol">🗺 巡邏</div>
      <div class="dtab" data-tab="remote">🎮 遠端</div>
+     <div class="dtab" data-tab="dev">🔬 開發</div>
    </div>
 
    <div class="dpane on" data-pane="rent">
@@ -621,6 +877,27 @@
      每個記錄點可設一個「放置技能」鍵＋冷卻秒數（如召喚/圖騰）。留空=只平A。冷卻中略過、絕不在移動途中放。</div>
    </div><!-- /#dpane patrol -->
 
+   <div class="dpane" data-pane="dev">
+   <div class="msec">菲歐娜解謎 — 觀察模式</div>
+   <div class="mstat" style="font-size:12px;line-height:1.6">
+     只記錄「我會選哪個」,<b>不點擊、不按鍵</b>。真值來自遊戲自己畫的計分格。<br>
+     正常玩就好,玩到謎題會自動記錄;沒玩到就閒置。
+   </div>
+   <div class="mstat" id="fnState">⚪ 未啟動</div>
+   <div class="mstat" id="fnAcc">尚無資料</div>
+   <div class="mgrid2">
+     <div class="mbtn" id="fnStartBtn">▶ 開始觀察</div>
+     <div class="mbtn" id="fnStopBtn">⏹ 停止</div>
+   </div>
+   <div class="mrow" style="margin-top:6px">
+     <label style="flex:1">保存原始畫面(之後可重跑改進版)</label>
+     <input type="checkbox" id="fnSaveBands" checked>
+   </div>
+   <div class="msec" style="margin-top:14px">最近輪次</div>
+   <div id="fnRounds" style="font-size:12px;color:#9aa0ac">—</div>
+   <div id="fnMsg" style="font-size:12px;color:#8a8f99;margin-top:6px"></div>
+   </div>
+
    <div class="dpane" data-pane="remote">
    <div class="msec">遠端操作</div>
    <div style="font-size:12px;color:#8a8f99;margin:2px 0 10px">
@@ -863,6 +1140,13 @@ function showView(name){
   if(name !== "dash" && typeof stopLivePreview === "function") stopLivePreview();  // 離開儀表板停即時偵測預覽
   if(name !== "dash" && typeof stopVizTester === "function") stopVizTester();  // 離開儀表板停偵測測試器
   if(name !== "dash" && typeof watchDetect === "function") watchDetect(0);  // 撤銷背景偵測需求
+  // 抽屜狀態要跟著視圖走(雙向同步)。程式其他地方也會直接呼叫 showView
+  // (登入完成、訪客模式、密碼過期…),不同步的話會出現「視圖是遠端、抽屜卻開著」
+  // 這種自相矛盾的畫面。
+  if(name === "dash")   document.body.classList.remove("panel-collapsed");
+  if(name === "remote") document.body.classList.add("panel-collapsed");
+  const h=document.getElementById("phHint");
+  if(h) h.textContent = (name === "dash") ? "收合 ▼ 看畫面" : "展開 ▲ 設定";
 }
 function loadDash(){
   fetchStatus(); refreshRemote(); refreshIdle();
@@ -1968,8 +2252,193 @@ document.querySelectorAll(".dtab").forEach(t=>{
     if(name === "patrol"){ refreshSettings(); watchDetect(1); }
     else { watchDetect(0); }
     if(name === "remote") refreshClientPkg();
+    fionaActive = (name === "dev");
+    if(fionaActive) fionaPoll();
   };
 });
+
+// ---- 菲歐娜解謎：觀察模式（只記錄，不點擊） ----
+// 輪詢只在開發分頁開著時才跑，避免其他分頁白白打 API。
+let fionaActive = false;
+function fionaSlot(v){ return (v===null||v===undefined) ? "—" : v; }
+async function fionaPoll(){
+  if(!fionaActive) return;
+  try{
+    const j = await (await fetch(`/fiona/status?token=${encodeURIComponent(token)}`)).json();
+    const run = j.running;
+    $("#fnState").textContent = run
+      ? `🟢 觀察中 ｜ 階段 ${j.phase} ｜ 視窗 ${j.window ? j.window.join(",") : "未偵測"} ｜ 縮放 ${j.scale ?? "—"}`
+      : "⚪ 未啟動";
+    const sm = j.summary || {};
+    const acc = (sm.accuracy === null || sm.accuracy === undefined)
+      ? "—" : (sm.accuracy*100).toFixed(1)+"%";
+    $("#fnAcc").textContent =
+      `累計 ${sm.correct||0}/${sm.rounds_with_truth||0} = ${acc}` +
+      `　(無真值 ${sm.unusable||0} 輪)　本次已看 ${j.frames||0} 幀`;
+    const rs = j.recent || [];
+    $("#fnRounds").innerHTML = rs.length ? rs.map(r=>{
+      const mark = r.truth===null||r.truth===undefined ? "⚪"
+                 : (r.correct ? "🟢" : "🔴");
+      return `<div style="padding:3px 0;border-bottom:1px solid #23252e">
+        ${mark} 第${(r.round_idx??0)+1}輪　起點 ${fionaSlot(r.from_slot)}
+        → 預測 <b>${fionaSlot(r.pred)}</b>　真值 <b>${fionaSlot(r.truth)}</b>
+        <span style="color:#6b7280">（${r.n_frames||0} 幀）</span></div>`;
+    }).join("") : "—";
+    if(j.last_error) $("#fnMsg").textContent = "⚠ " + j.last_error;
+  }catch(e){ $("#fnMsg").textContent = "狀態讀取失敗：" + e; }
+  if(fionaActive) setTimeout(fionaPoll, 1000);
+}
+$("#fnStartBtn").onclick = async () => {
+  const sb = $("#fnSaveBands").checked ? 1 : 0;
+  $("#fnMsg").textContent = "啟動中…";
+  try{
+    await fetch(`/fiona/start?save_bands=${sb}&token=${encodeURIComponent(token)}`, {method:"POST"});
+    $("#fnMsg").textContent = "已啟動：正常玩就好，玩到謎題會自動記錄。";
+    fionaPoll();
+  }catch(e){ $("#fnMsg").textContent = "啟動失敗：" + e; }
+};
+// ═══════════════════════════════════════════════════════════════════
+//  分頁排版重整:把「全部攤平」改成「常用在上、進階收起」
+//  ─────────────────────────────────────────────────────────────────
+//  巡邏頁光一頁就有 8 個區塊、207 行控件全部展開,在手機上要捲很久才找得到
+//  東西。這裡【不改 HTML 結構】,而是在載入後把每個 .msec 變成可摺疊標題,
+//  它後面直到下一個 .msec 為止的內容自動收進摺疊區。
+//  第一個 .msec 之前的內容 = 該頁最常用的操作,包成 .dpane-primary 永遠可見。
+// ═══════════════════════════════════════════════════════════════════
+(function foldSections(){
+  // 這幾個區塊預設展開:它們是各頁的主要資訊,收起來反而要多點一下
+  const OPEN_BY_DEFAULT = ["遠端操作", "菲歐娜"];
+  document.querySelectorAll(".dpane").forEach(pane => {
+    const secs = [...pane.querySelectorAll(":scope > .msec")];
+    if(!secs.length) return;
+
+    // 1) 第一個區塊標題【之前】的節點 = 常用操作,包起來永遠可見
+    const head=[]; let n=pane.firstElementChild;
+    while(n && n !== secs[0]){ const nx=n.nextElementSibling; head.push(n); n=nx; }
+    if(head.length){
+      const box=document.createElement("div");
+      box.className="dpane-primary";
+      pane.insertBefore(box, secs[0]);
+      head.forEach(el => box.appendChild(el));
+    }
+
+    // 2) 每個區塊標題後面的內容收進摺疊區
+    secs.forEach((sec, si) => {
+      const body=document.createElement("div");
+      body.className="msec-body";
+      let cur=sec.nextElementSibling;
+      while(cur && !cur.classList.contains("msec")){
+        const nx=cur.nextElementSibling; body.appendChild(cur); cur=nx;
+      }
+      sec.after(body);
+      const caret=document.createElement("span");
+      caret.className="msec-caret"; caret.textContent="▶";
+      sec.appendChild(caret);
+      sec.classList.add("msec-toggle");
+      // 每頁的【第一個】區塊一律預設展開:出租頁與閒置頁的常用操作全部在第一個
+      // 區塊裡(它們沒有「區塊標題之前的內容」),全收起來的話一進分頁是一片空白。
+      const label=(sec.textContent||"");
+      if(si === 0 || OPEN_BY_DEFAULT.some(k => label.includes(k))){
+        sec.classList.add("open"); body.classList.add("open");
+      }
+      sec.addEventListener("click", () => {
+        const open = body.classList.toggle("open");
+        sec.classList.toggle("open", open);
+      });
+    });
+  });
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+//  CyberDeck HUD / 控制中心抽屜 / 浮動操作
+//  ─────────────────────────────────────────────────────────────────
+//  全部只鏡射既有狀態與呼叫既有函式,不新增 API、不改輸入路由。
+// ═══════════════════════════════════════════════════════════════════
+function panelSet(open, sync){
+  document.body.classList.toggle("panel-collapsed", !open);
+  const h=$("#phHint");
+  if(h) h.textContent = open ? "收合 ▼ 看畫面" : "展開 ▲ 設定";
+  const b=$("#hudPanelBtn"); if(b) b.classList.toggle("on", open);
+  // 【抽屜開合就是視圖切換】原本另外有「▶ 進入遠端」「≡ 回儀表板」三顆按鈕,
+  // 與抽屜語意重複而且互相打架(抽屜收合了卻還停在儀表板視圖)。現在統一:
+  //     收合 = 看畫面、可操控(view-remote)      展開 = 設定(view-dash)
+  // 輸入路由的判斷條件(body.view-remote)完全沒動,所以不會誤送輸入到遊戲。
+  if(sync === false) return;
+  if(document.body.classList.contains("view-login")) return;   // 還沒登入不切
+  try{
+    if(open){ if(!document.body.classList.contains("view-dash")) backToDash(); }
+    else    { if(!document.body.classList.contains("view-remote")) enterRemote(); }
+  }catch(e){}
+}
+function panelToggle(){ panelSet(document.body.classList.contains("panel-collapsed")); }
+(function initPanelDrawer(){
+  const ph=$("#panelHandle"); if(!ph) return;
+  ph.onclick = panelToggle;
+  // 手機:在把手上下滑收合/展開(參考專案的 60px 門檻)
+  let sy=0;
+  ph.addEventListener("touchstart", e=>{ sy=e.touches[0].clientY; }, {passive:true});
+  ph.addEventListener("touchmove", e=>{
+    const dy=e.touches[0].clientY - sy;
+    if(dy >  60) panelSet(false);
+    if(dy < -60) panelSet(true);
+  }, {passive:true});
+  panelSet(true, false);      // 初始不觸發視圖切換(此時多半還在登入頁)
+})();
+
+$("#hudPanelBtn").onclick = panelToggle;
+$("#hudFullBtn").onclick = () => {
+  if(!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+  else document.exitFullscreen().catch(()=>{});
+};
+let hudFrozen = false;
+$("#hudFreezeBtn").onclick = () => {
+  hudFrozen = !hudFrozen;
+  try{ hudFrozen ? freezeNow() : unfreeze(); }catch(e){}
+  $("#hudFreezeBtn").classList.toggle("on", hudFrozen);
+};
+$("#fabCamo").onclick = () => { try{ camoSet(true); }catch(e){} };
+$("#fabRelease").onclick = () => { const b=$("#releaseBtn"); if(b) b.click(); };
+$("#fabPad").onclick = () => {
+  const on = document.body.classList.toggle("pad-hidden");
+  $("#fabPad").classList.toggle("on", !on);
+};
+
+// HUD 每秒同步一次。資料全部來自畫面上既有的元素,不另外打 API:
+//   狀態燈/文字 ← #status(setStatus 寫的)   EXP ← #expPct/#expBar(expTick 寫的)
+//   地圖 ← #mTarget      巡邏中 ← #idleBtn 的 on 狀態
+let hudT0 = Date.now();
+setInterval(() => {
+  const st=$("#status");
+  if(st){
+    const bad = st.classList.contains("bad");
+    $("#hudDot").classList.toggle("bad", bad);
+    $("#hudNet").textContent = st.textContent || "—";
+  }
+  const p=$("#expPct");
+  if(p){
+    const txt=(p.textContent||"").trim();
+    $("#hudExpVal").textContent = txt || "--%";
+    const v=parseFloat(txt);
+    if(!isNaN(v)) $("#hudExpFill").style.width = Math.max(0,Math.min(100,v))+"%";
+  }
+  const mt=$("#mTarget");
+  if(mt && mt.textContent) $("#hudMap").textContent = mt.textContent.slice(0,26);
+  const ib=$("#idleBtn"), pill=$("#hudPatrol");
+  if(pill){
+    const on = ib && ib.classList.contains("on");
+    pill.classList.toggle("on", !!on);
+    pill.textContent = on ? "◆ PATROL ACTIVE" : "◇ PATROL STANDBY";
+  }
+  const s=Math.floor((Date.now()-hudT0)/1000), pad=n=>String(n).padStart(2,"0");
+  $("#hudUptime").textContent = `${pad(Math.floor(s/3600))}:${pad(Math.floor(s%3600/60))}:${pad(s%60)}`;
+}, 1000);
+
+$("#fnStopBtn").onclick = async () => {
+  try{
+    await fetch(`/fiona/stop?token=${encodeURIComponent(token)}`, {method:"POST"});
+    $("#fnMsg").textContent = "已停止。資料保留在 fiona_collect\\，下次繼續累積。";
+  }catch(e){ $("#fnMsg").textContent = "停止失敗：" + e; }
+};
 
 // ---- 浮動客戶端安裝包：狀態 / 準備（壓縮） / 下載 ----
 //
