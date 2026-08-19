@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { useVideo } from '../hooks/useVideo'
 import type { CursorPos } from '../hooks/useInput'
+import { contentRect } from '../lib/letterbox'
 
 /**
  * 遊戲畫面層。永遠在最底下 —— 控制台是疊在它上面的,不是取代它。
@@ -17,24 +18,16 @@ export function StageStream({ video, cursor, hint }: {
   const { videoRef, kind, status } = video
   const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
-  // 把正規化座標換算回畫面像素。影像是 object-fit:contain,四周有黑邊,
-  // 要扣掉才對得準(與滑鼠映射的 norm() 互為反運算)。
+  // 把正規化座標換算回畫面像素。黑邊偏移交給 contentRect(依 object-position,
+  // 與滑鼠映射的 norm() 共用同一套算法、互為反運算)。
   useEffect(() => {
     if (!cursor) { setBox(null); return }
     const calc = () => {
       const v = videoRef.current
       if (!v) return setBox(null)
-      const r = v.getBoundingClientRect()
-      if (!r.width || !r.height) return setBox(null)
-      const vw = v.videoWidth, vh = v.videoHeight
-      let dw = r.width, dh = r.height, ox = r.left, oy = r.top
-      if (vw && vh) {
-        const s = Math.min(r.width / vw, r.height / vh)
-        dw = vw * s; dh = vh * s
-        ox = r.left + (r.width - dw) / 2
-        oy = r.top + (r.height - dh) / 2
-      }
-      setBox({ x: ox + cursor.x * dw, y: oy + cursor.y * dh, w: dw, h: dh })
+      const c = contentRect(v)
+      if (!c) return setBox(null)
+      setBox({ x: c.ox + cursor.x * c.dw, y: c.oy + cursor.y * c.dh, w: c.dw, h: c.dh })
     }
     calc()
     window.addEventListener('resize', calc)

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InputChannel } from './useInput'
+import { contentRect } from '../lib/letterbox'
 
 /**
  * 電腦端的實體鍵鼠映射。
@@ -57,22 +58,14 @@ export function useDesktopInput(
     const io = inputRef.current
 
     /** 游標在影像內容中的正規化座標。影像用 object-fit:contain,四周會有黑邊,
-     *  必須扣掉黑邊才算得準;不在內容範圍內回 null。 */
+     *  必須扣掉黑邊才算得準(抽屜開著時影像貼上緣,黑邊偏移由 contentRect 依
+     *  object-position 算,不再假設置中);不在內容範圍內回 null。 */
     const norm = (e: MouseEvent): [number, number] | null => {
       const v = videoRef.current
       if (!v) return null
-      // WebRTC 用 videoWidth;MJPEG 走 <img> 時沒有 video 元素,退用元素尺寸比例
-      const vw = v.videoWidth, vh = v.videoHeight
-      const r = v.getBoundingClientRect()
-      if (!r.width || !r.height) return null
-      let dw = r.width, dh = r.height, ox = r.left, oy = r.top
-      if (vw && vh) {
-        const s = Math.min(r.width / vw, r.height / vh)
-        dw = vw * s; dh = vh * s
-        ox = r.left + (r.width - dw) / 2
-        oy = r.top + (r.height - dh) / 2
-      }
-      const nx = (e.clientX - ox) / dw, ny = (e.clientY - oy) / dh
+      const c = contentRect(v)
+      if (!c) return null
+      const nx = (e.clientX - c.ox) / c.dw, ny = (e.clientY - c.oy) / c.dh
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return null
       return [+nx.toFixed(4), +ny.toFixed(4)]
     }
