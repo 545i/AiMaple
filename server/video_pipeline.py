@@ -397,6 +397,27 @@ def target_window_valid(exe_sub=""):
     return True
 
 
+def detect_hwnd(exe_sub):
+    """【偵測用】目標視窗的 hwnd;找不到回 0。
+
+    與 force_window_target 的差別是【不改 state】。這一點很重要:
+
+    偵測(符文/小地圖/監視畫面)需要「看得到遊戲」,但那是偵測自己的需求 ——
+    不代表要把使用者在畫面設定裡選的串流來源改掉。舊寫法是 frames.get() 直接
+    呼叫 force_window_target,於是只要有人開著巡邏分頁(小地圖每秒輪詢),
+    使用者剛選的「全螢幕」就會在下一秒被改回 window/maplestory.exe —— 設定
+    看起來完全沒有生效。
+
+    出租/閒置那條路徑仍然走 force_window_target:那裡【必須】強制鎖定視窗,
+    否則訪客會看到整個桌面。安全語意不變。
+    """
+    if not exe_sub:
+        return 0
+    if target_window_valid(exe_sub):
+        return int(state["hwnd"])
+    return find_window_by_exe(exe_sub) or 0
+
+
 def force_window_target(exe_sub):
     """鎖定：強制來源=視窗模式、目標=進程 exe 名含 exe_sub 的視窗(maplestory.exe)。
     已鎖定且仍有效就直接回 True(不重複列舉)。找不到目標回 False。"""

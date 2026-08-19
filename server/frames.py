@@ -50,9 +50,12 @@ def get(wait_first=1.0):
     """
     import video_pipeline
     import wgc
-    if not video_pipeline.force_window_target(GUARD_EXE):
+    # 【用 detect_hwnd 而不是 force_window_target】偵測只需要知道遊戲視窗在哪,
+    # 不該順手把使用者在畫面設定裡選的串流來源改掉。用後者的話,只要開著巡邏
+    # 分頁(小地圖每秒輪詢),使用者選的「全螢幕」就會被改回 window。
+    hwnd = video_pipeline.detect_hwnd(GUARD_EXE)
+    if not hwnd:
         return None, False            # 遊戲沒開:不偵測、也不退回桌面(避免拍到桌面)
-    hwnd = video_pipeline.state["hwnd"]
 
     if wgc.ensure(hwnd):
         f = wgc.latest(max_age=1.0)
