@@ -8,7 +8,7 @@ import { fiona, rune } from '../lib/api'
  * 舊版 web/index.html 把這些工具塞在巡邏分頁裡(第 671~878 行),跟日常操作混在一起,
  * 手機上要捲很久才找得到。這裡整批搬過來,一個工具一張卡:
  *   ① 菲歐娜解謎觀察模式   /fiona/start|stop|status
- *   ② 符文辨識測試         /rune/detect  /rune/test
+ *   ② 符文一鍵測試         /rune/test?solve=1
  *   ③ 即時偵測預覽         /rune/live  + /rune/live/info
  *   ④ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
  *
@@ -194,32 +194,33 @@ function RuneProbe() {
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const probe = async (fn: () => Promise<any>, label: string) => {
+  const run = async () => {
     setBusy(true)
-    setMsg(label + '中…')
+    setMsg('測試中…（開謎題 → 辨識 → 按方向鍵，解放輪要連拍 3 秒）')
     try {
-      const j = await fn()
+      const j = await rune.test()
       if (j.err) { setMsg('⚠ ' + j.err); return }
       const seq = (j.dirs ?? []).map((d: string) => arrow(d)).join(' ')
-      const line = j.line === 'cv' ? '1 線 CV' : j.line === 'claude' ? '2 線 claude' : j.line ?? '—'
-      setMsg(`認出 ${j.n} 支：${seq || '（無）'}　${line}　耗時 ${j.ms}ms`)
+      const line = j.line === 'wheel' ? '旋轉線（解放輪）'
+        : j.line === 'cv' ? '1 線 CV' : j.line === 'claude' ? '2 線 claude' : j.line ?? '—'
+      // purple_gone 是遊戲自己給的答案:紫標消失＝這組方向真的對。沒按方向鍵時是 null。
+      const done = j.purple_gone === true ? '✅ 已解除' : j.pressed ? '❌ 按了但紫標還在' : '（沒按方向鍵）'
+      setMsg(`${done}　認出 ${j.n} 支：${seq || '（無）'}　${line}　耗時 ${j.ms}ms`)
     } catch {
-      setMsg(label + '失敗（連線？）')
+      setMsg('測試失敗（連線？）')
     } finally { setBusy(false) }
   }
 
   return (
-    <Card title="符文辨識測試">
-      <div className="grid2">
-        <button className="btn sm" disabled={busy} onClick={() => probe(rune.detect, '辨識')}>🔎 測試辨識</button>
-        <button className="btn sm" disabled={busy} onClick={() => probe(rune.test, '測試')}>🎯 站符文上測試</button>
-      </div>
+    <Card title="符文一鍵測試">
+      <button className="btn" disabled={busy} onClick={run}>🎯 一鍵測試（開符文 → 解符文）</button>
       <details className="dvt">
-        <summary>兩顆有什麼不一樣？</summary>
+        <summary>這顆會做什麼？</summary>
         <div className="hint">
-          <b>測試辨識</b>＝乾跑：只拿現在的畫面辨識一次，不碰角色，順便存 server/rune_shot.png 供校準裁切框。<br />
-          <b>站符文上測試</b>＝角色要自己站在符文上：會把焦點切到遊戲、按啟動鍵開謎題再辨識，
-          但<b>不會真的按方向鍵解</b>（solve=0）。出租(訪客)進行中會被擋。
+          角色要<b>自己先站在符文上</b>。按下後：切焦點到遊戲 → 按啟動鍵開謎題 → 辨識 →
+          <b>真的按方向鍵解</b> → 用紫標有沒有消失驗證對錯。<br />
+          遇到<b>解放輪</b>（箭頭會轉的那種）會先全速連拍 3 秒再判向，所以要多等幾秒才有結果。<br />
+          出租(訪客)進行中會被擋。不必打開「自動解除」總開關。
         </div>
       </details>
       <div className="msg">{msg}</div>

@@ -102,8 +102,8 @@ export const rune = {
   status: () => get('/rune/status'),
   enable: (on: boolean) => post('/rune/enable', { on: on ? 1 : 0 }),
   setLine: (p: { cv?: number; claude?: number }) => post('/rune/line', p),
-  detect: () => post('/rune/detect'),
-  test: () => post('/rune/test'),
+  /** 一鍵測試:角色須自己站在符文上 → 按啟動鍵開謎題 → 辨識 → 真的按方向鍵解 */
+  test: () => post('/rune/test', { solve: 1 }),
   solve: () => post('/rune/solve'),
   warmup: () => post('/rune/warmup'),
   liveInfo: () => get('/rune/live/info'),

@@ -696,8 +696,7 @@
      </label>
    </div>
    <div style="display:flex;gap:6px;margin-top:6px">
-     <div class="mbtn" id="runeDetectBtn" style="flex:1">🔎 測試辨識</div>
-     <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 站符文上測試</div>
+     <div class="mbtn" id="runeTestBtn" style="flex:1">🎯 一鍵測試（開符文 → 解符文）</div>
    </div>
    <div id="runeMsg" style="font-size:12px;color:#8a8f99;margin-top:4px"></div>
    <div class="mbtn" id="liveBtn" style="margin-top:6px">🎯 即時偵測預覽：關</div>
@@ -2067,24 +2066,28 @@ $("#runeEnable").onchange = async (e)=>{
     placeTick();                       // 立刻更新徽章,不等下一次輪詢
   }catch(_){ toast("設定失敗（連線？）", false); }
 };
+// 一鍵測試：角色要自己站在符文上 → 開謎題 → 辨識 → 真的按方向鍵 → 用紫標驗證。
+// 解放輪(箭頭會轉的那種)要全速連拍 3 秒才判得出方向,所以讓位時間給到 40 秒。
 async function runeProbe(url, label){
   // dataset.hint=0 → 暫時把這行讓給測試結果,別被每秒的狀態 tick 蓋掉
   $("#runeMsg").dataset.hint = "0";
-  setTimeout(()=>{ $("#runeMsg").dataset.hint = "1"; }, 15000);
-  $("#runeMsg").textContent = label + "中…（1 線 CV 約數十毫秒；退到 2 線 claude 要 6~11 秒）";
+  setTimeout(()=>{ $("#runeMsg").dataset.hint = "1"; }, 40000);
+  $("#runeMsg").textContent = label + "中…（開謎題 → 辨識 → 按方向鍵；解放輪要連拍 3 秒）";
   try{
     const j = await (await fetch(url, { method:"POST" })).json();
     if(j.err){ $("#runeMsg").textContent = "⚠ " + j.err; toast(j.err, false); return; }
     const seq = (j.dirs||[]).map(d=>RUNE_ARROW[d]||"?").join(" ");
-    const ln = j.line === "cv" ? "1 線 CV" : (j.line === "claude" ? "2 線 claude" : j.line || "—");
-    $("#runeMsg").textContent = `認出 ${j.n} 支：${seq||"（無）"}　${ln}　耗時 ${j.ms}ms`;
-    toast(`${j.n} 支 ${seq}（${ln} ${j.ms}ms）`, j.n===4);
+    const ln = j.line === "wheel" ? "旋轉線（解放輪）"
+             : (j.line === "cv" ? "1 線 CV" : (j.line === "claude" ? "2 線 claude" : j.line || "—"));
+    // purple_gone 是遊戲自己給的答案：紫標消失＝這組方向真的對
+    const done = j.purple_gone === true ? "✅ 已解除"
+               : (j.pressed ? "❌ 按了但紫標還在" : "（沒按方向鍵）");
+    $("#runeMsg").textContent = `${done}　認出 ${j.n} 支：${seq||"（無）"}　${ln}　耗時 ${j.ms}ms`;
+    toast(`${done} ${seq}（${ln} ${j.ms}ms）`, j.purple_gone === true);
   }catch(_){ $("#runeMsg").textContent = label+"失敗（連線？）"; toast(label+"失敗", false); }
 }
-$("#runeDetectBtn").onclick = ()=>
-  runeProbe(`/rune/detect?token=${encodeURIComponent(token)}`, "辨識");
 $("#runeTestBtn").onclick = ()=>
-  runeProbe(`/rune/test?solve=0&token=${encodeURIComponent(token)}`, "測試");
+  runeProbe(`/rune/test?solve=1&token=${encodeURIComponent(token)}`, "測試");
 
 // ---- 即時偵測預覽：現行主路徑（RT-DETR 偵測箭頭＋幾何選擇）的即時檢查 ----
 // 每次抓 /rune/live（伺服器端全速連拍～0.5 秒＋偵測＋標註，見 rune_viz.render_live_jpeg），
