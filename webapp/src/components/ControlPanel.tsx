@@ -110,7 +110,8 @@ export function ControlPanel(props: Props) {
                     onClick={() => setHidden(true)}>⤓</button>
             {hasFc && <button className="rail-btn sm" title="改設定(重新輸入網址)"
                               onClick={() => fc!.openSettings()}>⚙</button>}
-            <button className="rail-btn sm close" title="關閉" onClick={() => window.close()}>✕</button>
+            {hasFc && <button className="rail-btn sm close" title="關閉浮動客戶端"
+                              onClick={() => window.close()}>✕</button>}
           </div>
         </div>
 
