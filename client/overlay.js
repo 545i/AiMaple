@@ -141,6 +141,33 @@ function mergeIntoHandle(handle, doc, api, cfg) {
 
   buildControls(doc, api, cfg, ctl, { sliderW: 80, iconTop: true });
 
+  // 完全收起:連把手都收掉,讓遊戲畫面完整露出。舞台本來就是 .stage{inset:0} 鋪滿
+  // 整個視窗、抽屜只是浮在上面(collapsed 也還留一條 46px 把手蓋住底部),所以隱藏
+  // 整個 .panel 就等於畫面全露。留一顆畫面底部中央的小鈕把它叫回。
+  // React 只管 .panel 的 height/className,不碰 display,所以這個 display:none 不會被
+  // 重繪蓋掉。舊單檔版沒有 .panel,退而找 #dashView。
+  const panel = handle.closest(".panel") || handle.closest("#dashView") || handle.parentElement;
+  const reopen = doc.createElement("div");
+  reopen.id = "fcReopen";
+  reopen.textContent = "▲ 控制";
+  reopen.title = "重開控制抽屜";
+  reopen.style.cssText = [
+    "position:fixed", "left:50%", "transform:translateX(-50%)", "bottom:0",
+    "z-index:2147483000", "display:none", "align-items:center", "justify-content:center",
+    "padding:2px 14px", "border-radius:9px 9px 0 0",
+    "background:rgba(20,20,26,.82)", "border:1px solid rgba(255,255,255,.22)", "border-bottom:none",
+    "color:#cfd3db", "font:11px system-ui,'Microsoft JhengHei',sans-serif",
+    "letter-spacing:1px", "cursor:pointer", "user-select:none", "-webkit-app-region:no-drag",
+  ].join(";");
+  blockBubble(reopen);
+  reopen.onclick = () => { if (panel) panel.style.display = ""; reopen.style.display = "none"; };
+  doc.body.appendChild(reopen);
+
+  const hideAll = mkEl(doc, "button", BTN, "⤓");
+  hideAll.title = "完全收起(連把手一起收掉;點畫面底部中央的「▲ 控制」重開)";
+  hideAll.onclick = () => { if (panel) panel.style.display = "none"; reopen.style.display = "flex"; };
+  ctl.appendChild(hideAll);
+
   const close = mkEl(doc, "button", BTN.replace("#2a2f3a", "#5a2320"), "✕");
   close.title = "關閉浮動客戶端";
   close.onclick = () => window.close();
