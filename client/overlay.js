@@ -1,41 +1,30 @@
-// 注入頁面的控制條。從 preload 拆出來,讓 preload 保持只做 IPC 橋接。
+// 注入頁面的控制條 —— 現在只當「退路」用。
 //
-// 【兩種掛法 + 動態切換】遠端頁(現在是 webapp/ 的 React 版,也相容舊的單檔
-// web/index.html)本來就有一條展開bar —— React 是 <section.panel> 裡的 .handle、
-// 舊版是 #panelHandle。有把手時就把控制項「印在那條上」,不再另浮一條獨立條擠版面
-// (見 mergeIntoHandle)。
-// 【為什麼要先掛獨立條、再切換】React 版「登入前只渲染登入畫面,登入後才長出 .handle」。
-// 掛載當下(多半還在登入頁)找不到把手,所以先掛左下角的獨立條讓視窗至少能移動/調
-// 透明度;用 MutationObserver 等把手一出現,就把控制項併進去、順手把獨立條收掉。
+// 【為什麼縮到只剩退路】電腦端的遠端頁(webapp/ React)已經把浮動客戶端的控制項
+// (半透明滑桿、全螢幕、完全收起、設定、關閉)原生做進左側 rail,整條 rail 也是視窗
+// 拖曳把手(app-region:drag)。所以主畫面不再需要 overlay 注入任何獨立 UI。overlay
+// 只在「還沒有那條原生控制列」的頁面(登入頁、連線失敗錯誤頁)掛一條左下角小控制條,
+// 讓那些過場畫面也能移動視窗/調透明度/關閉;等原生控制列一出現(登入完成)就移除。
 //
-// 【為什麼 overlay 動得了 React 的 DOM】overlay 由 preload 注入,和 React 頁面跑在同一個
-// Electron renderer、共用同一份 document,所以能直接抓 React 渲染出來的 .handle。這也
-// 表示要改併入行為只需重建客戶端,不必去重建/重部署遠端 React。
+// 【另外保留】全螢幕鎖 Esc(Keyboard Lock)—— 這跟版面無關,任何頁面都適用。
 //
-// 【為什麼要注入 UI 到頁面】frame:false 之後沒有系統標題列可以拖曳,而遠端頁面整片
-// 都是互動區(搖桿、按鍵、絕對映射的滑鼠),不能把整個視窗設成 app-region:drag ——
-// 那會吃掉所有點擊。所以只留一小塊當拖曳握把。
+// 【為什麼 overlay 動得了頁面 DOM】overlay 由 preload 注入,和頁面跑在同一個 Electron
+// renderer、共用同一份 document。
 const pct = a => Math.round(a * 100) + "%";
 
 const BTN = "padding:4px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.25);"
           + "background:#2a2f3a;color:#fff;font-size:12px;cursor:pointer";
 
-// 攔住這些事件的冒泡。三個理由:
-// (1) 頁面在 document 上把滑鼠/鍵盤映射成【真的遊戲輸入】(桌面模式:絕對座標 + 實體
-//     鍵盤)。控制項的事件不攔,拖一次不透明度滑桿等於在遊戲畫面做一次真的左鍵拖曳。
-// (2) 併入把手時,控制項是把手的子節點,而把手本身綁著「拖曳循環抽屜段位」——不攔的話
-//     點滑桿/按鈕會順便把抽屜拖動/收合。
-// (3) React 的事件是委派在 root(不是掛在把手元素上),所以【一定要含 pointer 事件】:
-//     在冒泡途中(還沒到 root)就 stopPropagation,React 那組 onPointerDown 才不會觸發。
-// 【必須是冒泡階段,不能用 capture】capture 階段在祖先層 stopPropagation() 會讓事件
-// 根本傳不到按鈕/滑桿本身,它們自己的 onclick/oninput 永遠不觸發(整組控制項失靈)。
+// 攔住這些事件的冒泡:頁面在 document 上把滑鼠/鍵盤映射成【真的遊戲輸入】,控制項的
+// 事件不攔的話,拖一次不透明度滑桿等於在遊戲畫面做一次真的左鍵拖曳。
+// 【必須是冒泡階段】capture 階段在祖先層 stopPropagation 會讓事件傳不到按鈕/滑桿本身,
+// 它們自己的 onclick/oninput 就永遠不觸發(整組控制項失靈)。
 const BLOCK = ["pointerdown", "pointermove", "pointerup", "pointercancel",
                "mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel",
                "keydown", "keyup"];
 const blockBubble = el => BLOCK.forEach(t => el.addEventListener(t, e => e.stopPropagation()));
 
-// 造一顆控制項元素。回傳的元素一律標成 no-drag —— 在 app-region:drag 的容器裡,
-// 唯有 no-drag 的子元素點得到、拖得動(不然會被當成拖視窗)。
+// 造一顆控制項元素,標成 no-drag(在 app-region:drag 的容器裡才點得到)。
 function mkEl(doc, tag, css, txt) {
   const el = doc.createElement(tag);
   el.style.cssText = css + ";-webkit-app-region:no-drag";
@@ -43,52 +32,30 @@ function mkEl(doc, tag, css, txt) {
   return el;
 }
 
-// 「透明度滑桿 / 置頂 / 設定 / 提示」這組核心控制項,append 到 parent。獨立條與併入
-// 把手兩種模式共用;拖曳握把與關閉鈕由各自呼叫端處理(佈局不同)。
-// opts.sliderW 滑桿寬、opts.iconTop 置頂鈕用純圖示(併入把手時省空間)。
-function buildControls(doc, api, cfg, parent, opts) {
-  opts = opts || {};
-  const sl = mkEl(doc, "input", "width:" + (opts.sliderW || 96) + "px");
+// 「透明度滑桿 / 置頂 / 設定 / 提示」核心控制項,append 到 parent(退路的獨立條用)。
+function buildControls(doc, api, cfg, parent) {
+  const sl = mkEl(doc, "input", "width:96px");
   sl.type = "range"; sl.min = "15"; sl.max = "100"; sl.step = "1";
   sl.value = String(Math.round(cfg.alpha * 100));
   const val = mkEl(doc, "span", "min-width:34px;text-align:right;font-size:11px", pct(cfg.alpha));
-  sl.oninput = () => {
-    const a = Number(sl.value) / 100;
-    val.textContent = pct(a);
-    api.setAlpha(a);
-  };
+  sl.oninput = () => { const a = Number(sl.value) / 100; val.textContent = pct(a); api.setAlpha(a); };
   parent.append(sl, val);
 
-  // 置頂鈕。併入把手時只放 📌 圖示、用不透明度表示開關,省下「置頂中/未置頂」的寬度。
-  const topTxt = on => opts.iconTop ? "📌" : (on ? "📌 置頂中" : "📌 未置頂");
-  const top = mkEl(doc, "button", BTN, topTxt(cfg.topmost));
-  if (opts.iconTop) top.style.opacity = cfg.topmost ? "1" : ".45";
-  top.title = "切換視窗置頂";
+  const top = mkEl(doc, "button", BTN, cfg.topmost ? "📌 置頂中" : "📌 未置頂");
   top.onclick = async () => {
-    // 【不能從按鈕狀態反推現值】Ctrl/Cmd+Alt+T 快速鍵只改主行程的 cfg.topmost,不會
-    // 回頭同步這顆按鈕 —— 用快速鍵關掉後按鈕仍顯示「開」,此時照舊反推等於又送一次
-    // 「開」,置頂沒回來。改成每次點擊先問主行程現值,再送相反值。
+    // 快速鍵只改主行程的 cfg.topmost、不回同步這顆按鈕,所以每次先問現值再送相反值。
     const cur = (await api.getSettings()).topmost;
     const r = await api.setTopmost(!cur);
-    top.textContent = topTxt(r);
-    if (opts.iconTop) top.style.opacity = r ? "1" : ".45";
-    // Wayland 下這個請求不會生效,明示比靜默失敗好
+    top.textContent = r ? "📌 置頂中" : "📌 未置頂";
     if (r && cfg.platform === "linux") top.title = "Wayland 工作階段可能無效,請改用 X11";
   };
   parent.appendChild(top);
 
-  // ⚙ 開設定頁。存過網址後,原本唯一回設定頁的路徑只剩「連線失敗的錯誤頁」——
-  // 若打錯的 port 剛好有別的東西回應 200(連得上但不是我們要的服務),使用者就永遠
-  // 回不去設定頁,只能手改 settings.json。這顆鈕補上這條路。
   const settingsBtn = mkEl(doc, "button", BTN, "⚙");
   settingsBtn.title = "改設定(重新輸入網址)";
   settingsBtn.onclick = () => api.openSettings();
   parent.appendChild(settingsBtn);
 
-  // ⚠ 只在啟動時就有 notices(快速鍵註冊失敗、Linux 透明度提示等)才出現 —— 這些訊息
-  // 原本只進 console.error,打包後的 exe 是 GUI 程式沒有主控台,訊息等於消失。用
-  // alert() 最省事且一定看得見。每次點擊重新問主行程(而非掛載當下的快照),掛載之後
-  // 才發生的 notices(設定存檔失敗、setUrl 被擋)也看得到。
   if (cfg.notices && cfg.notices.length) {
     const warn = mkEl(doc, "button", BTN.replace("#2a2f3a", "#6b4a1a"), "⚠");
     warn.title = "有需要注意的訊息";
@@ -100,114 +67,13 @@ function buildControls(doc, api, cfg, parent, opts) {
   }
 }
 
-// 找頁面上的展開bar:React 版 .panel .handle、舊單檔版 #panelHandle。
-const findHandle = doc => doc.querySelector(".panel .handle") || doc.getElementById("panelHandle");
-
-// 完全收起 / 重開整個抽屜。舞台是 .stage{inset:0} 鋪滿整個視窗、抽屜只是浮在上面,
-// 所以隱藏整個 .panel(舊版 #dashView)就等於畫面全露。用 DOM 查詢即時取,讓「⤓ 鈕 /
-// 重開鈕 / 全螢幕事件」三處共用而不必互傳參照。
-function collapseDrawer(doc) {
-  const panel = doc.querySelector(".panel") || doc.getElementById("dashView");
-  if (panel) panel.style.display = "none";
-  const tab = doc.getElementById("fcReopen");
-  if (tab) tab.style.display = "flex";
-}
-function expandDrawer(doc) {
-  const panel = doc.querySelector(".panel") || doc.getElementById("dashView");
-  if (panel) panel.style.display = "";
-  const tab = doc.getElementById("fcReopen");
-  if (tab) tab.style.display = "none";
-}
-
-// 【併入模式】把整條控制項印在遠端頁自己的展開bar 上。收合/展開沿用把手本身的行為
-// (React 拖曳循環段位、舊版 onclick),所以這裡不放收合鈕。
-function mergeIntoHandle(handle, doc, api, cfg) {
-  if (handle.querySelector("#fcCtl")) return handle;   // 已併過(避免 observer 重覆觸發)
-
-  // 讓原本純視覺的把手握把真的能拖動視窗。app-region:drag 會吃掉點擊/pointer,所以拖
-  // 握把不會誤觸把手的收合/循環 —— 剛好:握把=移窗,把手其他空白處=操作抽屜。
-  // React 版 class 是 .grip、舊版是 .ph-grip。
-  const grip = handle.querySelector(".grip, .ph-grip");
-  if (grip) {
-    // 【做大做明顯】原本只有 58×5 的小 pill,使用者常按不到、以為「拖不動」。放大成
-    // 一塊置中的寬條(140×24)當明確的「拖我移窗」把手。不設成整條把手是因為:全收時
-    // 開抽屜的唯一入口就是點把手本體(TopHud 開合鈕全收時不顯示),整條吃成 drag 會
-    // 讓抽屜再也打不開。左右仍留把手空白區可點擊開合抽屜。
-    // 【Wayland 只能這樣移窗】setPosition 在 Wayland 是無效呼叫,靠 app-region:drag
-    // 觸發合成器(Mutter)的互動式移動是唯一路;X11 工作階段一樣有效。
-    grip.style.cssText += ";-webkit-app-region:drag;cursor:move;flex:0 0 140px;width:140px;"
-                        + "height:24px;border-radius:8px;background:rgba(255,255,255,.16);"
-                        + "align-self:center";
-    grip.title = "拖曳這條移動視窗(Wayland 若仍無效,請改用 X11 工作階段登入)";
-  }
-  // 藏掉右側提示文字(React 的段位標籤 / 舊版 COLLAPSE),把橫向空間讓給控制項。
-  const hint = handle.querySelector(".r, .ph-right");
-  if (hint) hint.style.display = "none";
-  // 側欄/窄視窗時把手容易擠爆:讓左側標題可壓縮/截斷,控制項本身不縮,確保每顆鈕都點得到。
-  const left = handle.querySelector(".l, .ph-left");
-  if (left) left.style.cssText += ";min-width:0;overflow:hidden;white-space:nowrap;"
-                                + "text-overflow:ellipsis;flex:0 1 auto";
-
-  const ctl = doc.createElement("div");
-  ctl.id = "fcCtl";
-  ctl.style.cssText = "display:flex;gap:6px;align-items:center;margin-left:auto;flex:0 0 auto;"
-                    + "-webkit-app-region:no-drag";
-  blockBubble(ctl);   // 別讓操作控制項冒泡成「拖動抽屜」或「一次遊戲輸入」
-  handle.appendChild(ctl);
-
-  buildControls(doc, api, cfg, ctl, { sliderW: 80, iconTop: true });
-
-  // 完全收起:連把手都收掉,讓遊戲畫面完整露出。舞台本來就是 .stage{inset:0} 鋪滿
-  // 整個視窗、抽屜只是浮在上面(collapsed 也還留一條 46px 把手蓋住底部),所以隱藏
-  // 整個 .panel 就等於畫面全露。留一顆畫面底部中央的小鈕把它叫回。
-  // React 只管 .panel 的 height/className,不碰 display,所以這個 display:none 不會被
-  // 重繪蓋掉。收合/重開的實作在 collapseDrawer/expandDrawer(即時查 .panel/#dashView)。
-  const reopen = doc.createElement("div");
-  reopen.id = "fcReopen";
-  reopen.textContent = "▲ 控制";
-  reopen.title = "重開控制抽屜";
-  reopen.style.cssText = [
-    "position:fixed", "left:50%", "transform:translateX(-50%)", "bottom:0",
-    "z-index:2147483000", "display:none", "align-items:center", "justify-content:center",
-    "padding:2px 14px", "border-radius:9px 9px 0 0",
-    "background:rgba(20,20,26,.82)", "border:1px solid rgba(255,255,255,.22)", "border-bottom:none",
-    "color:#cfd3db", "font:11px system-ui,'Microsoft JhengHei',sans-serif",
-    "letter-spacing:1px", "cursor:pointer", "user-select:none", "-webkit-app-region:no-drag",
-  ].join(";");
-  blockBubble(reopen);
-  reopen.onclick = () => expandDrawer(doc);
-  doc.body.appendChild(reopen);
-
-  const hideAll = mkEl(doc, "button", BTN, "⤓");
-  hideAll.title = "完全收起(連把手一起收掉;點畫面底部中央的「▲ 控制」重開)";
-  hideAll.onclick = () => collapseDrawer(doc);
-  ctl.appendChild(hideAll);
-
-  const close = mkEl(doc, "button", BTN.replace("#2a2f3a", "#5a2320"), "✕");
-  close.title = "關閉浮動客戶端";
-  close.onclick = () => window.close();
-  ctl.appendChild(close);
-
-  // React 重繪(切換段位會更新把手右側文字)理論上不會動到我們附在最後的 #fcCtl,
-  // 但保險起見盯著把手:萬一 #fcCtl 被移除就補回、握把的移窗樣式掉了也補回。
-  const view = doc.defaultView;
-  if (view && view.MutationObserver) {
-    const guard = new view.MutationObserver(() => {
-      if (!handle.querySelector("#fcCtl")) handle.appendChild(ctl);
-      if (grip && grip.style.webkitAppRegion !== "drag") grip.style.webkitAppRegion = "drag";
-    });
-    guard.observe(handle, { childList: true });
-  }
-  return handle;
-}
-
 const removeStandalone = doc => ["fcBar", "fcTab"].forEach(id => {
   const el = doc.getElementById(id);
   if (el) el.remove();
 });
 
-// 【獨立條模式】沒有把手的頁面(登入頁、設定頁、連線失敗頁)的退路:自帶一條左下角的
-// 小控制條,連同收合分頁。位置取左下角(遊戲 UI 最不重要的一角)。
+// 【退路的獨立條】只給沒有原生控制列的過場頁面(登入 / 連線失敗)用。左下角小控制條 +
+// 收合分頁。
 function mountStandalone(doc, api, cfg) {
   const bar = doc.createElement("div");
   bar.id = "fcBar";
@@ -217,13 +83,10 @@ function mountStandalone(doc, api, cfg) {
     "border-radius:10px", "background:rgba(20,20,26,.78)",
     "border:1px solid rgba(255,255,255,.22)", "color:#cfd3db",
     "font:12px system-ui,'Microsoft JhengHei',sans-serif",
-    "-webkit-app-region:drag",          // 這一條就是拖曳把手
+    "-webkit-app-region:drag",          // 整條就是拖曳把手
   ].join(";");
   blockBubble(bar);
 
-  // 明確、夠寬的拖曳握把。【不走 mkEl()】—— mkEl() 會統一補上 no-drag,那正是先前
-  // ⋮⋮ 看得到卻拖不動的原因(整條是 drag,唯獨這顆被標成 no-drag)。這顆刻意保持
-  // drag,並用 padding + align-self:stretch 撐出夠大的抓取區。
   const grip = doc.createElement("span");
   grip.textContent = "⠿⠿";
   grip.title = "拖曳這裡移動視窗";
@@ -235,11 +98,8 @@ function mountStandalone(doc, api, cfg) {
   ].join(";");
   bar.appendChild(grip);
 
-  buildControls(doc, api, cfg, bar, {});
+  buildControls(doc, api, cfg, bar);
 
-  // 收合後的重開分頁。收合時不整條隱藏,而是留一顆一定看得見、一定點得到的小分頁重開,
-  // 徹底擺脫對全域快速鍵(Ctrl/Cmd+Alt+O,Wayland 下註冊失敗)的依賴。分頁與控制條
-  // 同一角落,互斥顯示。
   const tab = doc.createElement("div");
   tab.id = "fcTab";
   tab.textContent = "▸";
@@ -266,49 +126,41 @@ function mountStandalone(doc, api, cfg) {
 
   doc.body.appendChild(bar);
   doc.body.appendChild(tab);
-  // 收合狀態(cfg.overlay=false):藏控制條、露出重開分頁,兩者互斥。
   if (!cfg.overlay) { bar.style.display = "none"; tab.style.display = "flex"; }
   return bar;
 }
 
-// 全螢幕時別讓單按 Esc 退出 —— 桌面模式 Esc 是要送進遊戲的按鍵,卻被瀏覽器拿去退
-// 全螢幕。用 Keyboard Lock API 鎖住 Esc:進全螢幕就 lock(['Escape']),此時單按 Esc
-// 送給頁面(遊戲收得到)、不再退出;要退全螢幕改成長按 Esc,或用 ⛶ 鈕(JS 觸發的
-// exitFullscreen 不受鎖影響)。離開全螢幕時解鎖。需要 secure context + Chromium ——
-// 遠端頁是 https、Electron 就是 Chromium,皆符合;拿不到 API 就靜默略過。
+// 全螢幕時別讓單按 Esc 退出 —— 桌面模式 Esc 是要送進遊戲的按鍵,卻被瀏覽器拿去退全螢幕。
+// Keyboard Lock API:進全螢幕就 lock(['Escape']),單按 Esc 送給頁面(遊戲收得到)、不
+// 退出;要退改長按 Esc,或用頁面的 ⛶(JS 觸發的 exitFullscreen 不受鎖影響)。需 secure
+// context(見 main.js 對 http origin 的處理)+ Chromium;拿不到 API 就略過。
 function keepEscInFullscreen(doc) {
   const nav = doc.defaultView && doc.defaultView.navigator;
   const kb = nav && nav.keyboard;
+  if (!kb || !kb.lock) return;
   doc.addEventListener("fullscreenchange", () => {
-    if (doc.fullscreenElement) {
-      // 鎖 Esc:單按送給頁面(遊戲收得到)、不退出全螢幕;要退改長按 Esc 或按 ⛶。
-      // 只有安全情境才有 navigator.keyboard(見 main.js 對 http origin 的處理);拿不到
-      // 就略過鎖,但下面的自動收抽屜照做。
-      if (kb && kb.lock) kb.lock(["Escape"]).catch(() => {});
-      collapseDrawer(doc);   // 全螢幕時抽屜自動完全收起,畫面全露
-    } else {
-      if (kb && kb.unlock) { try { kb.unlock(); } catch (_) {} }
-      expandDrawer(doc);     // 離開全螢幕把抽屜叫回來,不讓使用者少了控制列
-    }
+    if (doc.fullscreenElement) kb.lock(["Escape"]).catch(() => {});
+    else { try { kb.unlock(); } catch (_) {} }
   });
 }
 
+// 頁面上是否已有「原生控制列」:電腦端 React 的左側 rail,或(手機底部抽屜的)把手。
+// 有的話 React 自己管全部控制項,overlay 不注入任何東西。
+const hasNativeControls = doc => !!(doc.querySelector(".rail") || doc.querySelector(".panel .handle"));
+
 function mount(doc, api, cfg) {
   keepEscInFullscreen(doc);
-  const handle = findHandle(doc);
-  if (handle) return mergeIntoHandle(handle, doc, api, cfg);
+  if (hasNativeControls(doc)) return null;   // 已有原生控制列,不注入獨立條
 
-  // 還沒有把手(多半是登入頁,React 尚未渲染主畫面):先掛獨立條讓視窗至少能移動,
-  // 等把手一出現就併進去、收掉獨立條。
+  // 過場頁面(登入 / 連線失敗)還沒有原生控制列:掛獨立條讓它至少能移動/調透明度/關閉,
+  // 等原生控制列一出現(登入完成)就移除。
   const bar = mountStandalone(doc, api, cfg);
   const view = doc.defaultView;
   if (view && view.MutationObserver) {
     const obs = new view.MutationObserver(() => {
-      const h = findHandle(doc);
-      if (!h) return;
+      if (!hasNativeControls(doc)) return;
       obs.disconnect();
       removeStandalone(doc);
-      mergeIntoHandle(h, doc, api, cfg);
     });
     obs.observe(doc.body, { childList: true, subtree: true });
   }

@@ -54,6 +54,14 @@ export default function App() {
     return () => { a.removeEventListener('change', f1); b.removeEventListener('change', f2) }
   }, [])
 
+  // 電腦端進全螢幕就自動收合左側面板(畫面全露);離開不強制展開,交回使用者
+  useEffect(() => {
+    if (!isDesk) return
+    const on = () => { if (document.fullscreenElement) setDeskOpen(false) }
+    document.addEventListener('fullscreenchange', on)
+    return () => document.removeEventListener('fullscreenchange', on)
+  }, [isDesk])
+
   // 佈局方向 / 靈敏度 / 注視開關的擁有者是遠端頁,但用它們的是這裡的
   // VirtualPad / TouchPad / StageStream。走共用 store,不必層層傳 props,
   // 也不會因為切走分頁就重置(注視開關踩過這個坑)。

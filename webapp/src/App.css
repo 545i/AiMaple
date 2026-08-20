@@ -242,13 +242,13 @@
    電腦端版面:左側常駐 rail + 可展開左側面板(浮在畫面上)
    ──────────────────────────────────────────────────────────────────
    底部三段式抽屜在寬短的電腦視窗會壓成很扁一條、又蓋住畫面底部。電腦端改成靠左:
-   一條永遠在的細 rail(圖示分頁 + 展開鈕),點分頁展開左側面板顯示內容,收合後只剩
-   rail,遊戲畫面幾乎全露。面板只覆蓋左邊,右側畫面照樣互動(useDesktopInput 綁在影像
-   上,游標移到沒被蓋住的畫面即可操控)。手機/觸控維持底部抽屜,完全不受影響。
+   一條永遠在的細 rail(圖示分頁 + 浮動客戶端控制項),點分頁展開左側面板顯示內容,
+   收合後只剩 rail、遊戲畫面幾乎全露。面板只覆蓋左邊,右側畫面照樣互動。整條 rail 是
+   視窗拖曳把手(app-region:drag),不再靠 overlay 注入獨立 UI。手機/觸控維持底部抽屜。
    ══════════════════════════════════════════════════════════════════ */
 .panel.dock-left {
   position: absolute; left: 0; top: 60px; bottom: 0; right: auto;
-  width: auto;                       /* top:60 讓開頂部 HUD(z-30),不然 handle 的控制列會被蓋住 */
+  width: auto;                       /* top:60 讓開頂部 HUD(z-30) */
   flex-direction: row; align-items: stretch;
   border-radius: 0; border-top: none; box-shadow: none;
   background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none;
@@ -257,20 +257,22 @@
 }
 .dock-left .rail, .dock-left .side { pointer-events: auto; }
 
-/* 常駐細條 */
+/* 常駐細條。整條是視窗拖曳把手(浮動客戶端 Electron 才有作用,瀏覽器忽略);
+   按鈕/滑桿是 no-drag 例外,不然點它們會變成拖視窗。 */
 .dock-left .rail {
   flex: 0 0 auto; width: 56px; height: 100%;
   display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0;
   background: rgba(20, 23, 34, .92); border-right: 1px solid rgba(255, 255, 255, .08);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  -webkit-app-region: drag;
 }
-.dock-left .rail-toggle {
-  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 10px; font-size: 17px;
-  color: var(--dim); background: rgba(255, 255, 255, .06); border: 1px solid var(--line);
-  display: flex; align-items: center; justify-content: center;
+.dock-left .rail button, .dock-left .rail input, .dock-left .rail .rail-alpha-wrap {
+  -webkit-app-region: no-drag;
 }
-.dock-left .rail-toggle:hover { color: var(--text); background: rgba(255, 255, 255, .1); }
-.dock-left .rail-tabs { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.dock-left .rail-tabs { display: flex; flex-direction: column; gap: 6px; }
+.dock-left .rail-sp { flex: 1 1 auto; min-height: 8px; }   /* 把控制項推到底部 */
+.dock-left .rail-ctl { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
 .dock-left .rail-btn {
   width: 42px; height: 42px; border-radius: 12px; color: var(--dim);
   display: flex; align-items: center; justify-content: center; transition: all .16s;
@@ -279,31 +281,42 @@
 .dock-left .rail-btn:hover { color: var(--text); background: rgba(255, 255, 255, .06); }
 .dock-left .rail-btn.on { background: var(--primary); color: #0f111a;
                           box-shadow: 0 4px 14px rgba(0, 242, 173, .25); }
+.dock-left .rail-btn.sm { width: 40px; height: 32px; font-size: 15px; }
+.dock-left .rail-btn.close { color: #ff8f8f; }
+.dock-left .rail-btn.close:hover { background: rgba(255, 77, 77, .18); color: #fff; }
 
-/* 面板本體:handle(浮動客戶端控制列併入處)+ 內容,靠 rail 右側,頂端對齊 */
+/* 垂直半透明滑桿 */
+.dock-left .rail-alpha-wrap { display: flex; align-items: center; justify-content: center;
+                              height: 96px; }
+.dock-left .rail-alpha { writing-mode: vertical-lr; direction: rtl;
+                         width: 6px; height: 96px; accent-color: var(--primary); cursor: pointer; }
+
+/* 展開的面板本體(內容),靠 rail 右側、滿高 */
 .dock-left .side {
-  flex: 0 0 auto; align-self: flex-start; max-height: 100%;
+  flex: 0 0 auto; align-self: stretch; width: min(460px, 44vw);
   display: flex; flex-direction: column; overflow: hidden;
   background: rgba(30, 34, 51, .96); border-right: 1px solid rgba(255, 255, 255, .08);
   box-shadow: 18px 0 44px rgba(0, 0, 0, .42);
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
 }
-.dock-left.closed .side { width: 360px; }          /* 只有 handle 那條(容納併入的控制列) */
-.dock-left.open .side { width: min(460px, 44vw); height: 100%; }
-.dock-left .side .handle {
-  flex: 0 0 var(--handle-h); height: var(--handle-h);
-  cursor: default;    /* 電腦端不做拖曳縮放;移窗靠 .grip(overlay 設 app-region:drag) */
-  border-bottom: 1px solid rgba(255, 255, 255, .06);
-}
 .dock-left .side .panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto;
-                               padding: 12px 14px 22px; display: flex; flex-direction: column; gap: 12px; }
+                               padding: 14px 14px 22px; display: flex; flex-direction: column; gap: 12px; }
 .dock-left .side .panel-body.cols { display: grid; align-content: start;
                                     grid-template-columns: 1fr; gap: 14px; }
 .dock-left .side .panel-body.cols > .full { grid-column: 1 / -1; }
 @media (min-width: 1400px) {
-  .dock-left.open .side { width: min(780px, 48vw); }
+  .dock-left .side { width: min(780px, 48vw); }
   .dock-left .side .panel-body.cols { grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
 }
+
+/* 完全收起後的重開小鈕(貼左緣中段) */
+.rail-reopen { position: fixed; left: 0; top: calc(50% - 24px); z-index: 2000;
+               width: 22px; height: 48px; border-radius: 0 12px 12px 0; font-size: 14px;
+               background: rgba(20, 23, 34, .92); color: var(--dim);
+               border: 1px solid rgba(255, 255, 255, .15); border-left: none;
+               display: flex; align-items: center; justify-content: center;
+               -webkit-app-region: no-drag; }
+.rail-reopen:hover { color: var(--text); }
 
 /* 電腦端影像置中(左側浮層蓋的是左邊,不像底部抽屜要把影像貼上緣) */
 .app.desk .stage video, .app.desk .stage img { object-position: center !important; }

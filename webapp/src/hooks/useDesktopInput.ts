@@ -48,6 +48,13 @@ export function useDesktopInput(
     const norm = (e: MouseEvent): [number, number] | null => {
       const v = videoRef.current
       if (!v) return null
+      // 【游標壓在控制介面上時不算「在影像上」】面板/rail/HUD/快捷列浮在影像上、又落在
+      // 影像的幾何範圍內,只靠座標判斷會把「在面板上操作」也送成遊戲輸入(滑鼠映射穿透,
+      // 使用者回報的問題)。改看事件目標:壓在這些互動層上就不映射。符文框/提示/軌跡是
+      // pointer-events:none,事件會穿到 video,不受這個判斷影響。
+      const tgt = e.target as Element | null
+      if (tgt && tgt.closest && tgt.closest('.panel, .hud, .quickbar, .rail-reopen'))
+        return null
       const c = contentRect(v)
       if (!c) return null
       const nx = (e.clientX - c.ox) / c.dw, ny = (e.clientY - c.oy) / c.dh
