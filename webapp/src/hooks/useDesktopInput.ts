@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InputChannel } from './useInput'
 import { contentRect } from '../lib/letterbox'
+import { codeToToken, keyDownToken } from '../lib/keymap'
 
 /**
  * 電腦端的實體鍵鼠映射。
@@ -9,32 +10,13 @@ import { contentRect } from '../lib/letterbox'
  *  1. 滑鼠是【絕對座標】{t:'ma', x, y} —— 把游標位置換算成影像內的 0~1 正規化
  *     座標送過去。不是手機那種相對位移 {t:'mm', dx, dy}:電腦有實體游標,用相對
  *     位移會兩邊指標對不上,點不到東西。
- *  2. 鍵盤用 e.code 不是 e.key。e.key 會受輸入法/Shift 影響(按 Shift+1 得到 '!'),
- *     而遊戲要的是「實體按鍵位置」。e.code 是實體鍵位,跟鍵盤佈局無關。
+ *  2. 鍵盤用 e.code 不是 e.key。映射與「這個 keydown 要不要送」的判斷抽在
+ *     `lib/keymap.ts`(純函式,有 node --test 測試)—— 那個判斷曾經把 Ctrl
+ *     自己也擋掉,是使用者回報過的 bug,不能再藏在事件處理器裡沒人測。
  *
  * 【只有游標在影像上才送】移出影像就自動放開所有按住的鍵 —— 不然滑到控制台
  * 操作介面時,鍵盤還在往遊戲送,而且移開時按著的鍵會永遠卡住。
  */
-const CODE_MAP: Record<string, string> = {
-  Space: 'space', Enter: 'enter', NumpadEnter: 'enter', Tab: 'tab',
-  Escape: 'esc', Backspace: 'backspace',
-  ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
-  Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown',
-  Insert: 'insert', Delete: 'delete',
-  ShiftLeft: 'shift', ShiftRight: 'shift',
-  ControlLeft: 'ctrl', ControlRight: 'ctrl',
-  AltLeft: 'alt', AltRight: 'alt',
-}
-
-/** 實體鍵位 → 後端的鍵名。認不得的鍵回 null(不送,也不攔瀏覽器預設行為)。 */
-export function codeToToken(code: string): string | null {
-  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
-  if (/^Digit[0-9]$/.test(code)) return code.slice(5)
-  if (/^Numpad[0-9]$/.test(code)) return 'num' + code.slice(6)
-  if (/^F([1-9]|1[0-2])$/.test(code)) return code.toLowerCase()
-  return CODE_MAP[code] ?? null
-}
-
 const BTN: Record<number, string> = { 0: 'left', 1: 'middle', 2: 'right' }
 
 export function useDesktopInput(
@@ -44,6 +26,9 @@ export function useDesktopInput(
 ) {
   const overRef = useRef(false)
   const [over, setOver] = useState(false)
+  // 目前【我們送出去】按著的鍵。releaseAll() 之後要一起清掉,否則下次
+  // 放開時會送出一個後端早就放開的鍵。
+  const heldRef = useRef<Set<string>>(new Set())
 
   // 【input 必須走 ref】input 是 useInput 每次 render 都重建的物件。若把它放進
   // effect 的依賴,setOver() 觸發的 re-render 會讓整組事件監聽被拆掉重綁,而
@@ -74,7 +59,7 @@ export function useDesktopInput(
       if (on === overRef.current) return
       overRef.current = on
       setOver(on)
-      if (!on) inputRef.current.releaseAll()      // 移出影像 → 放開所有鍵,避免卡鍵
+      if (!on) { heldRef.current.clear(); inputRef.current.releaseAll() }  // 移出影像 → 放開所有鍵,避免卡鍵
     }
 
     const onMove = (e: MouseEvent) => {
@@ -106,16 +91,19 @@ export function useDesktopInput(
     }
     const onKeyDown = (e: KeyboardEvent) => {
       if (!overRef.current || typing(e.target)) return
-      if (e.metaKey || e.ctrlKey || e.altKey) return   // 放行系統快捷鍵(F5/Ctrl+W…)
-      const t = codeToToken(e.code)
+      const t = keyDownToken(e)          // 修飾鍵自己要送,組合鍵讓給瀏覽器(見 lib/keymap.ts)
       if (!t) return
       e.preventDefault()
+      heldRef.current.add(t)
       inputRef.current.keyDown(t)
     }
+    // 【只放開真的按下過的鍵】組合鍵的 keydown 被讓給瀏覽器了,它的 keyup 若照送,
+    // 後端會收到一個沒有對應 keyDown 的 keyUp。原本的 bug 也有這個不對稱:Ctrl 的
+    // keydown 被擋掉、keyup 卻照送。用 heldRef 記帳,兩邊才會配對。
     const onKeyUp = (e: KeyboardEvent) => {
       if (typing(e.target)) return
       const t = codeToToken(e.code)
-      if (!t) return
+      if (!t || !heldRef.current.delete(t)) return
       e.preventDefault()
       inputRef.current.keyUp(t)
     }
@@ -138,6 +126,7 @@ export function useDesktopInput(
       document.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('keyup', onKeyUp)
       window.removeEventListener('blur', onBlur)
+      heldRef.current.clear()
       io.releaseAll()
       overRef.current = false
     }
