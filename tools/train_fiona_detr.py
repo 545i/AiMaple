@@ -30,8 +30,13 @@
 幀上微調並用人工判讀驗收之後才算數(專案鐵律:合成/外部資料可以訓練,不能當結論)。
 
 用法:
-    venv/Scripts/python.exe tools/train_fiona_detr.py --epochs 60
+    venv-detr/Scripts/python.exe tools/train_fiona_detr.py --epochs 60
     可重複執行 --resume 從 checkpoint 接著跑(前景逾時分段用)。
+
+【一定要用 venv-detr,不要用 venv】scripts/restart-admin.ps1 會停掉所有路徑等於
+`venv\Scripts\python.exe` 的進程(它靠這個精準殺掉伺服器而不誤傷別的 Python)。
+拿 venv 跑訓練的話,任何一次重啟服務都會把訓練連同進度一起殺掉 —— 已經踩過一次。
+venv-detr 有同樣的 torch/transformers,而且不在那份名單上。
 """
 import argparse
 import glob
@@ -52,10 +57,15 @@ DS_DIR = os.path.join(ROOT, "fiona_ds")
 OUT_DIR = os.path.join(ROOT, "models", "fiona_detr")
 MODEL_ID = "PekingU/rtdetr_r18vd"
 
-# 資料集的兩個類別名稱就叫 '1' 和 '2'(data.yaml)。class 1 每張最多出現一個、
-# 總數約為圖數的一半 —— 很可能是「展示階段被箭頭指出來的那一隻」,但【尚未驗證】,
-# 所以這裡不替它取有語意的名字,原樣保留,免得把猜測寫死進權重。
-NAMES = ["c0", "c1"]
+# 兩個類別的語意【已經放大臉部人工確認】:
+#   c0 = 素臉(細眼、面無表情)
+#   c1 = 公主臉(大藍眼 + 微笑)
+# 這不是標註雜訊,是遊戲機制本身:題目是「選擇【化妝的】碧歐蕾塔在哪」——
+#   展示階段  四隻裡只有一隻戴公主臉(4 框 1 個 c1,220 張)→ 這就是起點槽
+#   洗牌之後  四隻【全部】化成公主臉(4 框 4 個 c1,532 張)→ 無法用臉分辨
+# 所以 c1 只在展示階段有辨識價值,可以當作「起點槽」的第二個獨立來源
+# (現行是靠 fiona_cv.find_arrow 讀橘色箭頭),不是拿來解洗牌的。
+NAMES = ["plain", "princess"]
 ID2LABEL = {i: n for i, n in enumerate(NAMES)}
 LABEL2ID = {n: i for i, n in enumerate(NAMES)}
 
@@ -67,15 +77,34 @@ def orig_id(path):
     return m.group(1) if m else b
 
 
-def load_records(ds_dir=DS_DIR):
-    """把 train/valid/test 三個資料夾的檔案全部倒進來(它自帶的切分是污染的)。"""
+def n_boxes(lab_path):
+    with open(lab_path, encoding="utf-8") as f:
+        return sum(1 for line in f if len(line.split()) == 5)
+
+
+def load_records(ds_dir=DS_DIR, four_only=True):
+    """把 train/valid/test 三個資料夾的檔案全部倒進來(它自帶的切分是污染的)。
+
+    【four_only:只留剛好 4 框的幀,預設開啟】資料集裡有 969 張【只框了一隻】,
+    而畫面上另外三隻明明看得見(已人工目視確認)。那是漏標,不是「畫面只有一隻」。
+    拿它訓練等於明確告訴模型「這裡沒有蘑菇」,模型會忠實學會漏檢 —— 先前那次
+    在實機影片上只有 29.6%「恰好 4 框」,很可能就是這樣來的。
+    另有 224 張 3 框、少數 2/5 框,同樣排除。留下 5325 張(81%)。
+    """
     recs = []
+    dropped = 0
     for split in ("train", "valid", "test"):
         for img in sorted(glob.glob(os.path.join(ds_dir, split, "images", "*.jpg"))):
             lab = img.replace(os.sep + "images" + os.sep, os.sep + "labels" + os.sep)
             lab = os.path.splitext(lab)[0] + ".txt"
-            if os.path.exists(lab):
-                recs.append({"img": img, "lab": lab, "oid": orig_id(img)})
+            if not os.path.exists(lab):
+                continue
+            if four_only and n_boxes(lab) != 4:
+                dropped += 1
+                continue
+            recs.append({"img": img, "lab": lab, "oid": orig_id(img)})
+    if dropped:
+        print(f"[資料清理] 排除 {dropped} 個非 4 框的檔案(漏標,見 load_records 註解)")
     return recs
 
 
@@ -192,6 +221,8 @@ def main():
     ap.add_argument("--model-id", default=None)
     ap.add_argument("--img-size", type=int, default=640)
     ap.add_argument("--val-frac", type=float, default=0.15)
+    ap.add_argument("--keep-partial", action="store_true",
+                    help="連漏標的幀一起訓(預設排除,見 load_records)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -205,7 +236,7 @@ def main():
         args.model_id or MODEL_ID,
         size={"height": args.img_size, "width": args.img_size})
 
-    recs = load_records(args.ds_dir)
+    recs = load_records(args.ds_dir, four_only=not args.keep_partial)
     if not recs:
         print(f"!!! {args.ds_dir} 找不到資料,中止。")
         sys.exit(1)
