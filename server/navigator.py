@@ -909,6 +909,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # 先把角色弄回平台,這條路徑才有意義。
         if not _on_some_platform(p, platforms):
             _state["phase"] = "deblock"
+            nav_trace.event("deblock", note="不在任何平台層,先歸位再規劃")
             _deblock_layer(platforms)
             p = _settle() or p
         _state["pos"] = list(p)
@@ -943,6 +944,10 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             cur = _dot()
             if cur and abs(cur[1] - prev_y) > Y_TOL:
                 print(f"[nav] 角色不在預期的層(y={cur[1]},應為 {prev_y}) → 重新規劃")
+                # 【這一筆是「第一次錯、第二次對」的關鍵訊號】使用者回報的症狀正是
+                # 這個:第一趟規劃走歪 → 重新規劃 → 第二趟才對。沒有記錄的話,事後
+                # 完全看不出「這一趟到底有沒有重規劃過」。
+                nav_trace.event("replan", note=f"y={cur[1]} 應為 {prev_y}")
                 break
             _state["phase"] = "g_" + mt
             p_start = _dot()
@@ -992,6 +997,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             break
     else:
         print(f"[nav] 重新規劃 {REPLAN_MAX} 次仍未走完,交給上層(巡邏會重挑點)")
+        nav_trace.event("replan_exhausted", note=f"{REPLAN_MAX} 次仍未走完")
     _replan.clear()
     if precise:
         _state["phase"] = "fine_x"
