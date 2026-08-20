@@ -1,28 +1,37 @@
 // 注入頁面的控制條。從 preload 拆出來,讓 preload 保持只做 IPC 橋接。
 //
-// 【兩種掛法】我們自己的遠端頁(web/index.html)本來就有一條展開bar(#panelHandle,
-// 收合後遊戲畫面上唯一留著的那條),所以優先把控制項「印在那條上」,不再另外浮一條
-// 獨立控制條擠版面(見 mergeIntoHandle)。只有在沒有 #panelHandle 的頁面(設定頁、
-// 連線失敗的錯誤頁)才退回舊的獨立控制條(mountStandalone)。
+// 【兩種掛法 + 動態切換】遠端頁(現在是 webapp/ 的 React 版,也相容舊的單檔
+// web/index.html)本來就有一條展開bar —— React 是 <section.panel> 裡的 .handle、
+// 舊版是 #panelHandle。有把手時就把控制項「印在那條上」,不再另浮一條獨立條擠版面
+// (見 mergeIntoHandle)。
+// 【為什麼要先掛獨立條、再切換】React 版「登入前只渲染登入畫面,登入後才長出 .handle」。
+// 掛載當下(多半還在登入頁)找不到把手,所以先掛左下角的獨立條讓視窗至少能移動/調
+// 透明度;用 MutationObserver 等把手一出現,就把控制項併進去、順手把獨立條收掉。
 //
-// 【為什麼要注入 UI 到頁面】frame:false 之後沒有系統標題列可以拖曳,而遠端頁面
-// 整片都是互動區(搖桿、按鍵、絕對映射的滑鼠),不能把整個視窗設成 app-region:drag
-// —— 那會吃掉所有點擊。所以只留一小塊當拖曳握把。
+// 【為什麼 overlay 動得了 React 的 DOM】overlay 由 preload 注入,和 React 頁面跑在同一個
+// Electron renderer、共用同一份 document,所以能直接抓 React 渲染出來的 .handle。這也
+// 表示要改併入行為只需重建客戶端,不必去重建/重部署遠端 React。
+//
+// 【為什麼要注入 UI 到頁面】frame:false 之後沒有系統標題列可以拖曳,而遠端頁面整片
+// 都是互動區(搖桿、按鍵、絕對映射的滑鼠),不能把整個視窗設成 app-region:drag ——
+// 那會吃掉所有點擊。所以只留一小塊當拖曳握把。
 const pct = a => Math.round(a * 100) + "%";
 
 const BTN = "padding:4px 8px;border-radius:8px;border:1px solid rgba(255,255,255,.25);"
           + "background:#2a2f3a;color:#fff;font-size:12px;cursor:pointer";
 
-// 攔住這些事件的冒泡。兩個理由:
+// 攔住這些事件的冒泡。三個理由:
 // (1) 頁面在 document 上把滑鼠/鍵盤映射成【真的遊戲輸入】(桌面模式:絕對座標 + 實體
 //     鍵盤)。控制項的事件不攔,拖一次不透明度滑桿等於在遊戲畫面做一次真的左鍵拖曳。
-// (2) 併入把手時,控制項是 #panelHandle 的子節點,而把手自己的 onclick 是「收合/展開
-//     抽屜」—— 不攔的話點一下滑桿/按鈕會順便把抽屜收掉。
+// (2) 併入把手時,控制項是把手的子節點,而把手本身綁著「拖曳循環抽屜段位」——不攔的話
+//     點滑桿/按鈕會順便把抽屜拖動/收合。
+// (3) React 的事件是委派在 root(不是掛在把手元素上),所以【一定要含 pointer 事件】:
+//     在冒泡途中(還沒到 root)就 stopPropagation,React 那組 onPointerDown 才不會觸發。
 // 【必須是冒泡階段,不能用 capture】capture 階段在祖先層 stopPropagation() 會讓事件
 // 根本傳不到按鈕/滑桿本身,它們自己的 onclick/oninput 永遠不觸發(整組控制項失靈)。
-// 冒泡階段是「目標節點先處理完,才往上冒泡經過這裡被攔下」,只擋掉往 document/把手的
-// 冒泡,不影響控制項自身互動。
-const BLOCK = ["mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel", "keydown", "keyup"];
+const BLOCK = ["pointerdown", "pointermove", "pointerup", "pointercancel",
+               "mousemove", "mousedown", "mouseup", "click", "dblclick", "wheel",
+               "keydown", "keyup"];
 const blockBubble = el => BLOCK.forEach(t => el.addEventListener(t, e => e.stopPropagation()));
 
 // 造一顆控制項元素。回傳的元素一律標成 no-drag —— 在 app-region:drag 的容器裡,
@@ -91,23 +100,27 @@ function buildControls(doc, api, cfg, parent, opts) {
   }
 }
 
-// 【併入模式】把整條控制項印在遠端頁自己的展開bar(#panelHandle)上。
-// 收合/展開沿用把手本身的 onclick(panelToggle),所以這裡不放收合鈕 —— 抽屜收起後
-// 把手仍在,控制項就一直待在遊戲畫面上那條唯一露出的 bar 上。
+// 找頁面上的展開bar:React 版 .panel .handle、舊單檔版 #panelHandle。
+const findHandle = doc => doc.querySelector(".panel .handle") || doc.getElementById("panelHandle");
+
+// 【併入模式】把整條控制項印在遠端頁自己的展開bar 上。收合/展開沿用把手本身的行為
+// (React 拖曳循環段位、舊版 onclick),所以這裡不放收合鈕。
 function mergeIntoHandle(handle, doc, api, cfg) {
-  // 讓原本純視覺的把手握把真的能拖動視窗。app-region:drag 會吃掉點擊,所以拖握把
-  // 不會誤觸把手的收合 onclick —— 剛好:握把=移窗,把手其他空白處=收合抽屜。
-  const grip = handle.querySelector(".ph-grip");
+  if (handle.querySelector("#fcCtl")) return handle;   // 已併過(避免 observer 重覆觸發)
+
+  // 讓原本純視覺的把手握把真的能拖動視窗。app-region:drag 會吃掉點擊/pointer,所以拖
+  // 握把不會誤觸把手的收合/循環 —— 剛好:握把=移窗,把手其他空白處=操作抽屜。
+  // React 版 class 是 .grip、舊版是 .ph-grip。
+  const grip = handle.querySelector(".grip, .ph-grip");
   if (grip) {
     grip.style.cssText += ";-webkit-app-region:drag;cursor:move;height:14px;min-width:60px";
     grip.title = "拖曳這裡移動視窗";
   }
-  // 藏掉右側 COLLAPSE 文字提示,把橫向空間讓給控制項(收合意圖靠點擊把手本身就夠明顯)。
-  const hint = handle.querySelector(".ph-right");
+  // 藏掉右側提示文字(React 的段位標籤 / 舊版 COLLAPSE),把橫向空間讓給控制項。
+  const hint = handle.querySelector(".r, .ph-right");
   if (hint) hint.style.display = "none";
-  // 側欄模式的把手只有 ≤460px 寬,控制項一整排容易擠爆。讓左側標題可壓縮/截斷,
-  // 控制項本身不縮(flex-shrink:0),確保每顆鈕都點得到、不會被 overflow 裁掉。
-  const left = handle.querySelector(".ph-left");
+  // 側欄/窄視窗時把手容易擠爆:讓左側標題可壓縮/截斷,控制項本身不縮,確保每顆鈕都點得到。
+  const left = handle.querySelector(".l, .ph-left");
   if (left) left.style.cssText += ";min-width:0;overflow:hidden;white-space:nowrap;"
                                 + "text-overflow:ellipsis;flex:0 1 auto";
 
@@ -115,7 +128,7 @@ function mergeIntoHandle(handle, doc, api, cfg) {
   ctl.id = "fcCtl";
   ctl.style.cssText = "display:flex;gap:6px;align-items:center;margin-left:auto;flex:0 0 auto;"
                     + "-webkit-app-region:no-drag";
-  blockBubble(ctl);   // 別讓操作控制項冒泡成「收合抽屜」或「一次遊戲輸入」
+  blockBubble(ctl);   // 別讓操作控制項冒泡成「拖動抽屜」或「一次遊戲輸入」
   handle.appendChild(ctl);
 
   buildControls(doc, api, cfg, ctl, { sliderW: 80, iconTop: true });
@@ -125,11 +138,26 @@ function mergeIntoHandle(handle, doc, api, cfg) {
   close.onclick = () => window.close();
   ctl.appendChild(close);
 
+  // React 重繪(切換段位會更新把手右側文字)理論上不會動到我們附在最後的 #fcCtl,
+  // 但保險起見盯著把手:萬一 #fcCtl 被移除就補回、握把的移窗樣式掉了也補回。
+  const view = doc.defaultView;
+  if (view && view.MutationObserver) {
+    const guard = new view.MutationObserver(() => {
+      if (!handle.querySelector("#fcCtl")) handle.appendChild(ctl);
+      if (grip && grip.style.webkitAppRegion !== "drag") grip.style.webkitAppRegion = "drag";
+    });
+    guard.observe(handle, { childList: true });
+  }
   return handle;
 }
 
-// 【獨立條模式】沒有 #panelHandle 的頁面(設定頁、連線失敗錯誤頁)的退路:自帶一條
-// 左下角的小控制條,連同收合分頁。位置取左下角(遊戲 UI 最不重要的一角)。
+const removeStandalone = doc => ["fcBar", "fcTab"].forEach(id => {
+  const el = doc.getElementById(id);
+  if (el) el.remove();
+});
+
+// 【獨立條模式】沒有把手的頁面(登入頁、設定頁、連線失敗頁)的退路:自帶一條左下角的
+// 小控制條,連同收合分頁。位置取左下角(遊戲 UI 最不重要的一角)。
 function mountStandalone(doc, api, cfg) {
   const bar = doc.createElement("div");
   bar.id = "fcBar";
@@ -194,8 +222,24 @@ function mountStandalone(doc, api, cfg) {
 }
 
 function mount(doc, api, cfg) {
-  const handle = doc.getElementById("panelHandle");
-  return handle ? mergeIntoHandle(handle, doc, api, cfg) : mountStandalone(doc, api, cfg);
+  const handle = findHandle(doc);
+  if (handle) return mergeIntoHandle(handle, doc, api, cfg);
+
+  // 還沒有把手(多半是登入頁,React 尚未渲染主畫面):先掛獨立條讓視窗至少能移動,
+  // 等把手一出現就併進去、收掉獨立條。
+  const bar = mountStandalone(doc, api, cfg);
+  const view = doc.defaultView;
+  if (view && view.MutationObserver) {
+    const obs = new view.MutationObserver(() => {
+      const h = findHandle(doc);
+      if (!h) return;
+      obs.disconnect();
+      removeStandalone(doc);
+      mergeIntoHandle(h, doc, api, cfg);
+    });
+    obs.observe(doc.body, { childList: true, subtree: true });
+  }
+  return bar;
 }
 
 module.exports = { pct, mount };
