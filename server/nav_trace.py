@@ -219,11 +219,22 @@ def load(seq=None):
 
 
 def runs():
-    """趟次清單(新到舊):流水號 + 摘要。給 UI 選區間、以及點線之後顯示是第幾趟。"""
-    return [{"seq": r.get("seq"), "mode": r.get("mode"), "target": r.get("target"),
-             "dur": r.get("dur"), "arrived": r.get("arrived"), "t0": r.get("t0"),
-             "n": len(r.get("samples") or [])}
-            for r in reversed(_all())]
+    """趟次清單(新到舊):流水號 + 摘要 + 事件統計。
+
+    【為什麼要帶事件統計】只列「第幾趟、去哪裡」的話,使用者看不出【哪一趟有問題】,
+    等於要一筆一筆點開找。帶上 replan/deblock/fall_jump/rope 的次數,一眼就能挑出
+    「重規劃過的那幾趟」——那正是「第一次錯、第二次才對」的定義。
+    """
+    out = []
+    for r in reversed(_all()):
+        ev = {}
+        for e in r.get("events") or []:
+            ev[e.get("kind")] = ev.get(e.get("kind"), 0) + 1
+        out.append({"seq": r.get("seq"), "mode": r.get("mode"), "target": r.get("target"),
+                    "dur": r.get("dur"), "arrived": r.get("arrived"), "t0": r.get("t0"),
+                    "n": len(r.get("samples") or []), "events": ev,
+                    "segs": len(r.get("segments") or [])})
+    return out
 
 
 # ---------- 畫出來 ----------

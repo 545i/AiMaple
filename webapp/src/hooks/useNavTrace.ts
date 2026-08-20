@@ -42,6 +42,9 @@ let timer: any = null
 let mergeN = 6
 let rangeFrom = 0
 let rangeTo = 0
+/** 目前選中的趟次(流水號)。清單點一下、或在遠端畫面上點線,都寫這裡 ——
+ *  兩邊要看到同一個選擇,不然「清單選了但畫面沒 highlight」會很怪。 */
+let picked: number | null = null
 const subs = new Set<() => void>()
 
 const emit = () => subs.forEach(f => f())
@@ -62,6 +65,21 @@ export function setNavTraceMerge(n: number) {
 export function setNavTraceRange(from: number, to: number) {
   rangeFrom = from
   rangeTo = to
+}
+
+export function setNavTracePick(seq: number | null) {
+  picked = picked === seq ? null : seq        // 點同一筆 = 取消
+  emit()
+}
+
+export function useNavTracePick(): number | null {
+  const [, force] = useState(0)
+  useEffect(() => {
+    const f = () => force(n => n + 1)
+    subs.add(f)
+    return () => { subs.delete(f) }
+  }, [])
+  return picked
 }
 
 export function useNavTrace(on: boolean): NavTraceData | null {

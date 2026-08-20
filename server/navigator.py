@@ -807,9 +807,18 @@ OFFLAYER_DROPS = 3      # 歸位動作最多做幾次
 OFFLAYER_LAND = 0.7     # 每次動作後等落地再讀位置(空中的讀數不可信,同 _unstick)
 
 
-def _on_some_platform(p, platforms):
-    """角色是否站在某塊平台的層上(只看 y;x 不管,掉在平台外的空隙也算該層)。"""
-    return bool(p and any(abs(p[1] - pf["y"]) <= Y_TOL for pf in platforms))
+def _on_some_platform(p, platforms, margin=2):
+    """角色是否真的站在某塊平台上(y 在容差內【而且 x 也在那塊平台的範圍內】)。
+
+    【x 不能不管】原本只看 y,結果「y 接近某塊平台、但 x 差了幾十格」也算在層上 ——
+    實測卡死案例:角色 (18,51),地圖有 y=53 的平台但 x 範圍是 44~62 與 85~124,
+    角色根本不在上面,脫困卻因此不觸發,人就一直卡著。
+    """
+    if not p:
+        return False
+    return any(abs(p[1] - pf["y"]) <= Y_TOL
+               and pf["xA"] - margin <= p[0] <= pf["xB"] + margin
+               for pf in platforms)
 
 
 def _deblock_layer(platforms):
@@ -979,6 +988,20 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
                                               blink_dy=BLINK_DY_MAX,
                                               blink_up=BLINK_UP_MAX)
         start = pathgraph.nearest_node(nodes, p)
+        # 【起點跨層 = 這條路徑從第一步就不可能成立】執行端的第一個檢查就是「現在
+        # 的層是不是起點那一層」,跨層必定立刻失敗 → 重規劃 → 選到同一個節點 → 再
+        # 失敗,三次之後放棄,角色永遠停在原地(實測:角色 (18,51),最近節點 (26,45),
+        # 0.37 秒內三次 replan 然後卡死)。
+        # 這種情況表示角色所在的層【沒有任何節點】—— 掛在繩索上、或站在沒被記錄
+        # 巡邏點的平台上。先把它弄回有節點的層再說。
+        if start and abs(start[1] - p[1]) > Y_TOL:
+            print(f"[nav] 起點跨層(角色 y={p[1]},最近節點 y={start[1]}) → 先脫困歸位")
+            _state["phase"] = "deblock"
+            nav_trace.event("deblock", note=f"起點跨層 y={p[1]}→節點 y={start[1]}")
+            _deblock_layer(platforms)
+            p = _settle() or p
+            _state["pos"] = list(p)
+            start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
             _state["error"] = f"無路徑 {start}→({tx},{ty})"

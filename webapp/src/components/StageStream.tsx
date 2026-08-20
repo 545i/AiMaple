@@ -3,6 +3,7 @@ import type { useVideo } from '../hooks/useVideo'
 import type { CursorPos } from '../hooks/useInput'
 import type { OverlayData } from '../hooks/useRuneOverlay'
 import type { NavTraceData } from '../hooks/useNavTrace'
+import { useNavTracePick, setNavTracePick } from '../hooks/useNavTrace'
 import { contentRect } from '../lib/letterbox'
 
 /**
@@ -25,8 +26,9 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
   const { videoRef, kind, status } = video
   const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const [rect, setRect] = useState<{ ox: number; oy: number; dw: number; dh: number } | null>(null)
-  /** 點到的那一趟(流水號)。null = 沒選。 */
-  const [pickedSeq, setPickedSeq] = useState<number | null>(null)
+  /** 選中的那一趟(流水號)。與開發頁的清單共用同一個狀態 —— 清單點一下這裡也要
+   *  highlight,不然兩邊各選各的。 */
+  const pickedSeq = useNavTracePick()
 
   // 把正規化座標換算回畫面像素。黑邊偏移交給 contentRect(依 object-position,
   // 與滑鼠映射的 norm() 共用同一套算法、互為反運算)。
@@ -132,7 +134,7 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
                   style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
                   onPointerDown={e => {
                     e.stopPropagation(); e.preventDefault()
-                    setPickedSeq(ln.seq === pickedSeq ? null : (ln.seq ?? null))
+                    setNavTracePick(ln.seq ?? null)
                   }} />
               )
             })}
@@ -165,7 +167,7 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
             const parts = Object.entries(kinds).map(([k, v]) => `${k}×${v}`)
             return parts.length ? `　${parts.join('　')}` : ''
           })()}
-          <span className="x" onPointerDown={e => { e.stopPropagation(); setPickedSeq(null) }}>✕</span>
+          <span className="x" onPointerDown={e => { e.stopPropagation(); setNavTracePick(pickedSeq) }}>✕</span>
         </div>
       )}
 

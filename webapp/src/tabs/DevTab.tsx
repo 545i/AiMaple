@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
 import { fiona, rune } from '../lib/api'
-import { useNavTrace, setNavTraceMerge, setNavTraceRange } from '../hooks/useNavTrace'
+import { useNavTrace, setNavTraceMerge, setNavTraceRange,
+         useNavTracePick, setNavTracePick } from '../hooks/useNavTrace'
 import { navTrace } from '../lib/api'
 import { useAppState, setAppState } from '../lib/appState'
 import { useRuneOverlay } from '../hooks/useRuneOverlay'
@@ -61,6 +62,13 @@ export function DevTab() {
         .dvt-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
         .dvt-chip { font-size: 11.5px; padding: 3px 8px; border-radius: 8px;
                     background: rgba(255,255,255,.05); border: 1px solid var(--line); }
+        .dvt-rows { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto;
+                    margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; }
+        .dvt-row { display: flex; gap: 8px; align-items: center; padding: 5px 8px; font-size: 11.5px;
+                   border-bottom: 1px solid var(--line); cursor: pointer; }
+        .dvt-row:last-child { border-bottom: none; }
+        .dvt-row:hover { background: rgba(255,255,255,.05); }
+        .dvt-row.on { background: rgba(90,160,255,.18); outline: 1px solid rgba(120,180,255,.5); }
         .dvt-rounds { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
         .dvt-rounds > div { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); }
         .dvt-pre { font-size: 11.5px; line-height: 1.55; color: var(--text); margin-top: 8px;
@@ -321,6 +329,7 @@ function NavTraceCard() {
   const [from, setFrom] = useState(0)
   const [to, setTo] = useState(0)
   const data = useNavTrace(on)
+  const picked = useNavTracePick()
   const sm = data?.summary
 
   // 趟次清單:開著就每 3 秒更新一次(巡邏中會一直新增),關著就不打
@@ -391,6 +400,35 @@ function NavTraceCard() {
                 : `${sm?.mode ?? ''} → ${sm?.target ?? '—'}　${sm?.dur ?? '?'}s　`
                   + `樣本 ${sm?.n ?? 0}　到達=${String(sm?.arrived)}　`
                   + `事件 ${JSON.stringify(sm?.events ?? {})}`}
+          </div>
+
+          {/* 【趟次清單才是主要入口】在遠端畫面的小地圖上點線太小、又要在合併的
+              好幾趟裡挑,不實際。清單直接列出來,還標出哪幾趟重規劃過/沒到達 ——
+              那才是要查的目標。點一列 = 只 highlight 那一趟。 */}
+          <div className="dvt-rows">
+            {runs.length === 0 && <div className="hint">尚無趟次</div>}
+            {runs.map(r => {
+              const ev = r.events ?? {}
+              const bad = (ev.replan ?? 0) + (ev.replan_exhausted ?? 0) + (ev.deblock ?? 0)
+              const on = picked === r.seq
+              return (
+                <div key={r.seq} className={`dvt-row${on ? ' on' : ''}`}
+                     onClick={() => setNavTracePick(r.seq)}>
+                  <b>#{r.seq}</b>
+                  <span>{r.mode} → {Array.isArray(r.target) ? r.target.join(',') : '—'}</span>
+                  <span className="mono">{r.dur}s</span>
+                  <span style={{ color: r.arrived ? 'var(--dim)' : 'var(--orange)' }}>
+                    {r.arrived ? '到達' : '未到'}
+                  </span>
+                  {bad > 0 && <span style={{ color: 'var(--orange)' }}>
+                    {ev.replan ? `重規劃×${ev.replan}` : ''}
+                    {ev.replan_exhausted ? ' 放棄' : ''}
+                    {ev.deblock ? ` 脫困×${ev.deblock}` : ''}
+                  </span>}
+                  {ev.fall_jump ? <span className="hint">下跳×{ev.fall_jump}</span> : null}
+                </div>
+              )
+            })}
           </div>
         </>
       )}
