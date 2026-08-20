@@ -25,6 +25,8 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
   const { videoRef, kind, status } = video
   const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
   const [rect, setRect] = useState<{ ox: number; oy: number; dw: number; dh: number } | null>(null)
+  /** 點到的那一趟(流水號)。null = 沒選。 */
+  const [pickedSeq, setPickedSeq] = useState<number | null>(null)
 
   // 把正規化座標換算回畫面像素。黑邊偏移交給 contentRect(依 object-position,
   // 與滑鼠映射的 norm() 共用同一套算法、互為反運算)。
@@ -114,15 +116,31 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
                     stroke="rgba(255,255,255,.5)" strokeWidth={1} strokeDasharray="3 3" />
             ))}
             {/* 實際走的:依動作類型上色 */}
-            {(trace.lines ?? []).map((ln, i) => (
-              <polyline key={'l' + i} fill="none" stroke={TRACE_COLOR[ln.cat] ?? '#999'}
-                        strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round"
-                        points={ln.pts.map(P).join(' ')} />
-            ))}
+            {(trace.lines ?? []).map((ln, i) => {
+              const dim = pickedSeq !== null && ln.seq !== pickedSeq
+              return (
+                <polyline
+                  key={'l' + i} fill="none" stroke={TRACE_COLOR[ln.cat] ?? '#999'}
+                  strokeWidth={ln.seq === pickedSeq ? 4 : 2.5}
+                  strokeOpacity={dim ? 0.18 : 1}
+                  strokeLinejoin="round" strokeLinecap="round"
+                  points={ln.pts.map(P).join(' ')}
+                  /* 【只有線本身吃滑鼠,而且吃完就攔下來】整層是 pointer-events:none
+                     (不然會擋住遠端鍵鼠映射);這裡只把線打開,並 stopPropagation ——
+                     useDesktopInput 是掛在 document 的冒泡階段,不攔的話點線會同時
+                     在遊戲裡點一下。 */
+                  style={{ pointerEvents: 'stroke', cursor: 'pointer' }}
+                  onPointerDown={e => {
+                    e.stopPropagation(); e.preventDefault()
+                    setPickedSeq(ln.seq === pickedSeq ? null : (ln.seq ?? null))
+                  }} />
+              )
+            })}
             {/* 按鍵事件:同一段藍線上兩個以上的點 = 連續下跳 */}
             {(trace.events ?? []).map((e, i) => (
               <circle key={'e' + i} cx={e.p[0] * r.dw} cy={e.p[1] * r.dh} r={3}
-                      fill={TRACE_COLOR[e.cat] ?? '#999'} stroke="#fff" strokeWidth={1} />
+                      fill={TRACE_COLOR[e.cat] ?? '#999'} stroke="#fff" strokeWidth={1}
+                      opacity={pickedSeq !== null && e.seq !== pickedSeq ? 0.15 : 1} />
             ))}
             {trace.start && (
               <circle cx={trace.start[0] * r.dw} cy={trace.start[1] * r.dh} r={5}
@@ -136,6 +154,20 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
           </svg>
         )
       })()}
+
+      {pickedSeq !== null && (
+        <div className="trace-pick" onPointerDown={e => e.stopPropagation()}>
+          第 {pickedSeq} 趟
+          {(() => {
+            const ev = (trace?.events ?? []).filter(e => e.seq === pickedSeq)
+            const kinds: Record<string, number> = {}
+            ev.forEach(e => { kinds[e.kind] = (kinds[e.kind] ?? 0) + 1 })
+            const parts = Object.entries(kinds).map(([k, v]) => `${k}×${v}`)
+            return parts.length ? `　${parts.join('　')}` : ''
+          })()}
+          <span className="x" onPointerDown={e => { e.stopPropagation(); setPickedSeq(null) }}>✕</span>
+        </div>
+      )}
 
       {trace && trace.ok === false && trace.reason === 'no_minimap' && (
         <div className="rune-warn">軌跡已停用：抓不到小地圖</div>

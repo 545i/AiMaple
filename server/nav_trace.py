@@ -21,8 +21,12 @@ import time
 
 import paths
 
-TRACE_DIR = os.path.join(paths.data_dir("logs"), "nav_trace")
-KEEP_RUNS = 50            # 只留最近幾趟(一趟數十 KB,50 趟約幾 MB)
+# 【一個檔就好,用流水號區分】原本一趟一個檔,50 趟就是 50 個檔 —— 要看哪一趟得先
+# 挑檔名,而且多數時候根本不知道自己要看哪一個。改成單一 JSONL:一行一趟、帶流水號
+# seq,UI 上點線就顯示是第幾趟,也能直接選區間。
+TRACE_FILE = os.path.join(paths.data_dir("logs"), "nav_trace.jsonl")
+TRACE_DIR = os.path.join(paths.data_dir("logs"), "nav_trace")   # 舊格式,只用來搬家
+KEEP_RUNS = 200           # 一行一趟,留多一點也不佔空間
 MAX_SAMPLES = 4000        # 單趟上限,防止卡住的導航把記憶體吃光
 
 # phase(navigator._state["phase"])→ 類別。navigator 全程都在維護 phase,
@@ -122,32 +126,79 @@ def _finish_locked(arrived, note):
     _last_run = _run
     _run = None
     try:
-        os.makedirs(TRACE_DIR, exist_ok=True)
-        # 【檔名要保證不撞】只有秒的解析度時,同一秒內完成的兩趟會互相覆蓋 ——
-        # 巡邏的短程(走一步就到)很容易撞在一起,記錄會無聲消失(實際發生過:
-        # 巡邏 18 分鐘,目錄裡只有零星幾筆)。毫秒仍可能相同,所以撞到就加序號。
-        t0 = _last_run["t0"]
-        base = (time.strftime("%Y%m%d-%H%M%S", time.localtime(t0))
-                + f"-{int(t0 % 1 * 1000):03d}")
-        p = os.path.join(TRACE_DIR, base + ".jsonl")
-        n = 0
-        while os.path.exists(p):
-            n += 1
-            p = os.path.join(TRACE_DIR, f"{base}_{n}.jsonl")
-        with open(p, "w", encoding="utf-8") as f:
+        _migrate_old_files()
+        _last_run["seq"] = _next_seq()
+        with open(TRACE_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(_last_run, ensure_ascii=False) + "\n")
         _prune()
     except Exception:
         pass          # 記錄失敗絕不能影響導航本身
 
 
-def _prune():
-    files = sorted(f for f in os.listdir(TRACE_DIR) if f.endswith(".jsonl"))
-    for f in files[:-KEEP_RUNS]:
+def _read_lines():
+    try:
+        with open(TRACE_FILE, encoding="utf-8") as f:
+            return [ln for ln in f.read().splitlines() if ln.strip()]
+    except Exception:
+        return []
+
+
+def _all():
+    out = []
+    for ln in _read_lines():
         try:
-            os.remove(os.path.join(TRACE_DIR, f))
+            out.append(json.loads(ln))
+        except Exception:
+            pass          # 壞掉一行不能讓整份記錄讀不出來
+    return out
+
+
+def _next_seq():
+    lines = _read_lines()
+    if not lines:
+        return 1
+    try:
+        return int(json.loads(lines[-1]).get("seq", len(lines))) + 1
+    except Exception:
+        return len(lines) + 1
+
+
+def _prune():
+    """只留最近 KEEP_RUNS 趟。整檔重寫 —— 一行一趟、每趟數十 KB,重寫成本可忽略,
+    換來「檔案永遠不會無限長大」這個保證。"""
+    lines = _read_lines()
+    if len(lines) <= KEEP_RUNS:
+        return
+    with open(TRACE_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines[-KEEP_RUNS:]) + "\n")
+
+
+def _migrate_old_files():
+    """把舊的「一趟一個檔」搬進單一檔,搬完刪掉目錄。只做一次。"""
+    if not os.path.isdir(TRACE_DIR):
+        return
+    files = sorted(f for f in os.listdir(TRACE_DIR) if f.endswith(".jsonl"))
+    if files:
+        seq = _next_seq()
+        with open(TRACE_FILE, "a", encoding="utf-8") as out:
+            for fn in files:
+                try:
+                    with open(os.path.join(TRACE_DIR, fn), encoding="utf-8") as f:
+                        rec = json.loads(f.readline())
+                    rec["seq"] = seq
+                    seq += 1
+                    out.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
+    for fn in files:
+        try:
+            os.remove(os.path.join(TRACE_DIR, fn))
         except Exception:
             pass
+    try:
+        os.rmdir(TRACE_DIR)
+    except Exception:
+        pass
 
 
 def latest():
@@ -157,29 +208,22 @@ def latest():
         return json.loads(json.dumps(r)) if r else None
 
 
-def load(name=None):
-    """讀存檔的某一趟;name=None 取最新的檔案。"""
-    try:
-        files = sorted(f for f in os.listdir(TRACE_DIR) if f.endswith(".jsonl"))
-    except Exception:
+def load(seq=None):
+    """讀某一趟(依流水號);seq=None 取最新那一趟。"""
+    recs = _all()
+    if not recs:
         return None
-    if not files:
-        return None
-    fn = name if name in files else files[-1]
-    try:
-        with open(os.path.join(TRACE_DIR, fn), encoding="utf-8") as f:
-            return json.loads(f.readline())
-    except Exception:
-        return None
+    if seq in (None, "", 0):
+        return recs[-1]
+    return next((r for r in recs if int(r.get("seq", -1)) == int(seq)), None)
 
 
 def runs():
-    """存下來的趟次清單(新到舊)。"""
-    try:
-        return sorted((f for f in os.listdir(TRACE_DIR) if f.endswith(".jsonl")),
-                      reverse=True)
-    except Exception:
-        return []
+    """趟次清單(新到舊):流水號 + 摘要。給 UI 選區間、以及點線之後顯示是第幾趟。"""
+    return [{"seq": r.get("seq"), "mode": r.get("mode"), "target": r.get("target"),
+             "dur": r.get("dur"), "arrived": r.get("arrived"), "t0": r.get("t0"),
+             "n": len(r.get("samples") or [])}
+            for r in reversed(_all())]
 
 
 # ---------- 畫出來 ----------
@@ -281,7 +325,7 @@ def render_jpeg(run=None, scale=4, quality=85):
     return buf.tobytes() if ok else None
 
 
-def merged(n=6):
+def merged(n=6, seq_from=None, seq_to=None):
     """把最近 n 趟(含目前正在跑的那趟)併成一張,回合成的 run;沒有資料回 None。
 
     【為什麼需要】一趟 = 一次點到點導航,巡邏時每趟只有 3~5 秒。單看一趟的圖會
@@ -289,12 +333,22 @@ def merged(n=6):
     時間軸以最早那趟的 t0 為原點重新對齊,事件與樣本才對得起來。
     """
     cur = latest()
-    files = runs()[:max(0, n - (1 if cur else 0))]
-    olds = [load(f) for f in reversed(files)]
-    all_runs = [r for r in olds if r] + ([cur] if cur else [])
-    # latest() 可能就是最後一個存檔(導航已結束),避免同一趟畫兩次
-    if len(all_runs) >= 2 and cur and abs(all_runs[-2].get("t0", 0) - cur.get("t0", 0)) < 0.01:
-        all_runs.pop(-2)
+    recs = _all()
+    if seq_from is not None or seq_to is not None:
+        # 指定區間時就只看存檔,不把「正在跑的那趟」硬塞進來 —— 使用者要看的是
+        # 那一段歷史,混進當下這趟只會讓區間對不上。
+        lo = int(seq_from) if seq_from is not None else -10 ** 9
+        hi = int(seq_to) if seq_to is not None else 10 ** 9
+        all_runs = [r for r in recs if lo <= int(r.get("seq", 0)) <= hi]
+    else:
+        take = max(0, n - (1 if cur else 0))
+        olds = recs[-take:] if take else []
+        all_runs = list(olds) + ([cur] if cur else [])
+        # latest() 可能就是最後一個存檔(導航剛結束),避免同一趟畫兩次。
+        # 【只在這個分支做】指定區間時根本沒把 cur 加進來,在那裡去重會誤刪區間內
+        # 的一趟(實測:要 2~4 卻只拿到 2 和 4,因為連續完成的兩趟 t0 差不到 10ms)。
+        if len(all_runs) >= 2 and cur and                 abs(all_runs[-2].get("t0", 0) - cur.get("t0", 0)) < 0.01:
+            all_runs.pop(-2)
     if not all_runs:
         return None
     t0 = min(r["t0"] for r in all_runs)
@@ -305,10 +359,12 @@ def merged(n=6):
            "note": f"合併最近 {len(all_runs)} 趟"}
     for r in all_runs:
         off = r["t0"] - t0
+        seq = r.get("seq")
         for key in ("samples", "events", "segments"):
             for it in r.get(key) or []:
                 it = dict(it)
                 it["t"] = round(it["t"] + off, 3)
+                it["seq"] = seq        # 點線之後要顯示「這是第幾趟」
                 out[key].append(it)
     for key in ("samples", "events", "segments"):
         out[key].sort(key=lambda it: it["t"])
@@ -319,7 +375,7 @@ def merged(n=6):
 MAX_PTS = 600         # 疊圖用的點數上限:超過就抽樣。JSON 傳的是座標,不是影像。
 
 
-def overlay(merge_n=6):
+def overlay(merge_n=6, seq_from=None, seq_to=None):
     """給前端疊在【遠端畫面】上的資料。回 dict,拿不到就回 reason。
 
     【為什麼不回圖】回圖等於再開一條影像通道:伺服器每張要多抓一次小地圖、
@@ -342,7 +398,10 @@ def overlay(merge_n=6):
         return {"ok": False, "reason": "no_frame_size"}
     bx, by = st["x"], st["y"]
 
-    run = merged(merge_n) if merge_n > 1 else latest()
+    if seq_from is not None or seq_to is not None:
+        run = merged(seq_from=seq_from, seq_to=seq_to)
+    else:
+        run = merged(merge_n) if merge_n > 1 else latest()
     if not run or not run.get("samples"):
         return {"ok": False, "reason": "no_trace", "frame": [fw, fh],
                 "is_window": video_pipeline.state.get("source") == "window"}
@@ -357,10 +416,14 @@ def overlay(merge_n=6):
     # 依類別切成一段一段的折線(顏色在前端決定,這裡只給類別)
     lines, cur = [], None
     for s in ss:
-        if cur is None or cur["cat"] != s["cat"]:
-            cur = {"cat": s["cat"], "pts": []}
+        # 【流水號變了也要換一段】不同趟之間不該連成一條線 —— 那會畫出一條
+        # 「從上一趟終點瞬移到這一趟起點」的假軌跡。同時每條線帶著 seq,
+        # 前端點它就知道是第幾趟。
+        if cur is None or cur["cat"] != s["cat"] or cur.get("seq") != s.get("seq"):
+            same_run = cur is not None and cur.get("seq") == s.get("seq")
+            cur = {"cat": s["cat"], "seq": s.get("seq"), "pts": []}
             lines.append(cur)
-            if len(lines) > 1:                   # 接上前一段的最後一點,線才不會斷開
+            if same_run:                         # 同一趟內換動作 → 接上一點,線不斷開
                 cur["pts"].append(lines[-2]["pts"][-1])
         cur["pts"].append(norm(s["x"], s["y"]))
     lines = [ln for ln in lines if len(ln["pts"]) >= 2]
@@ -370,9 +433,11 @@ def overlay(merge_n=6):
         return min(run["samples"], key=lambda s: abs(s["t"] - t))
 
     events = [{"cat": e["cat"], "kind": e["kind"], "key": e.get("key", ""),
+               "seq": e.get("seq"), "note": e.get("note", ""),
                "p": norm(near(e["t"])["x"], near(e["t"])["y"])}
               for e in (run.get("events") or [])][-120:]
-    intent = [{"a": norm(*sg["start"]), "b": norm(*sg["target"]), "act": sg["act"]}
+    intent = [{"a": norm(*sg["start"]), "b": norm(*sg["target"]), "act": sg["act"],
+               "seq": sg.get("seq")}
               for sg in (run.get("segments") or []) if sg.get("start") and sg.get("target")][-60:]
 
     kinds = {}

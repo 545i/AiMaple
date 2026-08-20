@@ -15,8 +15,9 @@ import nav_trace as nt
 
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
-    """每個測試用自己的目錄,不要碰到真的 logs/nav_trace,也不要互相汙染。"""
-    monkeypatch.setattr(nt, "TRACE_DIR", str(tmp_path))
+    """每個測試用自己的檔案,不要碰到真的 logs/nav_trace.jsonl,也不要互相汙染。"""
+    monkeypatch.setattr(nt, "TRACE_FILE", str(tmp_path / "nav_trace.jsonl"))
+    monkeypatch.setattr(nt, "TRACE_DIR", str(tmp_path / "old"))   # 舊格式目錄(不存在)
     monkeypatch.setattr(nt, "_run", None)
     monkeypatch.setattr(nt, "_last_run", None)
     yield
@@ -77,22 +78,38 @@ def test_start_twice_flushes_the_previous_run():
     nt.start("patrol", (1, 1))
     nt.sample(1, 1, "g_walk")
     nt.start("patrol", (2, 2))
-    files = os.listdir(nt.TRACE_DIR)
-    assert len(files) == 1, "前一趟沒有被存檔"
+    assert len(nt._all()) == 1, "前一趟沒有被存檔"
     assert nt.latest()["target"] == [2, 2]
 
 
-def test_finish_writes_file_with_duration_and_arrived():
+def test_finish_writes_one_line_with_duration_arrived_and_seq():
     nt.start("patrol", (7, 8))
     nt.sample(1, 1, "g_walk")
     nt.finish(arrived=False)
-    files = os.listdir(nt.TRACE_DIR)
-    assert len(files) == 1
-    with open(os.path.join(nt.TRACE_DIR, files[0]), encoding="utf-8") as f:
-        rec = json.loads(f.readline())
-    assert rec["arrived"] is False
-    assert rec["target"] == [7, 8]
-    assert "dur" in rec
+    recs = nt._all()
+    assert len(recs) == 1
+    assert recs[0]["arrived"] is False
+    assert recs[0]["target"] == [7, 8]
+    assert "dur" in recs[0]
+    assert recs[0]["seq"] == 1, "流水號要從 1 開始"
+
+
+def test_seq_increases_and_load_finds_by_seq():
+    """流水號是 UI 用來『點線知道是第幾趟』與『選區間』的依據,必須遞增且查得到。"""
+    for i in range(3):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert [r["seq"] for r in nt._all()] == [1, 2, 3]
+    assert nt.load(2)["target"] == [1, 1]
+    assert nt.load(99) is None
+    assert nt.load()["seq"] == 3, "不給 seq 就是最新那一趟"
+
+
+def test_runs_lists_newest_first_with_summary():
+    for i in range(2):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    rs = nt.runs()
+    assert [r["seq"] for r in rs] == [2, 1], "要新到舊"
+    assert rs[0]["mode"] == "patrol" and rs[0]["n"] == 1
 
 
 def test_sample_cap_stops_growth_on_a_stuck_navigation():
@@ -104,19 +121,11 @@ def test_sample_cap_stops_growth_on_a_stuck_navigation():
 
 
 def test_prune_keeps_only_recent_runs(monkeypatch):
+    """檔案不能無限長大。留下來的必須是【最新】那幾趟。"""
     monkeypatch.setattr(nt, "KEEP_RUNS", 3)
     for i in range(6):
-        nt.start("patrol", (i, i))
-        nt.sample(i, i, "g_walk")
-        # 檔名是秒級時間戳,同一秒內會互相覆蓋 —— 測試自己指定不同檔名
-        nt.finish(arrived=True)
-        os.rename(os.path.join(nt.TRACE_DIR, sorted(os.listdir(nt.TRACE_DIR))[-1]),
-                  os.path.join(nt.TRACE_DIR, f"2026010{i}-000000.jsonl"))
-    nt._prune()
-    left = sorted(os.listdir(nt.TRACE_DIR))
-    assert len(left) == 3
-    assert left == ["20260103-000000.jsonl", "20260104-000000.jsonl",
-                    "20260105-000000.jsonl"], "留下來的應該是最新的三趟"
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert [r["seq"] for r in nt._all()] == [4, 5, 6]
 
 
 def test_segment_records_intent_and_outcome():
@@ -148,8 +157,6 @@ def test_merged_combines_runs_on_one_timeline():
         nt.sample(i, i, "g_walk")
         nt.event("press", "c", "g_rope")
         nt.finish(arrived=True)
-        os.rename(os.path.join(nt.TRACE_DIR, sorted(os.listdir(nt.TRACE_DIR))[-1]),
-                  os.path.join(nt.TRACE_DIR, f"2026010{i}-000000.jsonl"))
         _t.sleep(0.01)
     m = nt.merged(5)
     assert len(m["samples"]) == 3 and len(m["events"]) == 3
@@ -157,6 +164,7 @@ def test_merged_combines_runs_on_one_timeline():
     assert ts == sorted(ts), "合併後樣本要照時間排好"
     assert min(ts) >= 0, "時間軸要以最早那趟為原點"
     assert "合併" in m["note"]
+    assert all(s.get("seq") for s in m["samples"]), "合併後每筆要帶流水號(點線才知道是第幾趟)"
 
 
 def test_merged_does_not_draw_the_current_run_twice():
@@ -173,10 +181,17 @@ def test_merged_returns_none_without_any_data():
 
 
 def test_two_runs_in_the_same_second_do_not_overwrite_each_other():
-    """巡邏的短程(走一步就到)常常在同一秒內完成兩趟。檔名只有秒的解析度時
-    後一趟會蓋掉前一趟,記錄無聲消失 —— 實際發生過(巡邏 18 分鐘只留下幾筆)。"""
+    """巡邏的短程(走一步就到)常常在同一秒內完成兩趟。舊的「一趟一個檔 + 秒級檔名」
+    會讓後一趟蓋掉前一趟,記錄無聲消失(實際發生過:巡邏 18 分鐘只留下幾筆)。
+    改成一行一趟之後,同一秒完成幾趟就是幾行,不可能互相覆蓋。"""
     for i in range(2):
-        nt.start("patrol", (i, i))
-        nt.sample(i, i, "g_walk")
-        nt.finish(arrived=True)
-    assert len(os.listdir(nt.TRACE_DIR)) == 2, "同一秒完成的兩趟被互相覆蓋了"
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert len(nt._all()) == 2
+
+
+def test_merged_accepts_a_seq_range():
+    """UI 的「區間選」:指定流水號範圍,只畫那幾趟。"""
+    for i in range(5):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    m = nt.merged(seq_from=2, seq_to=4)
+    assert sorted({s["seq"] for s in m["samples"]}) == [2, 3, 4]

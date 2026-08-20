@@ -13,9 +13,13 @@ import { navTrace } from '../lib/api'
  *
  * 【一次一發】用 setTimeout 串接而不是 setInterval,前一發沒回就不發下一發。
  */
-export interface TraceLine { cat: string; pts: [number, number][] }
-export interface TraceEvent { cat: string; kind: string; key: string; p: [number, number] }
-export interface TraceIntent { a: [number, number]; b: [number, number]; act: string }
+export interface TraceLine { cat: string; seq?: number; pts: [number, number][] }
+export interface TraceEvent {
+  cat: string; kind: string; key: string; seq?: number; note?: string; p: [number, number]
+}
+export interface TraceIntent {
+  a: [number, number]; b: [number, number]; act: string; seq?: number
+}
 
 export interface NavTraceData {
   ok: boolean
@@ -36,18 +40,28 @@ let data: NavTraceData | null = null
 let users = 0
 let timer: any = null
 let mergeN = 6
+let rangeFrom = 0
+let rangeTo = 0
 const subs = new Set<() => void>()
 
 const emit = () => subs.forEach(f => f())
 
 async function tick() {
   if (users <= 0) return
-  try { data = await navTrace.overlay(mergeN); emit() } catch { /* 斷線沿用上一輪 */ }
+  try { data = await navTrace.overlay(mergeN, rangeFrom, rangeTo); emit() }
+  catch { /* 斷線沿用上一輪 */ }
   if (users > 0) timer = setTimeout(tick, POLL_MS)
 }
 
 export function setNavTraceMerge(n: number) {
   mergeN = n
+  rangeFrom = rangeTo = 0        // 回到「最近 N 趟」模式
+}
+
+/** 區間選:只畫流水號 from~to 那幾趟。傳 0,0 回到「最近 N 趟」。 */
+export function setNavTraceRange(from: number, to: number) {
+  rangeFrom = from
+  rangeTo = to
 }
 
 export function useNavTrace(on: boolean): NavTraceData | null {

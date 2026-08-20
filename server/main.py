@@ -894,8 +894,8 @@ def nav_status(token: str = Query("")):
 
 
 @app.get("/nav/trace")
-def nav_trace_json(token: str = Query(""), name: str = Query("")):
-    """一趟導航的完整行動軌跡(JSON)。name 空 = 目前/最近那一趟。
+def nav_trace_json(token: str = Query(""), seq: int = Query(0)):
+    """一趟導航的完整行動軌跡(JSON)。seq=0 表示目前/最近那一趟。
 
     每一次位置讀值、每一次按鍵、每一段點到點的意圖都在裡面,並帶著當下的
     phase 與類別(走位/上升/下跳/二段跳/脫困)。記錄點掛在 navigator._dot()
@@ -903,7 +903,7 @@ def nav_trace_json(token: str = Query(""), name: str = Query("")):
     「它讀到移動中的瞬時值就下判斷」。詳見 server/nav_trace.py 檔頭。"""
     _check_owner(token)
     import nav_trace
-    r = nav_trace.load(name) if name else nav_trace.latest()
+    r = nav_trace.load(seq) if seq else nav_trace.latest()
     if r is None:
         raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")
     return JSONResponse(r)
@@ -918,7 +918,8 @@ def nav_trace_runs(token: str = Query("")):
 
 
 @app.get("/nav/trace/overlay")
-def nav_trace_overlay(token: str = Query(""), merge: int = Query(6)):
+def nav_trace_overlay(token: str = Query(""), merge: int = Query(6),
+                      seq_from: int = Query(0), seq_to: int = Query(0)):
     """給前端疊在【遠端畫面】上的導航軌跡(正規化座標,不是影像)。
 
     【為什麼不回圖】回圖等於再開一條影像通道:伺服器每張要多抓一次小地圖、
@@ -931,11 +932,13 @@ def nav_trace_overlay(token: str = Query(""), merge: int = Query(6)):
     座標系不同,框會整片偏掉(同 /rune/overlay 的處理)。"""
     _check_owner(token)
     import nav_trace
-    return JSONResponse(nav_trace.overlay(max(1, min(30, merge))))
+    return JSONResponse(nav_trace.overlay(
+        max(1, min(60, merge)),
+        seq_from=seq_from or None, seq_to=seq_to or None))
 
 
 @app.get("/nav/trace.jpg")
-def nav_trace_img(token: str = Query(""), name: str = Query(""),
+def nav_trace_img(token: str = Query(""), seq: int = Query(0),
                   scale: int = Query(4), merge: int = Query(1)):
     """把軌跡畫在小地圖上(【離線分析用】,日常請用 /nav/trace/overlay 疊在遠端畫面)。
 
@@ -947,15 +950,15 @@ def nav_trace_img(token: str = Query(""), name: str = Query(""),
     「規劃到 A 卻走去 B」或「同一段下跳按了兩次」。按鍵事件在線上打點。
 
     merge=N 把最近 N 趟併成一張。【預設要 >1】一趟 = 一次點到點導航,巡邏時每趟
-    只有 3~5 秒,單看一趟畫面會一直重置,看不出整體路線。指定 name 時忽略 merge
+    只有 3~5 秒,單看一趟畫面會一直重置,看不出整體路線。指定 seq 時忽略 merge
     (那是明確要看某一趟)。
 
     正在導航時可以持續重抓 —— latest() 回的是【當下這一趟】的即時內容,不必等它
     結束才畫得出來。"""
     _check_owner(token)
     import nav_trace
-    if name:
-        r = nav_trace.load(name)
+    if seq:
+        r = nav_trace.load(seq)
     elif merge > 1:
         r = nav_trace.merged(merge)
     else:

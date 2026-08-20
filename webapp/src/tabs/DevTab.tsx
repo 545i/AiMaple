@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
 import { fiona, rune } from '../lib/api'
-import { useNavTrace, setNavTraceMerge } from '../hooks/useNavTrace'
+import { useNavTrace, setNavTraceMerge, setNavTraceRange } from '../hooks/useNavTrace'
+import { navTrace } from '../lib/api'
 import { useAppState, setAppState } from '../lib/appState'
 import { useRuneOverlay } from '../hooks/useRuneOverlay'
 
@@ -316,10 +317,35 @@ function RuneOverlayCard() {
 function NavTraceCard() {
   const { navTrace: on } = useAppState()
   const [merge, setMerge] = useState(6)
+  const [runs, setRuns] = useState<any[]>([])
+  const [from, setFrom] = useState(0)
+  const [to, setTo] = useState(0)
   const data = useNavTrace(on)
   const sm = data?.summary
 
-  useEffect(() => { setNavTraceMerge(merge) }, [merge])
+  // 趟次清單:開著就每 3 秒更新一次(巡邏中會一直新增),關著就不打
+  useEffect(() => {
+    if (!on) return
+    let alive = true
+    const tick = async () => {
+      try { const j: any = await navTrace.runs(); if (alive) setRuns(j.runs ?? j ?? []) }
+      catch { /* 清單拿不到不影響疊圖 */ }
+      if (alive) t = setTimeout(tick, 3000)
+    }
+    let t: any
+    tick()
+    return () => { alive = false; clearTimeout(t) }
+  }, [on])
+
+  const applyRange = (f: number, t2: number) => {
+    setFrom(f); setTo(t2)
+    if (f || t2) setNavTraceRange(f, t2)
+    else setNavTraceMerge(merge)
+  }
+
+  const seqs = runs.map(r => r.seq).filter((v: any) => typeof v === 'number')
+  const maxSeq = seqs.length ? Math.max(...seqs) : 0
+  const minSeq = seqs.length ? Math.min(...seqs) : 0
 
   return (
     <Card full title="導航行動軌跡">
@@ -327,30 +353,53 @@ function NavTraceCard() {
               onClick={() => setAppState({ navTrace: !on })}>
         🧭 在遠端畫面上顯示軌跡：{on ? '開' : '關'}
       </button>
-      <div className="row" style={{ marginTop: 6 }}>
-        <select className="sel" value={merge} onChange={e => setMerge(+e.target.value)}>
-          {[1, 3, 6, 12, 20].map(v => <option key={v} value={v}>合併最近 {v} 趟</option>)}
-        </select>
-      </div>
 
       {on && (
-        <div className="msg">
-          {!data ? '啟動中…'
-            : data.ok === false
-              ? (data.reason === 'no_trace' ? '還沒有軌跡（跑一趟巡邏或導航就會有）'
-                : data.reason === 'no_minimap' ? '⚠ 抓不到小地圖'
-                : '⚠ ' + data.reason)
-              : `${sm?.mode ?? ''} → ${sm?.target ?? '—'}　${sm?.dur ?? '?'}s　`
-                + `樣本 ${sm?.n ?? 0}　到達=${String(sm?.arrived)}　`
-                + `事件 ${JSON.stringify(sm?.events ?? {})}`}
-        </div>
+        <>
+          <div className="row" style={{ marginTop: 6 }}>
+            <select className="sel" value={from || to ? 'range' : String(merge)}
+                    onChange={e => {
+                      if (e.target.value === 'range') applyRange(Math.max(minSeq, maxSeq - 5), maxSeq)
+                      else { const m = +e.target.value; setMerge(m); applyRange(0, 0); setNavTraceMerge(m) }
+                    }}>
+              {[1, 3, 6, 12, 20, 40].map(v => <option key={v} value={v}>最近 {v} 趟</option>)}
+              <option value="range">自選區間…</option>
+            </select>
+            <span className="hint" style={{ alignSelf: 'center' }}>
+              共 {runs.length} 趟（#{minSeq}~#{maxSeq}）
+            </span>
+          </div>
+
+          {(from || to) ? (
+            <div className="row" style={{ marginTop: 6, alignItems: 'center', gap: 6 }}>
+              <span className="hint">從</span>
+              <input className="num" type="number" value={from} min={minSeq} max={maxSeq}
+                     onChange={e => applyRange(+e.target.value, to)} />
+              <span className="hint">到</span>
+              <input className="num" type="number" value={to} min={minSeq} max={maxSeq}
+                     onChange={e => applyRange(from, +e.target.value)} />
+              <button className="btn sm" onClick={() => applyRange(0, 0)}>取消</button>
+            </div>
+          ) : null}
+
+          <div className="msg">
+            {!data ? '啟動中…'
+              : data.ok === false
+                ? (data.reason === 'no_trace' ? '還沒有軌跡（跑一趟巡邏或導航就會有）'
+                  : data.reason === 'no_minimap' ? '⚠ 抓不到小地圖'
+                  : '⚠ ' + data.reason)
+                : `${sm?.mode ?? ''} → ${sm?.target ?? '—'}　${sm?.dur ?? '?'}s　`
+                  + `樣本 ${sm?.n ?? 0}　到達=${String(sm?.arrived)}　`
+                  + `事件 ${JSON.stringify(sm?.events ?? {})}`}
+          </div>
+        </>
       )}
 
       <details className="dvt">
         <summary>怎麼看</summary>
         <div className="hint">
-          <b>直接畫在遠端畫面的小地圖上</b>，不另外拉圖 —— 只傳座標（幾 KB），
-          伺服器不必為了畫面再抓一次小地圖。與符文偵測框、遠端游標紅點共用同一套黑邊換算。<br />
+          <b>直接畫在遠端畫面的小地圖上</b>，只傳座標（幾 KB），伺服器不必為了畫面再抓一次小地圖。
+          與符文偵測框、遠端游標紅點共用同一套黑邊換算。<br />
           <b>實線＝實際走的</b>：
           <span style={{ color: '#00dc00' }}>綠＝走位</span>、
           <span style={{ color: '#ffa500' }}>橘＝上升(C)</span>、
@@ -358,11 +407,12 @@ function NavTraceCard() {
           <span style={{ color: '#c800ff' }}>紫＝二段跳</span>、
           <span style={{ color: '#ff3333' }}>紅＝脫困</span>。<br />
           <b>白虛線＝意圖</b>（每段規劃的 start→target）。實線偏離虛線 ＝ 那段走錯了。<br />
-          <b>線上的圓點＝按鍵事件</b>。同一段藍線上兩個以上的點 ＝ <b>連續下跳</b>。<br />
-          <b>一趟 = 一次點到點導航</b>，巡邏時每趟只有 3~5 秒，所以預設合併最近幾趟。
-          來源必須是<b>遊戲視窗</b>模式，否則座標對不上、不畫。只保留最近 50 趟。<br />
-          要離線存檔或貼給別人看，用 <code>/nav/trace.jpg</code>（那支會重抓小地圖、每張數十 KB，
-          不適合當即時預覽）。
+          <b>線上的圓點＝按鍵事件</b>。同一段藍線上兩個以上的點 ＝ 連續下跳。<br />
+          <b>點任何一條線</b> ＝ 只highlight那一趟，畫面下方顯示<b>第幾趟</b>與它的按鍵統計；
+          再點一次取消。（點線不會傳到遊戲裡）<br />
+          <b>一趟 = 一次點到點導航</b>，巡邏時每趟只有 3~5 秒；預設合併最近幾趟，也可以自選流水號區間。
+          全部存在單一檔 <code>logs/nav_trace.jsonl</code>（一行一趟），只留最近 200 趟。<br />
+          來源必須是<b>遊戲視窗</b>模式，否則座標對不上、不畫。
         </div>
       </details>
     </Card>
