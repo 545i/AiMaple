@@ -237,3 +237,6 @@
 /* 觸控板跟著縮到影像那一塊(直向時滑動區就是畫面本身) */
 .port-play .touchpad { left: 0; right: 0; top: 0; height: 36vh; bottom: auto; }
 .port-play .deskhint { display: none; }
+
+/* 導航行動軌跡:向量疊在遠端畫面上(不是另一條影像通道) */
+.nav-trace { position: absolute; z-index: 26; pointer-events: none; overflow: visible; }

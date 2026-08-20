@@ -912,15 +912,49 @@ def nav_trace_runs(token: str = Query("")):
     return JSONResponse({"runs": nav_trace.runs(), "keep": nav_trace.KEEP_RUNS})
 
 
-@app.get("/nav/trace.jpg")
-def nav_trace_img(token: str = Query(""), name: str = Query(""),
-                  scale: int = Query(4), intent: int = Query(1)):
-    """把軌跡畫在小地圖上:走位=綠、上升(C)=橘、下跳=藍、二段跳=紫、脫困=紅。
-    虛線是【意圖】(每段的 start→target),實線是【實際走的】,兩層疊著看才知道
-    「規劃到 A 卻走去 B」或「同一段下跳按了兩次」。按鍵事件在線上打點。"""
+@app.get("/nav/trace/overlay")
+def nav_trace_overlay(token: str = Query(""), merge: int = Query(6)):
+    """給前端疊在【遠端畫面】上的導航軌跡(正規化座標,不是影像)。
+
+    【為什麼不回圖】回圖等於再開一條影像通道:伺服器每張要多抓一次小地圖、
+    每張 37~64KB。遠端畫面本來就在跑,把座標疊上去就好 —— 與 /rune/overlay
+    同一個做法、同一個理由。這支是純讀(小地圖 bbox + 記憶體裡的軌跡),不抓畫面。
+
+    座標一路換算到相對遊戲影格的 0~1;前端用 letterbox.contentRect() 換算到
+    影像實際矩形,與遠端游標紅點、符文偵測框共用同一套黑邊換算。
+    is_window 是畫不畫的邊界:偵測跑在遊戲視窗的擷取上,串流來源設成「全螢幕」時
+    座標系不同,框會整片偏掉(同 /rune/overlay 的處理)。"""
     _check_owner(token)
     import nav_trace
-    r = nav_trace.load(name) if name else nav_trace.latest()
+    return JSONResponse(nav_trace.overlay(max(1, min(30, merge))))
+
+
+@app.get("/nav/trace.jpg")
+def nav_trace_img(token: str = Query(""), name: str = Query(""),
+                  scale: int = Query(4), merge: int = Query(1)):
+    """把軌跡畫在小地圖上(【離線分析用】,日常請用 /nav/trace/overlay 疊在遠端畫面)。
+
+    這支每呼叫一次都要重抓小地圖並偵測、回傳 37~64KB 影像 —— 不適合當即時預覽,
+    保留是因為它能單獨存檔、貼給別人看、以及在沒有遠端畫面時仍看得到軌跡。
+
+    走位=綠、上升(C)=橘、下跳=藍、二段跳=紫、脫困=紅。
+    虛線是【意圖】(每段的 start→target),實線是【實際走的】,兩層疊著看才知道
+    「規劃到 A 卻走去 B」或「同一段下跳按了兩次」。按鍵事件在線上打點。
+
+    merge=N 把最近 N 趟併成一張。【預設要 >1】一趟 = 一次點到點導航,巡邏時每趟
+    只有 3~5 秒,單看一趟畫面會一直重置,看不出整體路線。指定 name 時忽略 merge
+    (那是明確要看某一趟)。
+
+    正在導航時可以持續重抓 —— latest() 回的是【當下這一趟】的即時內容,不必等它
+    結束才畫得出來。"""
+    _check_owner(token)
+    import nav_trace
+    if name:
+        r = nav_trace.load(name)
+    elif merge > 1:
+        r = nav_trace.merged(merge)
+    else:
+        r = nav_trace.latest()
     jpg = nav_trace.render_jpeg(r, scale=max(1, min(8, scale)))
     if jpg is None:
         raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")

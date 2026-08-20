@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
-import { fiona, rune, navTrace } from '../lib/api'
+import { fiona, rune } from '../lib/api'
+import { useNavTrace, setNavTraceMerge } from '../hooks/useNavTrace'
 import { useAppState, setAppState } from '../lib/appState'
 import { useRuneOverlay } from '../hooks/useRuneOverlay'
 
@@ -313,57 +314,55 @@ function RuneOverlayCard() {
    記錄點掛在 navigator._dot() 裡面,記的是導航器【當下看到什麼】。
    ══════════════════════════════════════════════════════════ */
 function NavTraceCard() {
-  const [runs, setRuns] = useState<string[]>([])
-  const [name, setName] = useState('')
-  const [src, setSrc] = useState('')
-  const [err, setErr] = useState('')
-  const [scale, setScale] = useState(4)
+  const { navTrace: on } = useAppState()
+  const [merge, setMerge] = useState(6)
+  const data = useNavTrace(on)
+  const sm = data?.summary
 
-  const refresh = async (pick?: string) => {
-    setErr('')
-    try {
-      const j: any = await navTrace.runs()
-      setRuns(j.runs ?? [])
-      const n = pick !== undefined ? pick : name
-      setName(n)
-      setSrc(navTrace.imgUrl(n ? { name: n, scale } : { scale }))
-    } catch { setErr('拿不到軌跡清單(連線?)') }
-  }
-
-  useEffect(() => { refresh() }, [])
+  useEffect(() => { setNavTraceMerge(merge) }, [merge])
 
   return (
     <Card full title="導航行動軌跡">
-      <div className="row">
-        <button className="btn sm" onClick={() => refresh()}>🔄 最新一趟</button>
-        <select className="sel" value={name} onChange={e => refresh(e.target.value)}>
-          <option value="">目前／最近那一趟</option>
-          {runs.map(r => <option key={r} value={r}>{r.replace('.jsonl', '')}</option>)}
-        </select>
-        <select className="sel" value={scale}
-                onChange={e => { setScale(+e.target.value); setTimeout(() => refresh(), 0) }}>
-          {[2, 3, 4, 6, 8].map(v => <option key={v} value={v}>{v}×</option>)}
+      <button className={`btn ${on ? 'on' : ''}`}
+              onClick={() => setAppState({ navTrace: !on })}>
+        🧭 在遠端畫面上顯示軌跡：{on ? '開' : '關'}
+      </button>
+      <div className="row" style={{ marginTop: 6 }}>
+        <select className="sel" value={merge} onChange={e => setMerge(+e.target.value)}>
+          {[1, 3, 6, 12, 20].map(v => <option key={v} value={v}>合併最近 {v} 趟</option>)}
         </select>
       </div>
 
-      {src && !err && (
-        <img className="dvt-prev" src={src} alt="導航軌跡"
-             onError={() => setErr('這一趟還沒有軌跡(跑一趟巡邏或導航就會有)')} />
+      {on && (
+        <div className="msg">
+          {!data ? '啟動中…'
+            : data.ok === false
+              ? (data.reason === 'no_trace' ? '還沒有軌跡（跑一趟巡邏或導航就會有）'
+                : data.reason === 'no_minimap' ? '⚠ 抓不到小地圖'
+                : '⚠ ' + data.reason)
+              : `${sm?.mode ?? ''} → ${sm?.target ?? '—'}　${sm?.dur ?? '?'}s　`
+                + `樣本 ${sm?.n ?? 0}　到達=${String(sm?.arrived)}　`
+                + `事件 ${JSON.stringify(sm?.events ?? {})}`}
+        </div>
       )}
-      <div className="msg">{err}</div>
 
       <details className="dvt">
         <summary>怎麼看</summary>
         <div className="hint">
-          <b>實線＝實際走的</b>，顏色是動作類型：
+          <b>直接畫在遠端畫面的小地圖上</b>，不另外拉圖 —— 只傳座標（幾 KB），
+          伺服器不必為了畫面再抓一次小地圖。與符文偵測框、遠端游標紅點共用同一套黑邊換算。<br />
+          <b>實線＝實際走的</b>：
           <span style={{ color: '#00dc00' }}>綠＝走位</span>、
           <span style={{ color: '#ffa500' }}>橘＝上升(C)</span>、
           <span style={{ color: '#0078ff' }}>藍＝下跳</span>、
           <span style={{ color: '#c800ff' }}>紫＝二段跳</span>、
           <span style={{ color: '#ff3333' }}>紅＝脫困</span>。<br />
-          <b>灰虛線＋十字＝意圖</b>（每段規劃的 start→target）。實線偏離虛線，就是那一段走錯了。<br />
-          <b>線上的圓點＝按鍵事件</b>。同一段藍線上出現兩個以上的點 ＝ <b>連續下跳</b>。<br />
-          白圈＝起點，白十字＝終點。只保留最近 50 趟。
+          <b>白虛線＝意圖</b>（每段規劃的 start→target）。實線偏離虛線 ＝ 那段走錯了。<br />
+          <b>線上的圓點＝按鍵事件</b>。同一段藍線上兩個以上的點 ＝ <b>連續下跳</b>。<br />
+          <b>一趟 = 一次點到點導航</b>，巡邏時每趟只有 3~5 秒，所以預設合併最近幾趟。
+          來源必須是<b>遊戲視窗</b>模式，否則座標對不上、不畫。只保留最近 50 趟。<br />
+          要離線存檔或貼給別人看，用 <code>/nav/trace.jpg</code>（那支會重抓小地圖、每張數十 KB，
+          不適合當即時預覽）。
         </div>
       </details>
     </Card>

@@ -270,3 +270,117 @@ def render_jpeg(run=None, scale=4, quality=85):
         return None
     ok, buf = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
     return buf.tobytes() if ok else None
+
+
+def merged(n=6):
+    """把最近 n 趟(含目前正在跑的那趟)併成一張,回合成的 run;沒有資料回 None。
+
+    【為什麼需要】一趟 = 一次點到點導航,巡邏時每趟只有 3~5 秒。單看一趟的圖會
+    一直重置,看不出「這段路它整體怎麼走」。合併之後才是使用者想看的「行動路線」。
+    時間軸以最早那趟的 t0 為原點重新對齊,事件與樣本才對得起來。
+    """
+    cur = latest()
+    files = runs()[:max(0, n - (1 if cur else 0))]
+    olds = [load(f) for f in reversed(files)]
+    all_runs = [r for r in olds if r] + ([cur] if cur else [])
+    # latest() 可能就是最後一個存檔(導航已結束),避免同一趟畫兩次
+    if len(all_runs) >= 2 and cur and abs(all_runs[-2].get("t0", 0) - cur.get("t0", 0)) < 0.01:
+        all_runs.pop(-2)
+    if not all_runs:
+        return None
+    t0 = min(r["t0"] for r in all_runs)
+    out = {"t0": t0, "mode": all_runs[-1].get("mode", ""), "target": all_runs[-1].get("target"),
+           "samples": [], "events": [], "segments": [],
+           "arrived": all_runs[-1].get("arrived"),
+           "dur": round(max(r["t0"] + (r.get("dur") or 0) for r in all_runs) - t0, 2),
+           "note": f"合併最近 {len(all_runs)} 趟"}
+    for r in all_runs:
+        off = r["t0"] - t0
+        for key in ("samples", "events", "segments"):
+            for it in r.get(key) or []:
+                it = dict(it)
+                it["t"] = round(it["t"] + off, 3)
+                out[key].append(it)
+    for key in ("samples", "events", "segments"):
+        out[key].sort(key=lambda it: it["t"])
+    return out
+
+
+# ---------- 疊在遠端畫面上(不走獨立通道) ----------
+MAX_PTS = 600         # 疊圖用的點數上限:超過就抽樣。JSON 傳的是座標,不是影像。
+
+
+def overlay(merge_n=6):
+    """給前端疊在【遠端畫面】上的資料。回 dict,拿不到就回 reason。
+
+    【為什麼不回圖】回圖等於再開一條影像通道:伺服器每張要多抓一次小地圖、
+    每張 37~64KB。而遠端畫面本來就在跑,把座標(幾 KB)疊上去就好 —— 與符文偵測框
+    是同一個做法,同一個理由。
+
+    座標一路換算到【相對遊戲影格的 0~1】:
+        小地圖局部 (mx,my) → 影格 (bbox.x+mx, bbox.y+my) → 除以影格寬高
+    前端再用 letterbox.contentRect() 換算到影像實際矩形 —— 與遠端游標紅點、
+    符文偵測框共用同一套黑邊換算,不會各自漂移。
+    """
+    import minimap
+    import video_pipeline
+
+    st = minimap.status()
+    if not st.get("found"):
+        return {"ok": False, "reason": "no_minimap"}
+    fw, fh = st.get("frame_w") or 0, st.get("frame_h") or 0
+    if not (fw and fh):
+        return {"ok": False, "reason": "no_frame_size"}
+    bx, by = st["x"], st["y"]
+
+    run = merged(merge_n) if merge_n > 1 else latest()
+    if not run or not run.get("samples"):
+        return {"ok": False, "reason": "no_trace", "frame": [fw, fh],
+                "is_window": video_pipeline.state.get("source") == "window"}
+
+    def norm(mx, my):
+        return [round((bx + mx) / fw, 5), round((by + my) / fh, 5)]
+
+    ss = run["samples"]
+    step = max(1, len(ss) // MAX_PTS)
+    ss = ss[::step]
+
+    # 依類別切成一段一段的折線(顏色在前端決定,這裡只給類別)
+    lines, cur = [], None
+    for s in ss:
+        if cur is None or cur["cat"] != s["cat"]:
+            cur = {"cat": s["cat"], "pts": []}
+            lines.append(cur)
+            if len(lines) > 1:                   # 接上前一段的最後一點,線才不會斷開
+                cur["pts"].append(lines[-2]["pts"][-1])
+        cur["pts"].append(norm(s["x"], s["y"]))
+    lines = [ln for ln in lines if len(ln["pts"]) >= 2]
+
+    by_t = {round(s["t"], 3): s for s in run["samples"]}
+    def near(t):
+        return min(run["samples"], key=lambda s: abs(s["t"] - t))
+
+    events = [{"cat": e["cat"], "kind": e["kind"], "key": e.get("key", ""),
+               "p": norm(near(e["t"])["x"], near(e["t"])["y"])}
+              for e in (run.get("events") or [])][-120:]
+    intent = [{"a": norm(*sg["start"]), "b": norm(*sg["target"]), "act": sg["act"]}
+              for sg in (run.get("segments") or []) if sg.get("start") and sg.get("target")][-60:]
+
+    kinds = {}
+    for e in run.get("events") or []:
+        kinds[e["kind"]] = kinds.get(e["kind"], 0) + 1
+    return {
+        "ok": True,
+        "is_window": video_pipeline.state.get("source") == "window",
+        "frame": [fw, fh],
+        "minimap": [bx, by, st["w"], st["h"]],
+        "lines": lines,
+        "events": events,
+        "intent": intent,
+        "start": norm(run["samples"][0]["x"], run["samples"][0]["y"]),
+        "end": norm(run["samples"][-1]["x"], run["samples"][-1]["y"]),
+        "summary": {"mode": run.get("mode"), "target": run.get("target"),
+                    "dur": run.get("dur"), "arrived": run.get("arrived"),
+                    "n": len(run["samples"]), "events": kinds,
+                    "note": run.get("note", "")},
+    }

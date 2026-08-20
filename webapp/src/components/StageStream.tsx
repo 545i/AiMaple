@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { useVideo } from '../hooks/useVideo'
 import type { CursorPos } from '../hooks/useInput'
 import type { OverlayData } from '../hooks/useRuneOverlay'
+import type { NavTraceData } from '../hooks/useNavTrace'
 import { contentRect } from '../lib/letterbox'
 
 /**
@@ -14,11 +15,12 @@ import { contentRect } from '../lib/letterbox'
  * 符文偵測框(overlay)也疊在這裡,而不是另外開一張預覽圖:框跟著已經在跑的
  * 30fps 影像走,本來就是即時的,不必為了看框再拉一條 1.2fps 的 JPEG。
  */
-export function StageStream({ video, cursor, hint, overlay }: {
+export function StageStream({ video, cursor, hint, overlay, trace }: {
   video: ReturnType<typeof useVideo>
   cursor?: CursorPos
   hint?: string
   overlay?: OverlayData | null
+  trace?: NavTraceData | null
 }) {
   const { videoRef, kind, status } = video
   const [box, setBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
@@ -55,6 +57,14 @@ export function StageStream({ video, cursor, hint, overlay }: {
     return Math.abs(v.videoWidth / v.videoHeight - fw / fh) < 0.01
   }
   const usable = !!overlay && overlay.is_window && sameShape(videoRef.current)
+  /** 軌跡也要走同一套黑邊換算,而且同樣受「來源必須是遊戲視窗」的邊界限制。 */
+  const rectFor = (t: NavTraceData) => {
+    const v = videoRef.current
+    if (!v || !t.is_window || !t.frame) return null
+    if (!v.videoWidth || !v.videoHeight) return null
+    if (Math.abs(v.videoWidth / v.videoHeight - t.frame[0] / t.frame[1]) > 0.01) return null
+    return contentRect(v)
+  }
   const drawBoxes = usable && (overlay?.boxes.length ?? 0) > 0
   useEffect(() => {
     if (!drawBoxes) { setRect(null); return }
@@ -85,6 +95,39 @@ export function StageStream({ video, cursor, hint, overlay }: {
         )
       })}
 
+      {trace?.ok && rectFor(trace) && (
+        <svg className="nav-trace" viewBox="0 0 1 1" preserveAspectRatio="none"
+             style={{ left: rectFor(trace)!.ox, top: rectFor(trace)!.oy,
+                      width: rectFor(trace)!.dw, height: rectFor(trace)!.dh }}>
+          {/* 意圖:每段 start→target 的虛線。實線偏離虛線 = 那一段走錯了。 */}
+          {(trace.intent ?? []).map((it, i) => (
+            <line key={'i' + i} x1={it.a[0]} y1={it.a[1]} x2={it.b[0]} y2={it.b[1]}
+                  stroke="rgba(255,255,255,.45)" strokeWidth={0.0015}
+                  strokeDasharray="0.006 0.006" vectorEffect="non-scaling-stroke" />
+          ))}
+          {/* 實際走的:依動作類型上色 */}
+          {(trace.lines ?? []).map((ln, i) => (
+            <polyline key={'l' + i} fill="none" stroke={TRACE_COLOR[ln.cat] ?? '#999'}
+                      strokeWidth={0.0025} strokeLinejoin="round" strokeLinecap="round"
+                      vectorEffect="non-scaling-stroke"
+                      points={ln.pts.map(p => `${p[0]},${p[1]}`).join(' ')} />
+          ))}
+          {/* 按鍵事件:同一段藍線上兩個以上的點 = 連續下跳 */}
+          {(trace.events ?? []).map((e, i) => (
+            <circle key={'e' + i} cx={e.p[0]} cy={e.p[1]} r={0.0035}
+                    fill={TRACE_COLOR[e.cat] ?? '#999'} stroke="#fff" strokeWidth={0.001}
+                    vectorEffect="non-scaling-stroke" />
+          ))}
+          {trace.start && <circle cx={trace.start[0]} cy={trace.start[1]} r={0.005}
+                                  fill="none" stroke="#fff" strokeWidth={0.002}
+                                  vectorEffect="non-scaling-stroke" />}
+        </svg>
+      )}
+
+      {trace && trace.ok === false && trace.reason === 'no_minimap' && (
+        <div className="rune-warn">軌跡已停用：抓不到小地圖</div>
+      )}
+
       {overlay && !usable && (
         <div className="rune-warn">
           {overlay.is_window
@@ -99,3 +142,13 @@ export function StageStream({ video, cursor, hint, overlay }: {
 }
 
 const ARROW: Record<string, string> = { up: '↑', down: '↓', left: '←', right: '→' }
+
+/** 動作類型的顏色。與後端 nav_trace.COLORS 對應(那邊是 BGR,這裡是 CSS)。 */
+const TRACE_COLOR: Record<string, string> = {
+  walk: '#00dc00',      // 綠:走位
+  rope: '#ffa500',      // 橘:上升(C)
+  fall: '#0078ff',      // 藍:下跳
+  jump: '#ff00c8',      // 紫:二段跳
+  deblock: '#ff3333',   // 紅:脫困
+  other: '#969696',
+}

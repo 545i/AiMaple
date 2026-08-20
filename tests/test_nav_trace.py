@@ -136,3 +136,37 @@ def test_latest_returns_a_copy_not_the_live_buffer():
     snap = nt.latest()
     nt.sample(2, 2, "g_walk")
     assert len(snap["samples"]) == 1
+
+
+# ---------- 合併多趟 ----------
+def test_merged_combines_runs_on_one_timeline():
+    """一趟 = 一次點到點導航,巡邏時每趟只有 3~5 秒;不合併的話畫面一直重置,
+    看不出整體路線。合併後時間軸要以最早那趟為原點重新對齊。"""
+    import time as _t
+    for i in range(3):
+        nt.start("patrol", (i, i))
+        nt.sample(i, i, "g_walk")
+        nt.event("press", "c", "g_rope")
+        nt.finish(arrived=True)
+        os.rename(os.path.join(nt.TRACE_DIR, sorted(os.listdir(nt.TRACE_DIR))[-1]),
+                  os.path.join(nt.TRACE_DIR, f"2026010{i}-000000.jsonl"))
+        _t.sleep(0.01)
+    m = nt.merged(5)
+    assert len(m["samples"]) == 3 and len(m["events"]) == 3
+    ts = [s["t"] for s in m["samples"]]
+    assert ts == sorted(ts), "合併後樣本要照時間排好"
+    assert min(ts) >= 0, "時間軸要以最早那趟為原點"
+    assert "合併" in m["note"]
+
+
+def test_merged_does_not_draw_the_current_run_twice():
+    """導航剛結束時,latest() 與最後一個存檔是同一趟 —— 不能畫兩次。"""
+    nt.start("patrol", (1, 1))
+    nt.sample(1, 1, "g_walk")
+    nt.finish(arrived=True)
+    m = nt.merged(5)
+    assert len(m["samples"]) == 1
+
+
+def test_merged_returns_none_without_any_data():
+    assert nt.merged(5) is None

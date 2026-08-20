@@ -6,6 +6,7 @@ import { useVideo } from './hooks/useVideo'
 import { useDesktopInput } from './hooks/useDesktopInput'
 import { useDrawer } from './hooks/useDrawer'
 import { useRuneOverlay } from './hooks/useRuneOverlay'
+import { useNavTrace } from './hooks/useNavTrace'
 import { TopHud } from './components/TopHud'
 import { StageStream } from './components/StageStream'
 import { ControlPanel } from './components/ControlPanel'
@@ -52,9 +53,11 @@ export default function App() {
   // 佈局方向 / 靈敏度 / 注視開關的擁有者是遠端頁,但用它們的是這裡的
   // VirtualPad / TouchPad / StageStream。走共用 store,不必層層傳 props,
   // 也不會因為切走分頁就重置(注視開關踩過這個坑)。
-  const { layout, sens, watching, runeOverlay } = useAppState()
+  const { layout, sens, watching, runeOverlay, navTrace: traceOn } = useAppState()
   // 符文偵測框:開發頁開的,畫在 StageStream 上(輪詢只在開著時發生)
   const overlay = useRuneOverlay(runeOverlay && authed)
+  // 導航行動軌跡:同樣疊在遠端畫面上,不另外拉圖
+  const trace = useNavTrace(traceOn && authed)
   const portrait = layout === 'auto' ? autoPortrait : layout === 'port'
   // 手機是直的、但使用者鎖定橫向佈局 → 把畫面轉 90° 填滿(舊版的 rotate 模式)。
   // 只在手機成立:電腦端本來就是橫的,轉了反而壞掉。
@@ -88,7 +91,7 @@ export default function App() {
         + ` ${IS_TOUCH ? 'touch' : 'desk'} ${minimal ? 'minimal' : ''} ${rotate ? 'rotate' : ''}`
         + ` ${drawer.dragH != null ? 'dragging' : ''}`
         + ` ${IS_TOUCH && portrait && playing ? 'port-play' : ''}`}>
-      <StageStream video={video} cursor={input.cursor} overlay={overlay}
+      <StageStream video={video} cursor={input.cursor} overlay={overlay} trace={trace}
                    hint={!IS_TOUCH && canPlay && !over ? '滑鼠移到遊戲畫面上即可操控（移開自動釋放）' : ''} />
 
       {IS_TOUCH && portrait && playing && <div className="padbg" />}
