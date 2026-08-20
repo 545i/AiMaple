@@ -1,23 +1,25 @@
 /**
- * 電腦端實體鍵盤 → 後端鍵名的映射,以及「這個 keydown 要不要送出去」的判斷。
+ * 電腦端實體鍵盤 → 後端鍵名的映射,以及「哪些 keydown 真的要送」的記帳。
  *
- * 【為什麼抽成獨立的純函式】這兩件事原本寫在 useDesktopInput 的事件處理器裡,
+ * 【為什麼抽成獨立的純模組】這兩件事原本寫在 useDesktopInput 的事件處理器裡,
  * 沒有辦法測 —— 而裡面藏著一個使用者實際回報的 bug:
  *
  *     if (e.metaKey || e.ctrlKey || e.altKey) return   // 放行系統快捷鍵(F5/Ctrl+W…)
  *
- * 立意是對的(不放行的話,使用者會被困在頁面裡:Ctrl+W 關不掉、Ctrl+R 重整不了),
- * 但【按下 Ctrl 的那一刻,那個 keydown 事件的 e.ctrlKey 已經是 true】—— 修飾鍵
- * 自己也被這道防線擋掉,於是 Ctrl 永遠送不出去,Alt 同理。而遊戲把 Ctrl 當攻擊鍵。
+ * 【按下 Ctrl 的那一刻,那個 keydown 事件的 e.ctrlKey 已經是 true】—— 修飾鍵自己
+ * 也被這道防線擋掉,於是 Ctrl 永遠送不出去,Alt 同理。而遊戲把 Ctrl 當攻擊鍵。
  *
- * 現在的規則分兩種情況,兩者都必須成立:
- *   修飾鍵【自己】被按下      → 送(那是遊戲要用的按鍵)
- *   修飾鍵按住時再按別的鍵    → 不送也不攔,整組讓給瀏覽器(Ctrl+W / Ctrl+R /
- *                              Alt+← 這些逃生出口不能被吃掉)
- *   Win/Cmd 一律讓給系統
+ * 【為什麼直接把那道防線拿掉,而不是改成只放行組合鍵】它本來就是多餘的:鍵盤
+ * 只在【游標停在遊戲畫面上】時才攔(useDesktopInput 的 overRef),游標一移開就
+ * 立刻還給瀏覽器,Ctrl+W / Ctrl+R / F5 全都回來 —— 逃生出口早就存在,不需要為它
+ * 犧牲 Ctrl。舊版單檔介面(web/index.html)一直就是這樣做的,沒有任何修飾鍵條件,
+ * 而且是實際被用了很久的行為。
  *
- * 組合鍵讓給瀏覽器會不會讓遠端的 Ctrl 卡在按下狀態?不會 —— 那種情況(換分頁/
- * 關視窗)一定伴隨 window blur,useDesktopInput 的 blur 處理會呼叫 releaseAll()。
+ * 【HeldKeys 為什麼要記帳】兩個理由,都是舊版就有、新版漏掉的:
+ *   1. 自動重複:按著不放時 OS 會連發 keydown,只有第一發要送(後端是
+ *      key_down/key_up 的按住模型,重複送沒有意義)。
+ *   2. 配對:沒送過 keydown 的鍵不該送 keyup。原本的 bug 就有這個不對稱 ——
+ *      Ctrl 的 keydown 被擋掉、keyup 卻照送,後端會收到孤兒 keyUp。
  */
 
 /** e.code(實體鍵位)→ 後端鍵名。查表的部分:規則以外的特殊鍵。 */
@@ -31,9 +33,6 @@ const CODE_MAP: Record<string, string> = {
   ControlLeft: 'ctrl', ControlRight: 'ctrl',
   AltLeft: 'alt', AltRight: 'alt',
 }
-
-/** 後端也認得的修飾鍵(server/arduino.py 的 _ALL_KEYS 有這三個)。 */
-const MODIFIERS = new Set(['ctrl', 'alt', 'shift'])
 
 /**
  * 實體鍵位 → 後端的鍵名。認不得的鍵回 null(不送,也不攔瀏覽器預設行為)。
@@ -49,20 +48,31 @@ export function codeToToken(code: string): string | null {
   return CODE_MAP[code] ?? null
 }
 
-/** keyDownToken 只需要事件的這幾個欄位;抽成介面才能在 node --test 裡直接餵物件。 */
-export interface KeyDownLike {
-  code: string
-  ctrlKey: boolean
-  altKey: boolean
-  metaKey: boolean
-}
+/** 目前【我們送出去】按著的鍵。down()/up() 回「要送的鍵名」,不用送回 null。 */
+export class HeldKeys {
+  private held = new Set<string>()
 
-/** 這個 keydown 該送哪個鍵給遠端?不該送(讓給瀏覽器/系統/認不得)回 null。 */
-export function keyDownToken(e: KeyDownLike): string | null {
-  const t = codeToToken(e.code)
-  if (t === null) return null
-  if (e.metaKey) return null                        // Win/Cmd:一律讓給系統
-  if (MODIFIERS.has(t)) return t                    // 修飾鍵自己 → 送
-  if (e.ctrlKey || e.altKey) return null            // 組合鍵 → 讓給瀏覽器
-  return t
+  /** 認不得的鍵、或已經按著(自動重複)→ null。 */
+  down(code: string): string | null {
+    const t = codeToToken(code)
+    if (t === null || this.held.has(t)) return null
+    this.held.add(t)
+    return t
+  }
+
+  /** 沒送過 keydown 的鍵不送 keyup(避免孤兒 keyUp)。 */
+  up(code: string): string | null {
+    const t = codeToToken(code)
+    if (t === null || !this.held.delete(t)) return null
+    return t
+  }
+
+  /** 呼叫端已經用 releaseAll() 一次放光時,帳也要跟著清掉。 */
+  clear(): void {
+    this.held.clear()
+  }
+
+  get size(): number {
+    return this.held.size
+  }
 }

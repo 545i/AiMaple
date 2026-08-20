@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { InputChannel } from './useInput'
 import { contentRect } from '../lib/letterbox'
-import { codeToToken, keyDownToken } from '../lib/keymap'
+import { codeToToken, HeldKeys } from '../lib/keymap'
 
 /**
  * 電腦端的實體鍵鼠映射。
@@ -26,9 +26,9 @@ export function useDesktopInput(
 ) {
   const overRef = useRef(false)
   const [over, setOver] = useState(false)
-  // 目前【我們送出去】按著的鍵。releaseAll() 之後要一起清掉,否則下次
-  // 放開時會送出一個後端早就放開的鍵。
-  const heldRef = useRef<Set<string>>(new Set())
+  // 目前【我們送出去】按著的鍵。記帳邏輯(自動重複去重、keyup 配對)在
+  // lib/keymap.ts,那裡有測試;releaseAll() 之後要一起清掉。
+  const heldRef = useRef(new HeldKeys())
 
   // 【input 必須走 ref】input 是 useInput 每次 render 都重建的物件。若把它放進
   // effect 的依賴,setOver() 觸發的 re-render 會讓整組事件監聽被拆掉重綁,而
@@ -89,21 +89,22 @@ export function useDesktopInput(
       const el = t as HTMLElement | null
       return !!el && /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)
     }
+    // 【與舊版 web/index.html 的 bindDesk 逐行對齊】沒有任何修飾鍵條件:
+    // 認得的鍵一律 preventDefault + 送出去。曾經多加一行「有修飾鍵就 return」,
+    // 結果把 Ctrl 自己也擋掉(按下 Ctrl 那一刻 e.ctrlKey 已經是 true)。
+    // 瀏覽器快捷鍵不會因此拿不回來 —— 鍵盤只在游標停在遊戲畫面上時才攔,
+    // 游標一移開就整組還給瀏覽器。
     const onKeyDown = (e: KeyboardEvent) => {
       if (!overRef.current || typing(e.target)) return
-      const t = keyDownToken(e)          // 修飾鍵自己要送,組合鍵讓給瀏覽器(見 lib/keymap.ts)
-      if (!t) return
+      const t = heldRef.current.down(e.code)   // 認不得/自動重複 → null
+      if (!t) { if (codeToToken(e.code)) e.preventDefault(); return }
       e.preventDefault()
-      heldRef.current.add(t)
       inputRef.current.keyDown(t)
     }
-    // 【只放開真的按下過的鍵】組合鍵的 keydown 被讓給瀏覽器了,它的 keyup 若照送,
-    // 後端會收到一個沒有對應 keyDown 的 keyUp。原本的 bug 也有這個不對稱:Ctrl 的
-    // keydown 被擋掉、keyup 卻照送。用 heldRef 記帳,兩邊才會配對。
     const onKeyUp = (e: KeyboardEvent) => {
       if (typing(e.target)) return
-      const t = codeToToken(e.code)
-      if (!t || !heldRef.current.delete(t)) return
+      const t = heldRef.current.up(e.code)
+      if (!t) return
       e.preventDefault()
       inputRef.current.keyUp(t)
     }
