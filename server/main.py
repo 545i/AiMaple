@@ -1037,6 +1037,30 @@ def rune_live(token: str = Query(""), scale: int = Query(1)):
                     headers={"Cache-Control": "no-store"})
 
 
+@app.get("/rune/overlay")
+def rune_overlay(token: str = Query("")):
+    """疊在【遠端畫面】上的偵測框(取代舊的獨立預覽圖)。
+
+    回正規化座標(0~1,相對遊戲視窗影格),前端用 letterbox.contentRect() 換算到
+    影像實際矩形 —— 與遠端游標紅點共用同一套黑邊換算,不會各自漂移。
+
+    【只回信心 >= rune_live_state.OVERLAY_MIN_SCORE(0.5)的候選框】使用者指定:
+    低分候選在遊戲畫面上只是雜訊,疊上去反而看不清楚。
+
+    【is_window 是畫不畫的邊界】偵測跑在【遊戲視窗】的擷取上,而串流來源可以被
+    設成「全螢幕」(見 frames.get 的 detect_hwnd 註解:偵測不該去改使用者選的
+    來源)。來源不是視窗時兩邊座標系不同,框會整片偏掉 —— 那種情況前端不畫框、
+    改顯示提示,不要畫一堆歪的框騙人。
+
+    【讀這支就會啟動背景迴圈】不需要開關端點:前端開著就一直輪詢,關掉就不輪詢,
+    超過 rune_live_state.LOOP_IDLE_STOP 秒沒人讀,迴圈自己停、還原全速擷取的
+    引用計數(忘了關的代價是一直吃掉約一顆核心 66%,見 wgc.py)。
+    """
+    _check_owner(token)
+    import rune_live_state
+    return JSONResponse(rune_live_state.get_overlay())
+
+
 @app.get("/rune/live/info")
 def rune_live_info(token: str = Query("")):
     """`/rune/live` 最近一次呼叫的累積判定狀態(JSON),給前端顯示每支的文字

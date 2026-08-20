@@ -7,6 +7,8 @@ minimap/wgc，只驗證 request_full_rate 的開關時機與還原，不驗證�
 這裡只驗證「跨呼叫累積 + 逐支狀態機(靜止/旋轉/觀察中)+ 緩衝重置」這一層新邏輯，
 且刻意呼叫 rune_wheel 既有函式做判定，不重刻。
 """
+import time
+
 import numpy as np
 import pytest
 
@@ -219,3 +221,124 @@ def test_observe_with_no_boxes_resets_and_records_reason():
 def test_get_last_status_default_before_any_observe():
     status = rls.get_last_status()
     assert status["reason"] == "not_started"
+
+
+# ==========================================================================
+# 常駐背景迴圈(疊圖)
+# ==========================================================================
+def test_ingest_gap_one_makes_frame_indexes_contiguous():
+    """背景迴圈是【連續】取格的,必須能產生連號幀 —— find_wobbles 只在幀號差 1
+    時才算角速度,不連號等於每批之間的角速度全部被丟掉(那正是舊的 per-request
+    連拍在做的事,見 FRAME_GAP 的註解)。"""
+    rls.reset()
+    boxes = _boxes()
+    for _ in range(3):
+        rls.ingest(boxes, [[10.0], [20.0], [30.0], [40.0]], now=1.0, gap=1)
+    assert rls._state["frame_idxs"] == [0, 1, 2]
+
+
+def test_ingest_default_gap_still_marks_missing_frames():
+    """不傳 gap 時維持原本語意(呼叫邊界=缺幀),舊呼叫端行為不得改變。"""
+    rls.reset()
+    boxes = _boxes()
+    for _ in range(3):
+        rls.ingest(boxes, [[10.0], [20.0], [30.0], [40.0]], now=1.0)
+    assert rls._state["frame_idxs"] == [0, rls.FRAME_GAP, rls.FRAME_GAP * 2]
+
+
+# ---------- 座標邊界:框不能畫到遊戲畫面外面去 ----------
+def test_norm_box_clamps_to_frame():
+    """模型輸出的框可能超出畫面(箭頭貼在搜尋帶邊緣時)。前端拿它乘上影像矩形
+    就會畫到影像外,疊在遠端畫面上看起來像偵測跑到遊戲之外 —— 一律夾回 0~1。"""
+    nb = rls._norm_box((-30, -10, 200, 100), 1000, 500)
+    assert nb == [0.0, 0.0, 0.2, 0.2]
+
+
+def test_norm_box_drops_boxes_completely_outside():
+    assert rls._norm_box((1200, 10, 1400, 90), 1000, 500) is None
+    assert rls._norm_box((-400, 10, -10, 90), 1000, 500) is None
+
+
+def test_pack_marks_candidates_and_selected():
+    """候選框帶信心分數、sel=None;選中的 4 支帶 sel 索引與判定方向。
+    兩者【分開帶】而不是從候選裡比對浮點座標找對應(那只會製造對不上的邊界情況)。"""
+    cands = [((0, 0, 100, 50), 0.91)]
+    boxes4 = [(0, 0, 100, 50), (100, 0, 200, 50), (200, 0, 300, 50), (300, 0, 400, 50)]
+    arrows = [{"direction": "up", "motion": "static"}] * 4
+    out = rls._pack(cands, boxes4, arrows, 400, 100)
+    assert out[0]["score"] == 0.91 and out[0]["sel"] is None
+    sel = [o for o in out if o["sel"] is not None]
+    assert [o["sel"] for o in sel] == [0, 1, 2, 3]
+    assert sel[0]["dir"] == "up"
+
+
+# ---------- 迴圈生命週期 ----------
+class _FakeWgc:
+    """記錄 request_full_rate 的進出 —— 不還原的話全速擷取會一直開著,
+    吃掉約一顆核心 66%(wgc.py 記著的坑)。"""
+    def __init__(self):
+        self.balance = 0
+        self.n = 0
+    def request_full_rate(self, on):
+        self.balance += 1 if on else -1
+    def latest_ts(self):
+        self.n += 1
+        return float(self.n)
+
+
+def _patch_loop(monkeypatch, boxes4=None, frame=None):
+    import minimap
+    import rune_detr
+    import video_pipeline
+    import wgc
+    fake = _FakeWgc()
+    monkeypatch.setattr(wgc, "request_full_rate", fake.request_full_rate)
+    monkeypatch.setattr(wgc, "latest_ts", fake.latest_ts)
+    frame = np.zeros((200, 400, 3), np.uint8) if frame is None else frame
+    monkeypatch.setattr(minimap, "_grab_window", lambda: frame)
+    monkeypatch.setattr(rune_detr, "available", lambda: True)
+    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: boxes4)
+    monkeypatch.setattr(video_pipeline, "state", dict(video_pipeline.state, source="window"))
+    # 候選框那條路會真的載入 RT-DETR 權重跑推論 —— 單元測試不該碰模型/GPU,
+    # 這裡直接頂替掉(候選框本身的正確性由 _pack 的測試守)。
+    monkeypatch.setattr(rls, "_candidates", lambda viz, frame: [])
+    return fake
+
+
+def test_get_overlay_starts_loop_and_stop_loop_restores_full_rate(monkeypatch):
+    fake = _patch_loop(monkeypatch, boxes4=[(0, 0, 20, 20), (30, 0, 50, 20),
+                                            (60, 0, 80, 20), (90, 0, 110, 20)])
+    rls.reset()
+    try:
+        snap = rls.get_overlay()
+        assert snap["running"] is True
+        time.sleep(0.2)
+        assert rls.loop_running()
+    finally:
+        rls.stop_loop()
+    assert not rls.loop_running()
+    assert fake.balance == 0, "全速擷取的引用計數沒還原"
+
+
+def test_get_overlay_does_not_start_a_second_loop(monkeypatch):
+    _patch_loop(monkeypatch, boxes4=None)
+    rls.reset()
+    try:
+        rls.get_overlay()
+        time.sleep(0.05)
+        first = rls._loop_thread
+        rls.get_overlay()
+        assert rls._loop_thread is first
+    finally:
+        rls.stop_loop()
+
+
+def test_loop_stops_itself_when_nobody_reads(monkeypatch):
+    """忘了關的保險:沒人讀 overlay 超過 LOOP_IDLE_STOP 就自己收掉。"""
+    fake = _patch_loop(monkeypatch, boxes4=None)
+    monkeypatch.setattr(rls, "LOOP_IDLE_STOP", 0.15)
+    rls.reset()
+    rls.get_overlay()
+    time.sleep(0.6)
+    assert not rls.loop_running()
+    assert fake.balance == 0

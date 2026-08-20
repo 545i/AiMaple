@@ -114,7 +114,7 @@ def _trim_locked():
             _state["angles"][i] = _state["angles"][i][cut:]
 
 
-def ingest(boxes4, per_arrow_new_angles, reason="", now=None):
+def ingest(boxes4, per_arrow_new_angles, reason="", now=None, gap=None):
     """把一批新樣本併入累積緩衝,回傳目前(累積後)的逐支狀態。
 
     boxes4:這次呼叫偵測到的 4 支框(整幀座標,左到右),或 None(沒偵測到)。
@@ -123,6 +123,10 @@ def ingest(boxes4, per_arrow_new_angles, reason="", now=None):
     reason:boxes4 為 None 時的原因(給 /rune/live/info 用,例如 "no_frame"/
     "no_model"/"no_boxes"),回傳狀態會原樣帶出去。
     now:時間戳(monotonic 秒),測試用來注入固定值;不傳就用目前時間。
+    gap:這批新樣本與上一批之間的幀號間隔。預設 FRAME_GAP(=2),代表「中間
+        缺幀」——那是 per-request 連拍時代的正確語意(兩次 HTTP 呼叫之間隔多久
+        未知)。常駐背景迴圈是【連續】取格的,它會傳 gap=1,讓 find_wobbles
+        真的算得出跨批的角速度;迴圈自己漏掉一格時再傳 FRAME_GAP。
     """
     now = time.monotonic() if now is None else now
     with _lock:
@@ -144,7 +148,8 @@ def ingest(boxes4, per_arrow_new_angles, reason="", now=None):
 
         if per_arrow_new_angles and len(per_arrow_new_angles[0]):
             n_new = len(per_arrow_new_angles[0])
-            start_idx = (_state["frame_idxs"][-1] + FRAME_GAP) if _state["frame_idxs"] else 0
+            step = FRAME_GAP if gap is None else gap
+            start_idx = (_state["frame_idxs"][-1] + step) if _state["frame_idxs"] else 0
             _state["frame_idxs"].extend(start_idx + k for k in range(n_new))
             for i in range(4):
                 _state["angles"][i].extend(per_arrow_new_angles[i])
@@ -289,3 +294,209 @@ def get_last_status():
         "session_age_sec": 0.0,
         "n_frames": 0,
     }
+
+
+# ==========================================================================
+# 常駐背景迴圈 —— 疊圖(overlay)的資料來源
+# ==========================================================================
+# 【為什麼要從「每次 HTTP 呼叫連拍 0.5 秒」改成常駐迴圈】舊做法實測每次
+# /rune/live 要 688~734ms(其中幾乎全是那 0.5 秒連拍),加上前端 150ms 間隔,
+# 整體只有約 1.2 fps;而且每次呼叫是一段孤島,島與島之間刻意用 FRAME_GAP=2
+# 標成缺幀,find_wobbles 只算連續幀 —— 等於每 0.5 秒就把跨批的角速度全部丟掉。
+# 常駐迴圈兩個問題一起解:畫面連續(疊在 30fps 的遠端影像上),樣本也連續。
+#
+# 【成本分配:角度每幀算,定位每 LOOP_DETR_EVERY 幀才算】
+#   角度  4 個小裁切做 HSV 重心,次毫秒等級 → 每一幀都算,不然角速度會斷
+#   定位  RT-DETR 一次約 28ms → 太貴。但箭頭是【原地】旋轉、框幾乎不動,
+#         5Hz 更新綽綽有餘(見 rune.py::ROTATE_BOX_JITTER 的同一個觀察)
+#
+# 【誰啟動它】沒有開關端點:`get_overlay()` 被讀到就會啟動,超過 LOOP_IDLE_STOP
+# 秒沒人讀就自己停。前端只要「開著就一直輪詢、關掉就不輪詢」,不必記得關 ——
+# 忘了關的代價是全速擷取一直開著(約一顆核心 66%,見 wgc.py)。
+LOOP_DETR_EVERY = 6            # 每幾幀跑一次 RT-DETR 定位(其餘幀只算角度)
+LOOP_IDLE_STOP = 3.0           # 沒人讀 overlay 超過這麼久就自動停
+LOOP_POLL_GAP = 0.004          # 輪詢新影格的間隔上限(比 30fps 密,避免漏格)
+OVERLAY_MIN_SCORE = 0.5        # 疊圖只畫這個信心以上的候選框(使用者指定)
+
+_loop_thread = None
+_loop_lock = threading.Lock()
+_loop_last_read = 0.0
+_overlay = {"reason": "not_started", "boxes": [], "frame": None,
+            "fps": 0.0, "is_window": False, "n_frames": 0}
+
+
+def _norm_box(box, w, h):
+    """整幀像素座標 → 正規化 0~1,並【夾在邊界內】。
+
+    夾邊界不是形式主義:框是模型輸出的,可能超出畫面(尤其箭頭貼在搜尋帶邊緣
+    時);前端拿它乘上影像矩形就會畫到影像外面去,疊在遠端畫面上看起來像是
+    偵測跑到遊戲畫面之外。完全落在畫面外的框直接丟掉(回 None)。"""
+    x0, y0, x1, y1 = (float(v) for v in box)
+    if x1 <= 0 or y1 <= 0 or x0 >= w or y0 >= h:
+        return None
+    return [max(0.0, x0 / w), max(0.0, y0 / h), min(1.0, x1 / w), min(1.0, y1 / h)]
+
+
+def _loop_body():
+    """背景迴圈本體。任何例外都不能讓執行緒無聲死掉 —— 記進 overlay 的 reason,
+    前端看得到。"""
+    global _overlay
+    import minimap
+    import rune_detr
+    import video_pipeline
+    import wgc
+    # 候選框(含信心分數)走 rune_viz 已經接好的那條路 —— 它負責把 tools/ 放進
+    # sys.path,這裡不再重複一份路徑設定。拿不到就只畫選中的 4 支,不整條掛掉。
+    try:
+        import rune_viz
+        viz_rune_detect = rune_viz.viz_rune_detect
+    except Exception:
+        viz_rune_detect = None
+
+    wgc.request_full_rate(True)
+    try:
+        i = 0
+        prev_ts = None
+        had_prev = False               # 上一輪有沒有成功併入樣本(決定 gap 給 1 還是缺幀)
+        boxes4 = None
+        cands = []
+        fps_t0 = time.monotonic()
+        fps_n = 0
+        fps = 0.0
+        while True:
+            with _loop_lock:
+                if time.monotonic() - _loop_last_read > LOOP_IDLE_STOP:
+                    break
+            is_window = video_pipeline.state.get("source") == "window"
+            ts = wgc.latest_ts()
+            if ts and ts == prev_ts:
+                time.sleep(LOOP_POLL_GAP)     # 還是同一格,不重複採樣
+                continue
+            if not ts:
+                # WGC 沒有時間戳(擷取還沒起來,或走 mss 備援)—— 沒有「新格了沒」
+                # 可問,只能自己節流。少了這行會變成不受限的忙迴圈,把一顆核心吃滿。
+                time.sleep(LOOP_POLL_GAP)
+            prev_ts = ts
+            frame = minimap._grab_window()
+            if frame is None:
+                ingest(None, None, reason="no_frame")
+                _set_overlay(reason="no_frame", boxes=[], frame=None, fps=fps, is_window=is_window)
+                had_prev = False
+                time.sleep(0.05)
+                continue
+            h, w = frame.shape[:2]
+
+            if i % LOOP_DETR_EVERY == 0:
+                if not rune_detr.available():
+                    ingest(None, None, reason="no_model")
+                    _set_overlay(reason="no_model", boxes=[], frame=(w, h), fps=fps, is_window=is_window)
+                    had_prev = False
+                    time.sleep(0.2)
+                    continue
+                boxes4 = rune_detr.detect_arrows(frame)
+                cands = _candidates(viz_rune_detect, frame)
+            i += 1
+
+            if not boxes4 or len(boxes4) != 4:
+                ingest(None, None, reason="no_boxes")
+                _set_overlay(reason="no_boxes", boxes=_pack(cands, None, None, w, h),
+                             frame=(w, h), fps=fps, is_window=is_window)
+                had_prev = False
+                continue
+
+            angles = []
+            for box in boxes4:
+                x0, y0, x1, y1 = (int(round(v)) for v in box)
+                crop = frame[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+                angles.append([rune_wheel.angle_of(crop)])
+            status = ingest(boxes4, angles, gap=1 if had_prev else FRAME_GAP)
+            had_prev = True
+
+            fps_n += 1
+            dt = time.monotonic() - fps_t0
+            if dt >= 1.0:
+                fps = round(fps_n / dt, 1)
+                fps_t0, fps_n = time.monotonic(), 0
+            _set_overlay(reason="", frame=(w, h), fps=fps,
+                         boxes=_pack(cands, boxes4, status.get("arrows"), w, h),
+                         n_frames=status.get("n_frames", 0), is_window=is_window)
+    except Exception as e:
+        _set_overlay(reason=f"loop_error: {e!r}", boxes=[], frame=None, fps=0.0)
+    finally:
+        wgc.request_full_rate(False)
+        with _loop_lock:
+            globals()["_loop_thread"] = None
+
+
+def _candidates(viz, frame):
+    """全部候選框 + 信心分數,只留 OVERLAY_MIN_SCORE 以上。拿不到就回空 list。"""
+    if viz is None:
+        return []
+    try:
+        boxes, scores, _by0 = viz.raw_detections(frame)
+    except Exception:
+        return []
+    if boxes is None:
+        return []
+    return [(boxes[k], float(scores[k])) for k in range(len(scores))
+            if scores[k] >= OVERLAY_MIN_SCORE]
+
+
+def _pack(cands, boxes4, arrows, w, h):
+    """候選框 + 選中的 4 支 → 前端要的正規化清單。
+
+    選中的那 4 支【不從候選裡挑】而是各自帶進來:幾何選擇挑中的框與候選框
+    是同一批數字沒錯,但比對浮點座標找對應只會製造對不上的邊界情況。直接標
+    sel=索引,前端照畫即可。"""
+    out = []
+    for box, score in cands:
+        nb = _norm_box(box, w, h)
+        if nb:
+            out.append({"box": nb, "score": round(score, 3), "sel": None,
+                        "dir": None, "motion": None})
+    for k, box in enumerate(boxes4 or []):
+        nb = _norm_box(box, w, h)
+        if not nb:
+            continue
+        a = arrows[k] if arrows and k < len(arrows) else None
+        out.append({"box": nb, "score": None, "sel": k,
+                    "dir": (a or {}).get("direction"),
+                    "motion": (a or {}).get("motion")})
+    return out
+
+
+def _set_overlay(**patch):
+    global _overlay
+    with _loop_lock:
+        _overlay = {**_overlay, **patch}
+
+
+def get_overlay():
+    """疊圖資料(正規化框 + 逐支判定)。【讀這支就會啟動背景迴圈】,不讀就會自己停。"""
+    global _loop_thread, _loop_last_read
+    with _loop_lock:
+        _loop_last_read = time.monotonic()
+        alive = _loop_thread is not None and _loop_thread.is_alive()
+        if not alive:
+            _loop_thread = threading.Thread(target=_loop_body, name="rune-overlay",
+                                            daemon=True)
+            _loop_thread.start()
+        snap = dict(_overlay)
+    snap["arrows"] = get_last_status().get("arrows")
+    snap["running"] = True
+    return snap
+
+
+def loop_running():
+    with _loop_lock:
+        return _loop_thread is not None and _loop_thread.is_alive()
+
+
+def stop_loop(wait=1.5):
+    """立刻停掉背景迴圈(測試與關機用)。正常使用不必呼叫 —— 沒人讀就會自己停。"""
+    global _loop_last_read
+    with _loop_lock:
+        _loop_last_read = 0.0
+        th = _loop_thread
+    if th is not None:
+        th.join(timeout=wait)

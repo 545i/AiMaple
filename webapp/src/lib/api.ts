@@ -106,8 +106,9 @@ export const rune = {
   test: () => post('/rune/test', { solve: 1 }),
   solve: () => post('/rune/solve'),
   warmup: () => post('/rune/warmup'),
-  liveInfo: () => get('/rune/live/info'),
-  liveUrl: () => streamUrl('/rune/live', { t: Date.now() }),
+  /** 疊在遠端畫面上的偵測框(正規化座標)。讀它就會啟動伺服器端背景迴圈,
+   *  停止輪詢 3 秒後伺服器自己停,不需要關閉端點。 */
+  overlay: () => get('/rune/overlay'),
   vizInfo: (p: Record<string, unknown>) => get('/rune/viz/info', p),
   vizStats: () => get('/rune/viz/stats'),
   vizUrl: (p: Record<string, unknown>) => streamUrl('/rune/viz', p),

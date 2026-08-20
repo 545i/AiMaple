@@ -17,6 +17,10 @@ export interface AppState {
   watching: boolean
   layout: 'auto' | 'port' | 'land'
   sens: number
+  /** 符文偵測框疊在遠端畫面上。開發頁的開關,畫框的是 StageStream。
+   *  刻意【不持久化】—— 開著會讓伺服器維持全速擷取(約一顆核心 66%),
+   *  重新整理後應該回到關閉,不該被上次忘了關的狀態綁架。 */
+  runeOverlay: boolean
 }
 
 const PERSIST: Partial<Record<keyof AppState, string>> = {
@@ -28,6 +32,7 @@ const num = (v: string | null, d: number) => (v == null || v === '' ? d : Number
 
 let state: AppState = {
   watching: true,
+  runeOverlay: false,
   layout: (localStorage.getItem('maple_layout') as AppState['layout']) || 'auto',
   sens: num(localStorage.getItem('maple_sens'), 3),
 }

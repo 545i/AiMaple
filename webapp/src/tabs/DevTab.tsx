@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
 import { fiona, rune } from '../lib/api'
+import { useAppState, setAppState } from '../lib/appState'
+import { useRuneOverlay } from '../hooks/useRuneOverlay'
 
 /**
  * 開發頁 — 除錯與驗證工具。日常不會用到的全放這裡。
@@ -9,7 +11,7 @@ import { fiona, rune } from '../lib/api'
  * 手機上要捲很久才找得到。這裡整批搬過來,一個工具一張卡:
  *   ① 菲歐娜解謎觀察模式   /fiona/start|stop|status
  *   ② 符文一鍵測試         /rune/test?solve=1
- *   ③ 即時偵測預覽         /rune/live  + /rune/live/info
+ *   ③ 符文偵測框(疊在遠端畫面) /rune/overlay
  *   ④ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
  *
  * 【大段原理說明一律收進 details 摺疊區】——攤開來會蓋掉真正要看的數字。
@@ -70,7 +72,7 @@ export function DevTab() {
       `}</style>
       <Fiona />
       <RuneProbe />
-      <LivePreview />
+      <RuneOverlayCard />
       <VizTester />
     </>
   )
@@ -229,40 +231,25 @@ function RuneProbe() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   ③ 即時偵測預覽
+   ③ 符文偵測框（疊在遠端畫面上）
    ──────────────────────────────────────────────────────────
-   【一次一發,不塞車】每次 /rune/live 要 0.5~1 秒(伺服器端全速連拍),用固定
-   setInterval 會前一發還沒回來就發下一發。改成圖片 onLoad/onError 之後才排下一次。
+   舊版是另外拉一張伺服器畫好標註的預覽圖:實測每張 347~356KB、每次 688~734ms
+   （其中幾乎全是伺服器端那 0.5 秒連拍），前端再等 150ms → 實際只有約 1.2fps；
+   而且每次呼叫是一段孤島，島與島之間刻意標成缺幀，跨批的角速度全部被丟掉。
+
+   現在改成只拿框的座標，疊在【已經在跑的 30fps 遠端影像】上，伺服器端換成常駐
+   迴圈（角度每幀算、RT-DETR 定位每 6 幀算）——畫面即時，累積樣本也連續。
    ══════════════════════════════════════════════════════════ */
-function LivePreview() {
-  const [on, setOn] = useState(false)
-  const [src, setSrc] = useState('')
-  const [info, setInfo] = useState<any>(null)
-  const [err, setErr] = useState('')
-  const onRef = useRef(false)
-  const timer = useRef<any>(null)
+function RuneOverlayCard() {
+  const { runeOverlay } = useAppState()
+  const data = useRuneOverlay(runeOverlay)
+  const arrows: any[] = data?.arrows ?? []
 
-  useEffect(() => {
-    onRef.current = on
-    if (on) { setErr(''); setSrc(rune.liveUrl()) }
-    else { clearTimeout(timer.current); setSrc(''); setInfo(null); setErr('') }
-    return () => { onRef.current = false; clearTimeout(timer.current) }
-  }, [on])
-
-  // 圖片載完(或失敗)才拉 info、才排下一發
-  const next = async () => {
-    if (!onRef.current) return
-    try { setInfo(await rune.liveInfo()) } catch { /* info 拿不到不影響圖片,沿用上一輪 */ }
-    if (!onRef.current) return
-    timer.current = setTimeout(() => { if (onRef.current) setSrc(rune.liveUrl()) }, 150)
-  }
-
-  const arrows: any[] = info?.arrows ?? []
   const detail = () => {
-    if (!info || !info.arrows) return null
-    if (info.n_boxes_detected !== 4) {
+    if (!data) return null
+    if (data.reason) {
       return <span className="dvt-chip" style={{ color: 'var(--dim)' }}>
-        {LIVE_REASON[info.reason] ?? '偵測不到 4 支箭頭'}
+        {LIVE_REASON[data.reason] ?? data.reason}
       </span>
     }
     return arrows.map((a, i) => {
@@ -277,26 +264,19 @@ function LivePreview() {
   }
 
   return (
-    <Card full title="即時偵測預覽">
-      <button className={`btn ${on ? 'on' : ''}`} onClick={() => setOn(v => !v)}>
-        🎯 即時偵測預覽：{on ? '開（全自動）' : '關'}
+    <Card full title="符文偵測框">
+      <button className={`btn ${runeOverlay ? 'on' : ''}`}
+              onClick={() => setAppState({ runeOverlay: !runeOverlay })}>
+        🎯 在遠端畫面上顯示偵測框：{runeOverlay ? '開' : '關'}
       </button>
 
-      {on && (
+      {runeOverlay && (
         <>
-          {src && (
-            <img
-              className="dvt-prev" src={src} alt="即時偵測預覽"
-              onLoad={() => { setErr(''); next() }}
-              onError={() => { setErr('❌ 拿不到即時預覽（伺服器沒回應？）'); next() }}
-            />
-          )}
           <div className="msg">
-            {err || (info
-              ? `累積 ${info.n_frames} 幀／${info.session_age_sec}s 觀測窗`
-                + (info.reset ? '（緩衝剛重置，開始重新觀察）' : '')
-                + (info.all_settled ? '　全部已定案' : '')
-              : '--')}
+            {data
+              ? `背景迴圈 ${data.fps} fps　累積 ${data.n_frames} 幀`
+                + (data.is_window ? '' : '　⚠ 串流來源不是遊戲視窗，已停用畫框')
+              : '啟動中…'}
           </div>
           <div className="dvt-chips">{detail()}</div>
         </>
@@ -305,14 +285,16 @@ function LivePreview() {
       <details className="dvt">
         <summary>圖例與判讀</summary>
         <div className="hint">
-          <b>灰框</b>＝候選框＋信心分數；<b>紅框</b>＝幾何選擇挑中的 4 支
-          （即時預覽沒有真值可比對錯，固定用紅色）。<br />
-          頂部大字結果帶是伺服器端<b>跨多次呼叫累積</b>判定的結果——旋轉款符文單幀讀不出答案，
-          答案是箭頭晃動的方向，要累積觀測才判得出來：
+          <b>細框</b>＝候選框＋信心分數（<b>只畫 0.5 以上</b>，低分候選疊在遊戲畫面上只是雜訊）；
+          <b>粗框</b>＝幾何選擇挑中的 4 支，標籤是累積判定的方向。<br />
+          旋轉款符文（解放輪）<b>單幀讀不出答案</b>——答案是箭頭晃動（角速度反轉）的方向，
+          要連續觀察才判得出來：
           <span style={{ color: '#5ae65a' }}>綠＝靜止已定案</span>、
           <span style={{ color: '#ffa540' }}>橙＝旋轉已定案</span>、
           <span style={{ color: '#9aa0a8' }}>灰？＝觀察中</span>。<br />
-          全自動更新，不需要按按鈕；每發要 0.5~1 秒，收到回應才發下一發，不會塞車。
+          <b>來源必須是視窗模式</b>：偵測跑在遊戲視窗的擷取上，串流來源設成「全螢幕」時
+          兩邊座標系不同，框會整片偏掉——那種情況直接不畫，不畫歪的框騙人。<br />
+          關掉開關就停止輪詢，伺服器端 3 秒後自己收掉背景迴圈（不然全速擷取會一直開著）。
         </div>
       </details>
     </Card>
