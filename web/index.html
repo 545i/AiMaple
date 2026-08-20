@@ -403,6 +403,18 @@
   /* 抽屜展開時,把返回鈕讓開,避免和把手打架 */
   body.view-dash #toDashTop{ display:none; }
   @media (min-width:900px){ #dashView{ height:min(560px,80vh); } }
+  /* ── 依畫面長寬比自動切換抽屜方向 ──────────────────────────────
+     底部彈出在「橫向寬、上下矮」的視窗(浮動客戶端多半就是這種橫幅)會被壓成很扁
+     的一條,控制項全擠在一起很難按。橫向時改成靠右的直欄:撐滿整個高度爭取垂直
+     空間、寬度收窄,內容單欄好操作。把手仍維持水平(併入的浮動控制項才擺得下),
+     收合動畫沿用 translateY —— 直欄一樣是「把手在最上,收起後把手落到畫面底部」,
+     不需要另寫一套。直向/接近方形的視窗維持原本的底部彈出。 */
+  @media (min-aspect-ratio:1/1){
+    #dashView{ top:0; left:auto; right:0; height:100vh; width:min(460px,48vw);
+      border-radius:22px 0 0 22px; border-top:none;
+      border-left:1px solid rgba(255,255,255,.10);
+      box-shadow:-18px 0 50px rgba(0,0,0,.55); }
+  }
 
   .ptrow .ptcd { flex:0 0 56px; padding:6px; border-radius:6px;
                  border:1px solid #3a3f4b; background:#20242e; color:#e6e6e6; font-size:13px; }
