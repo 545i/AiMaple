@@ -448,7 +448,11 @@ def find_arrow(frame, win, centers=None, scale=1.0):
 
 # ---------------------------------------------------------------- 追蹤
 def band_energy(bands):
-    """一疊【蘑菇水平帶】灰階影像 → 每幀的 x 方向前景能量剖面,shape (T, W)。
+    """一疊【蘑菇水平帶】影像(灰階或 BGR 彩色)→ 每幀的 x 方向前景能量剖面,shape (T, W)。
+
+    彩色輸入會在這裡轉灰再處理,灰階輸入的行為與加上這段之前【逐位元相同】。
+    採集端(fiona_collect)改存彩色是為了讓偵測器拿得到顏色線索(見那裡的註解),
+    這條追蹤路徑本身不吃顏色。
 
     兩層處理,缺一不可:
       1. 高通(原圖 - 大核高斯):聚光燈是平滑漸層而且顏色全程在變,高通後幾乎
@@ -463,6 +467,8 @@ def band_energy(bands):
         return None
     hp = []
     for g in bands:
+        if g.ndim == 3:                 # 彩色帶(fiona_collect 現在存彩色)→ 這裡轉灰
+            g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
         g = g.astype(np.float32)
         hp.append(g - cv2.GaussianBlur(g, (0, 0), 9))
     hp = np.array(hp)
