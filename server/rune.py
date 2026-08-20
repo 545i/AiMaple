@@ -1357,6 +1357,20 @@ def _check_spot(px, py):
     if info["dy"] > SAME_LEVEL_DY:
         info["reason"] = "wrong_level"
         return False, info
+    # 【距離也要判,而且用的是同一組 RADIUS_MIN/MAX】原本這裡只檢查「同一塊平台」
+    # 與「同一層」,完全沒看距離 —— 走完位之後不管站多遠(或多近)都照按。
+    # 實測 631 筆判定可按的裡面有 27 筆在環外:0/1/2(太近)與 7~33(太遠)。
+    # 兩種都有實際代價,而且 _goto 的註解本來就寫著:
+    #     太遠 → 按啟動鍵沒反應,整輪白費,還吃掉一次符文冷卻
+    #     太近 → 角色蓋住紫標,「紫標消失」的驗證失效,失敗會被誤判成解除成功
+    # 環的定義只有一處(RADIUS_MIN..RADIUS_MAX),solve() 判「本來就在環內」、
+    # 走位途中的 _ready_here、以及這裡,三處用的是同一組數字,不會各自漂移。
+    if info["dist"] < RADIUS_MIN:
+        info["reason"] = "too_close"
+        return False, info
+    if info["dist"] > RADIUS_MAX:
+        info["reason"] = "too_far"
+        return False, info
     info["reason"] = ""
     return True, info
 
@@ -1517,6 +1531,8 @@ def _attempt_inner(px, py):
             _last["err"] = {
                 "other_platform": "兩側都站到隔壁平台(高度相近但不同塊),按鍵不會有反應",
                 "wrong_level": "兩側都落在不同層,按鍵不會有反應",
+                "too_far": f"兩側都停在環外(>{RADIUS_MAX} 格),按啟動鍵不會有反應",
+                "too_close": f"兩側都停得太近(<{RADIUS_MIN} 格),角色會蓋住紫標、驗證失效",
                 "no_dot": "抓不到角色黃點",
             }.get(info.get("reason"), "兩側都沒走到符文位置")
             print(f"[rune] {_last['err']}")

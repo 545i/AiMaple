@@ -129,3 +129,54 @@ def test_goto_waits_for_the_character_to_settle_after_early_stop(nav, monkeypatc
     monkeypatch.setattr(rune, "_settle_pause", lambda: waited.__setitem__("n", waited["n"] + 1))
     rune._goto(10, 20, early=lambda: True)
     assert waited["n"] == 1, "提早停止後沒有等它停穩"
+
+
+# ---------- _check_spot:距離也要判(不是只看平台與層) ----------
+@pytest.fixture
+def spot(monkeypatch):
+    """把角色放在指定位置,並讓平台/紫標判定都通過,只留距離這個變因。"""
+    def _set(pos):
+        monkeypatch.setattr(rune, "_dot_now", lambda: pos)
+        monkeypatch.setattr(rune, "_purple_now", lambda: [(100, 50)])
+        monkeypatch.setattr(rune, "_same_platform", lambda p, x, y: True)
+    return _set
+
+
+def test_check_spot_rejects_too_far(spot):
+    """太遠按啟動鍵不會有反應,整輪白費還吃掉一次符文冷卻。
+    實測 631 筆判定可按的裡面有 7~33 格的,因為原本這裡完全沒看距離。"""
+    spot((100 + rune.RADIUS_MAX + 1, 50))
+    ok, info = rune._check_spot(100, 50)
+    assert ok is False and info["reason"] == "too_far"
+
+
+def test_check_spot_rejects_too_close(spot):
+    """太近角色會蓋住紫標,「紫標消失」的驗證失效 —— 失敗會被誤判成解除成功。"""
+    spot((100 + rune.RADIUS_MIN - 1, 50))
+    ok, info = rune._check_spot(100, 50)
+    assert ok is False and info["reason"] == "too_close"
+
+
+def test_check_spot_accepts_inside_the_ring(spot):
+    for d in range(rune.RADIUS_MIN, rune.RADIUS_MAX + 1):
+        spot((100 + d, 50))
+        ok, info = rune._check_spot(100, 50)
+        assert ok is True, f"距離 {d} 在環內卻被拒絕"
+        assert info["reason"] == ""
+
+
+def test_check_spot_still_rejects_other_platform_first(spot, monkeypatch):
+    """站到隔壁平台時,原因要是 other_platform 而不是距離 —— 距離對了也沒用,
+    錯誤訊息指錯方向會讓人去調環的大小,白忙一場。"""
+    spot((100 + rune.RADIUS_MIN, 50))
+    monkeypatch.setattr(rune, "_same_platform", lambda p, x, y: False)
+    ok, info = rune._check_spot(100, 50)
+    assert ok is False and info["reason"] == "other_platform"
+
+
+def test_check_spot_uses_the_same_ring_as_ready_here(spot):
+    """三處(solve 的 in_ring、走位途中的 _ready_here、這裡)必須用同一組數字,
+    否則「走位途中說可以停」跟「停下來後說不行」會互相矛盾,原地打轉。"""
+    for d in (rune.RADIUS_MIN - 1, rune.RADIUS_MIN, rune.RADIUS_MAX, rune.RADIUS_MAX + 1):
+        spot((100 + d, 50))
+        assert rune._check_spot(100, 50)[0] == rune._ready_here(100, 50), f"距離 {d} 兩處判定不一致"
