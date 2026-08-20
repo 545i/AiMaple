@@ -256,7 +256,23 @@ function mountStandalone(doc, api, cfg) {
   return bar;
 }
 
+// 全螢幕時別讓單按 Esc 退出 —— 桌面模式 Esc 是要送進遊戲的按鍵,卻被瀏覽器拿去退
+// 全螢幕。用 Keyboard Lock API 鎖住 Esc:進全螢幕就 lock(['Escape']),此時單按 Esc
+// 送給頁面(遊戲收得到)、不再退出;要退全螢幕改成長按 Esc,或用 ⛶ 鈕(JS 觸發的
+// exitFullscreen 不受鎖影響)。離開全螢幕時解鎖。需要 secure context + Chromium ——
+// 遠端頁是 https、Electron 就是 Chromium,皆符合;拿不到 API 就靜默略過。
+function keepEscInFullscreen(doc) {
+  const nav = doc.defaultView && doc.defaultView.navigator;
+  const kb = nav && nav.keyboard;
+  if (!kb || !kb.lock) return;
+  doc.addEventListener("fullscreenchange", () => {
+    if (doc.fullscreenElement) kb.lock(["Escape"]).catch(() => {});
+    else { try { kb.unlock(); } catch (_) {} }
+  });
+}
+
 function mount(doc, api, cfg) {
+  keepEscInFullscreen(doc);
   const handle = findHandle(doc);
   if (handle) return mergeIntoHandle(handle, doc, api, cfg);
 
