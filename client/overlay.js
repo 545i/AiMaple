@@ -103,6 +103,22 @@ function buildControls(doc, api, cfg, parent, opts) {
 // 找頁面上的展開bar:React 版 .panel .handle、舊單檔版 #panelHandle。
 const findHandle = doc => doc.querySelector(".panel .handle") || doc.getElementById("panelHandle");
 
+// 完全收起 / 重開整個抽屜。舞台是 .stage{inset:0} 鋪滿整個視窗、抽屜只是浮在上面,
+// 所以隱藏整個 .panel(舊版 #dashView)就等於畫面全露。用 DOM 查詢即時取,讓「⤓ 鈕 /
+// 重開鈕 / 全螢幕事件」三處共用而不必互傳參照。
+function collapseDrawer(doc) {
+  const panel = doc.querySelector(".panel") || doc.getElementById("dashView");
+  if (panel) panel.style.display = "none";
+  const tab = doc.getElementById("fcReopen");
+  if (tab) tab.style.display = "flex";
+}
+function expandDrawer(doc) {
+  const panel = doc.querySelector(".panel") || doc.getElementById("dashView");
+  if (panel) panel.style.display = "";
+  const tab = doc.getElementById("fcReopen");
+  if (tab) tab.style.display = "none";
+}
+
 // 【併入模式】把整條控制項印在遠端頁自己的展開bar 上。收合/展開沿用把手本身的行為
 // (React 拖曳循環段位、舊版 onclick),所以這裡不放收合鈕。
 function mergeIntoHandle(handle, doc, api, cfg) {
@@ -145,8 +161,7 @@ function mergeIntoHandle(handle, doc, api, cfg) {
   // 整個視窗、抽屜只是浮在上面(collapsed 也還留一條 46px 把手蓋住底部),所以隱藏
   // 整個 .panel 就等於畫面全露。留一顆畫面底部中央的小鈕把它叫回。
   // React 只管 .panel 的 height/className,不碰 display,所以這個 display:none 不會被
-  // 重繪蓋掉。舊單檔版沒有 .panel,退而找 #dashView。
-  const panel = handle.closest(".panel") || handle.closest("#dashView") || handle.parentElement;
+  // 重繪蓋掉。收合/重開的實作在 collapseDrawer/expandDrawer(即時查 .panel/#dashView)。
   const reopen = doc.createElement("div");
   reopen.id = "fcReopen";
   reopen.textContent = "▲ 控制";
@@ -160,12 +175,12 @@ function mergeIntoHandle(handle, doc, api, cfg) {
     "letter-spacing:1px", "cursor:pointer", "user-select:none", "-webkit-app-region:no-drag",
   ].join(";");
   blockBubble(reopen);
-  reopen.onclick = () => { if (panel) panel.style.display = ""; reopen.style.display = "none"; };
+  reopen.onclick = () => expandDrawer(doc);
   doc.body.appendChild(reopen);
 
   const hideAll = mkEl(doc, "button", BTN, "⤓");
   hideAll.title = "完全收起(連把手一起收掉;點畫面底部中央的「▲ 控制」重開)";
-  hideAll.onclick = () => { if (panel) panel.style.display = "none"; reopen.style.display = "flex"; };
+  hideAll.onclick = () => collapseDrawer(doc);
   ctl.appendChild(hideAll);
 
   const close = mkEl(doc, "button", BTN.replace("#2a2f3a", "#5a2320"), "✕");
@@ -264,10 +279,17 @@ function mountStandalone(doc, api, cfg) {
 function keepEscInFullscreen(doc) {
   const nav = doc.defaultView && doc.defaultView.navigator;
   const kb = nav && nav.keyboard;
-  if (!kb || !kb.lock) return;
   doc.addEventListener("fullscreenchange", () => {
-    if (doc.fullscreenElement) kb.lock(["Escape"]).catch(() => {});
-    else { try { kb.unlock(); } catch (_) {} }
+    if (doc.fullscreenElement) {
+      // 鎖 Esc:單按送給頁面(遊戲收得到)、不退出全螢幕;要退改長按 Esc 或按 ⛶。
+      // 只有安全情境才有 navigator.keyboard(見 main.js 對 http origin 的處理);拿不到
+      // 就略過鎖,但下面的自動收抽屜照做。
+      if (kb && kb.lock) kb.lock(["Escape"]).catch(() => {});
+      collapseDrawer(doc);   // 全螢幕時抽屜自動完全收起,畫面全露
+    } else {
+      if (kb && kb.unlock) { try { kb.unlock(); } catch (_) {} }
+      expandDrawer(doc);     // 離開全螢幕把抽屜叫回來,不讓使用者少了控制列
+    }
   });
 }
 

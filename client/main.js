@@ -26,6 +26,21 @@ if (process.platform === "linux") {
   app.commandLine.appendSwitch("ozone-platform", wayland ? "wayland" : "x11");
 }
 
+// 【為什麼要標記遠端 origin 為「視為安全」】overlay 的「全螢幕鎖 Esc」靠 Keyboard Lock
+// API(navigator.keyboard),而它跟不少 Web API 一樣只在「安全情境」存在。使用者常走
+// http://<Tailscale/區網 IP>:port 連(非 https、非 localhost)→ 不是安全情境 →
+// navigator.keyboard 是 undefined,鎖 Esc 就靜默失效、Esc 照樣退出全螢幕。這裡在啟動
+// (必須早於 app ready,安全情境的判定在 Chromium 初始化時就固定)把「使用者自己存的
+// 那一個遠端 origin」標記為視為安全,只放這一個、範圍最小。讀不到設定就略過。
+// 【刻意不動 normalizeUrl 的白名單】這只影響安全情境判定,不放寬導覽白名單。
+try {
+  const early = JSON.parse(fs.readFileSync(path.join(app.getPath("userData"), "settings.json"), "utf8"));
+  const origin = S.originOf(early && early.url);
+  if (origin && origin.startsWith("http://")) {
+    app.commandLine.appendSwitch("unsafely-treat-insecure-origin-as-secure", origin);
+  }
+} catch (_) { /* 設定不存在/壞掉:照舊,只是 http 連線下鎖 Esc 不會生效 */ }
+
 const CFG = () => path.join(app.getPath("userData"), "settings.json");
 let cfg = S.merge({});
 let win = null;
