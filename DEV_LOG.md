@@ -7,6 +7,10 @@
 - **輸入**：Arduino HID 鍵盤（`press`=key_down→hold~60ms→key_up，**不用 tap，遊戲會漏讀**）+ km.dll 滑鼠。
 - **畫面**：WGC 視窗捕獲 maplestory.exe（只讀屏、不碰遊戲記憶體、不注入）。
 - **重啟**：`restart-admin.bat`（UAC 靜默提權，載入最新碼）。改後端必重啟；改前端硬刷新。
+- **API 呼叫記錄**：middleware 把每個非 GET（與耗時 >1s 的 GET）印到伺服器主控台並寫入
+  `logs/api_calls.jsonl`，含到達/完成兩行、耗時、`in-flight`、距上次同端點的間隔 —— 用來分辨
+  「按鈕沒反應」是沒送到、卡在 handler、還是被別的請求塞住。`MAPLE_API_LOG=0` 關掉。
+  跟著看：`Get-Content logspi_calls.jsonl -Wait`（別直接盯主控台，點進 QuickEdit 會讓寫入阻塞、伺服器卡死）。
 - 主要檔案：`main.py`(端點/lifespan)、`navigator.py`(導航/巡邏)、`pathgraph.py`(路徑圖)、`mapdata.py`(座標/平台/繩索/profile)、`minimap.py`(小地圖偵測)、`idle_mode.py`(隨機AFK)、`web/index.html`(中控頁,單檔)。
 
 ## 前端結構（index.html）

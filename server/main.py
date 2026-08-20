@@ -15,6 +15,7 @@ import hmac
 import ipaddress
 import json
 import os
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -310,6 +311,100 @@ async def tunnel_guard(request: Request, call_next):
             resp.headers.setdefault(k, v)
         return resp
     return await call_next(request)
+
+
+# ===== API 呼叫記錄：分辨「按鈕沒反應」到底卡在哪一段 =====
+# 【為什麼要印兩行(到達 →、完成 ←)】只印完成那行的話,「請求根本沒送到伺服器」與
+# 「送到了但處理卡住」在記錄上長得一模一樣(都是什麼都沒有)。分成兩行之後:
+#   只有 → 沒有 ←        handler 卡住(阻塞在鍵盤/序列埠/擷取)
+#   按兩次卻只印一次 →   第一次沒送到 → 瀏覽器或網路的問題,不是 API
+#   耗時很小卻等很久     API 沒問題,時間花在網路或瀏覽器排隊
+#   in-flight 到達就很大 伺服器被別的請求塞住(同步端點跑在執行緒池裡,被佔滿就排隊)
+#   距上次很短           連按兩次,或前端重複送
+#
+# 【為什麼 GET 要設門檻】狀態頁每秒輪詢好幾支 GET,全印會把畫面洗掉、也會蓋掉真正
+# 要看的那幾行。但慢 GET 必須看得到 —— 佔住執行緒池的元兇就在裡面,那正是
+# 「按了沒反應」最可能的成因。
+#
+# 【為什麼同時寫檔】主控台會被洗掉、也複製不出來;而且那個視窗一旦被滑鼠點進
+# QuickEdit 選取模式,主控台寫入會阻塞、整個伺服器跟著卡死(restart-admin.bat 為了
+# 同樣的理由把輸出導到檔案)。要跟著看請另開視窗:
+#   Get-Content logs\api_calls.jsonl -Wait
+_API_LOG_ON = os.environ.get("MAPLE_API_LOG", "1") != "0"
+_API_LOG = os.path.join(paths.data_dir("logs"), "api_calls.jsonl")
+_API_LOG_MAX = 4 * 1024 * 1024
+_API_SLOW_GET_MS = 1000            # GET 只有超過這個毫秒數才記
+_API_SKIP = {"/video"}             # 無限 MJPEG 串流:永遠不會結束,記了只會誤導
+_api_lock = threading.Lock()
+_api_inflight = 0
+_api_last = {}                     # "METHOD PATH" -> 上次到達的 monotonic
+_api_log_n = 0
+
+
+def _api_clock():
+    """本地時間 HH:MM:SS.mmm —— 要對得上你按下按鈕的那一刻,所以帶毫秒。"""
+    t = time.time()
+    return time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t % 1 * 1000):03d}"
+
+
+def _api_write(rec):
+    """追加一筆到 logs/api_calls.jsonl。與 nav_moves.jsonl 同樣的大小輪替。
+    記錄失敗絕不能影響請求本身,所以整段吞例外。"""
+    global _api_log_n
+    try:
+        with open(_API_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _api_log_n += 1
+        if _api_log_n % 50 == 0 and os.path.getsize(_API_LOG) > _API_LOG_MAX:
+            os.replace(_API_LOG, _API_LOG + ".1")
+    except Exception:
+        pass
+
+
+@app.middleware("http")
+async def api_log(request: Request, call_next):
+    """放在 tunnel_guard 【外面】(後定義的 middleware 是外層):被 403 擋掉的請求
+    也要看得到,否則「按了沒反應」若其實是來源判定擋掉,記錄裡會完全沒有痕跡。"""
+    global _api_inflight
+    path = request.url.path
+    if not _API_LOG_ON or path in _API_SKIP:
+        return await call_next(request)
+
+    method = request.method
+    key = f"{method} {path}"
+    now = time.monotonic()
+    with _api_lock:
+        _api_inflight += 1
+        n_in = _api_inflight
+        prev = _api_last.get(key)
+        _api_last[key] = now
+    gap = round(now - prev, 2) if prev is not None else None
+
+    watched = method != "GET"          # 非 GET 一律記;GET 只記慢的(見上面說明)
+    clock = _api_clock()
+    if watched:
+        print(f"[api] → {clock} {method} {path}  in-flight {n_in}", flush=True)
+
+    t0 = time.perf_counter()
+    status = 500                       # 例外逃出去時保持 500,不要謊報成功
+    try:
+        resp = await call_next(request)
+        status = resp.status_code
+        return resp
+    finally:
+        ms = int((time.perf_counter() - t0) * 1000)
+        with _api_lock:
+            _api_inflight -= 1
+            n_out = _api_inflight
+        if watched or ms >= _API_SLOW_GET_MS:
+            tail = f"  (距上次 {gap}s)" if gap is not None else ""
+            slow = "  ← 慢 GET" if not watched else ""
+            print(f"[api] ← {_api_clock()} {method} {path} {status} {ms:>6}ms"
+                  f"  in-flight {n_out}{tail}{slow}", flush=True)
+            _api_write({"t": round(time.time(), 3), "clock": clock, "method": method,
+                        "path": path, "status": status, "ms": ms,
+                        "inflight_in": n_in, "inflight_out": n_out, "gap": gap,
+                        "client": request.client.host if request.client else None})
 
 
 # ===== 首頁：依來源分流（前端網頁完全分離,避免注入/竄改攻擊面） =====
