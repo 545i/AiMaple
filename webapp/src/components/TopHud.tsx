@@ -3,7 +3,8 @@ import type { Snap } from '../hooks/useDrawer'
 import { exp, nav, system } from '../lib/api'
 
 /** 頂部 HUD:網路狀態 / 巡邏狀態 / EXP 進度 / 系統控制。不開面板也看得到。 */
-export function TopHud({ snap, wsOk, onToggleSnap }: { snap: Snap; wsOk?: boolean; onToggleSnap: () => void }) {
+export function TopHud({ snap, wsOk, isDesk, onToggleSnap }:
+    { snap: Snap; wsOk?: boolean; isDesk?: boolean; onToggleSnap: () => void }) {
   const [online, setOnline] = useState(false)
   const [patrol, setPatrol] = useState(false)
   const [expPct, setExpPct] = useState<number | null>(null)
@@ -75,7 +76,9 @@ export function TopHud({ snap, wsOk, onToggleSnap }: { snap: Snap; wsOk?: boolea
         {/* 全收時這顆不出現 —— 那時右上的快捷列已經有一顆 ▤「控制」,兩顆疊在同一角
             就是使用者說的「重複漢堡按鈕」。分工:抽屜關著由快捷列開(它在 minimal
             模式也還在,是唯一入口),抽屜開著才由這顆做滿版/收合的切換。 */}
-        {snap !== 'collapsed' && (
+        {/* 電腦端改用左側 rail 開合面板,這顆底部抽屜的滿版/全收切換就不出現
+            (它會把 snap 設成 'full' 而關掉輸入通道,電腦端不該有) */}
+        {!isDesk && snap !== 'collapsed' && (
           <button className={`hud-btn ${snap === 'full' ? 'on' : ''}`}
                   title="控制台滿版 / 全收" onClick={onToggleSnap}>▤</button>
         )}

@@ -40,6 +40,10 @@ export default function App() {
   const [padOn, setPadOn] = useState(true)
   const drawer = useDrawer('half')
   const [editPad, setEditPad] = useState(false)
+  // 電腦端改用「左側常駐 rail + 可展開左側面板」,不走底部三段式抽屜(drawer 在電腦端閒置)。
+  // deskOpen 只管左側面板展開/收合;預設收合(只留 rail),遊戲畫面一開始就完整露出。
+  const isDesk = !IS_TOUCH
+  const [deskOpen, setDeskOpen] = useState(false)
 
   const [isWide, setIsWide] = useState(() => matchMedia('(min-width:900px)').matches)
   const [autoPortrait, setAutoPortrait] = useState(() => matchMedia('(orientation:portrait)').matches)
@@ -100,7 +104,7 @@ export default function App() {
                   visible={playing && padOn && IS_TOUCH} />
 
       {!minimal && (
-        <TopHud snap={drawer.snap} wsOk={input.connected}
+        <TopHud snap={drawer.snap} wsOk={input.connected} isDesk={isDesk}
                 onToggleSnap={() => drawer.setSnap(drawer.snap === 'full' ? 'collapsed' : 'full')} />
       )}
 
@@ -115,7 +119,9 @@ export default function App() {
 
       <ControlPanel isWide={isWide} minimal={minimal} tab={tab} onTab={setTab}
                     snap={drawer.snap} height={drawer.panelH} dragging={drawer.dragH != null}
-                    handlers={drawer.handlers} />
+                    handlers={drawer.handlers}
+                    isDesk={isDesk} deskOpen={deskOpen}
+                    onDeskToggle={() => setDeskOpen(o => !o)} onDeskOpen={() => setDeskOpen(true)} />
     </div>
   )
 }
