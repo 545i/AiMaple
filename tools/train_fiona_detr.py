@@ -180,13 +180,34 @@ def param_groups(model, head_lr, backbone_lr):
     return [{"params": bb, "lr": backbone_lr}, {"params": hd, "lr": head_lr}]
 
 
-@torch.no_grad()
-def evaluate(model, loader, device, processor, thr=0.5):
-    """回 (平均 loss, 恰好 4 框的比例)。
+def _mean_iou_best(pred, gt):
+    """4 條預測框 vs 4 條真值框,枚舉 4!=24 種配對取最好的平均 IoU。
+    兩邊都是正規化的 (cx,cy,w,h)。"""
+    import itertools
 
-    【第二個指標才是 production 真正要的】mAP 高但「這一幀到底有沒有給我四個框」
-    不成立的話,下游的指派/追蹤根本沒有東西可以用 —— 先前那次 val mAP50=0.995、
-    實機卻只有 29.6%,量的就是不同的東西。
+    def xyxy(b):
+        cx, cy, w, h = b
+        return cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2
+
+    def iou(a, b):
+        ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+        ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+        inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+        ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+        return inter / ua if ua > 0 else 0.0
+
+    p = [xyxy(b.tolist()) for b in pred]
+    g = [xyxy(b.tolist()) for b in gt]
+    return max(sum(iou(p[i], g[perm[i]]) for i in range(4)) / 4
+               for perm in itertools.permutations(range(4)))
+
+
+@torch.no_grad()
+def evaluate(model, loader, device, processor):
+    """回 (平均 loss, 四框與真值的平均 IoU)。
+
+    【為什麼量 IoU 而不是 mAP】下游的指派/追蹤要的是「四個框各自貼在哪一隻蘑菇
+    上」。先前那次 val mAP50=0.995、實機卻只有 29.6%,量的是不同的東西。
     """
     model.eval()
     tot, n, four = 0.0, 0, 0
@@ -198,10 +219,17 @@ def evaluate(model, loader, device, processor, thr=0.5):
         out = model(pixel_values=pixel_values, labels=labels)
         tot += out.loss.item()
         n += 1
-        probs = out.logits.sigmoid().max(-1).values      # (B, queries)
-        for row in probs:
+        # 【取 top-4 算 IoU,不要用門檻數框】踩過的坑:VFL 的分數刻度很低(最高
+        # 0.04~0.08),用 0.5 當門檻會一路顯示 0%,看起來像模型完全沒學到 —— 但同一
+        # 個模型取 top-4 的框與真值平均 IoU 是 0.957。分數只用於排序,絕對值沒校準;
+        # 而這個任務永遠是剛好四隻,取 top-4 才是對的推論規則。
+        sc = out.logits.sigmoid().max(-1).values          # (B, queries)
+        for bi in range(sc.shape[0]):
+            gt = labels[bi]["boxes"]                      # (G,4) 正規化 cx,cy,w,h
+            if gt.shape[0] != 4:
+                continue
             imgs += 1
-            four += int((row > thr).sum().item() == 4)
+            four += _mean_iou_best(out.pred_boxes[bi, sc[bi].topk(4).indices], gt)
     model.train()
     return tot / max(1, n), four / max(1, imgs)
 
@@ -303,7 +331,7 @@ def main():
         msg = f"epoch {epoch + 1}/{args.epochs}  loss {ep / max(1, nb):.4f}"
         if (epoch + 1) % 5 == 0 or epoch + 1 == args.epochs:
             vl, four = evaluate(model, val_loader, device, processor)
-            msg += f"  val_loss {vl:.4f}  恰好4框 {100 * four:.1f}%"
+            msg += f"  val_loss {vl:.4f}  四框平均IoU {four:.3f}"
         print(f"{msg}  ({(time.time() - t0) / 60:.1f} 分)", flush=True)
 
         torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(),
