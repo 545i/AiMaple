@@ -97,6 +97,16 @@ export const job = {
   remove: (name: string) => post('/job/delete', { name }),
 }
 
+// ───────────────────────────────────────────── 導航行動軌跡
+export const navTrace = {
+  /** 存下來的趟次(新到舊) */
+  runs: () => get('/nav/trace/runs'),
+  /** 一趟的完整記錄(JSON):每次讀值、每次按鍵、每段點到點的意圖 */
+  json: (name?: string) => get('/nav/trace', name ? { name } : undefined),
+  /** 畫在小地圖上的軌跡圖。t 用來強制不吃快取 */
+  imgUrl: (p: Record<string, unknown>) => streamUrl('/nav/trace.jpg', { ...p, t: Date.now() }),
+}
+
 // ───────────────────────────────────────────── 符文
 export const rune = {
   status: () => get('/rune/status'),

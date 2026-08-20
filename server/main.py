@@ -888,6 +888,46 @@ def nav_status(token: str = Query("")):
     return JSONResponse(s)
 
 
+@app.get("/nav/trace")
+def nav_trace_json(token: str = Query(""), name: str = Query("")):
+    """一趟導航的完整行動軌跡(JSON)。name 空 = 目前/最近那一趟。
+
+    每一次位置讀值、每一次按鍵、每一段點到點的意圖都在裡面,並帶著當下的
+    phase 與類別(走位/上升/下跳/二段跳/脫困)。記錄點掛在 navigator._dot()
+    裡面 —— 記的是【導航器當下看到什麼】,不是另外量的真相,因為要查的正是
+    「它讀到移動中的瞬時值就下判斷」。詳見 server/nav_trace.py 檔頭。"""
+    _check_owner(token)
+    import nav_trace
+    r = nav_trace.load(name) if name else nav_trace.latest()
+    if r is None:
+        raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")
+    return JSONResponse(r)
+
+
+@app.get("/nav/trace/runs")
+def nav_trace_runs(token: str = Query("")):
+    """存下來的趟次清單(新到舊,只留最近 nav_trace.KEEP_RUNS 趟)。"""
+    _check_owner(token)
+    import nav_trace
+    return JSONResponse({"runs": nav_trace.runs(), "keep": nav_trace.KEEP_RUNS})
+
+
+@app.get("/nav/trace.jpg")
+def nav_trace_img(token: str = Query(""), name: str = Query(""),
+                  scale: int = Query(4), intent: int = Query(1)):
+    """把軌跡畫在小地圖上:走位=綠、上升(C)=橘、下跳=藍、二段跳=紫、脫困=紅。
+    虛線是【意圖】(每段的 start→target),實線是【實際走的】,兩層疊著看才知道
+    「規劃到 A 卻走去 B」或「同一段下跳按了兩次」。按鍵事件在線上打點。"""
+    _check_owner(token)
+    import nav_trace
+    r = nav_trace.load(name) if name else nav_trace.latest()
+    jpg = nav_trace.render_jpeg(r, scale=max(1, min(8, scale)))
+    if jpg is None:
+        raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/nav/stop")
 def nav_stop(token: str = Query("")):
     """使用者手動停止 → 連時限一起清掉(倒數不該繼續跑)。

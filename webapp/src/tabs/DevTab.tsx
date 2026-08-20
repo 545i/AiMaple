@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
-import { fiona, rune } from '../lib/api'
+import { fiona, rune, navTrace } from '../lib/api'
 import { useAppState, setAppState } from '../lib/appState'
 import { useRuneOverlay } from '../hooks/useRuneOverlay'
 
@@ -12,7 +12,8 @@ import { useRuneOverlay } from '../hooks/useRuneOverlay'
  *   ① 菲歐娜解謎觀察模式   /fiona/start|stop|status
  *   ② 符文一鍵測試         /rune/test?solve=1
  *   ③ 符文偵測框(疊在遠端畫面) /rune/overlay
- *   ④ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
+ *   ④ 導航行動軌跡         /nav/trace + /nav/trace.jpg
+ *   ⑤ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
  *
  * 【大段原理說明一律收進 details 摺疊區】——攤開來會蓋掉真正要看的數字。
  */
@@ -73,6 +74,7 @@ export function DevTab() {
       <Fiona />
       <RuneProbe />
       <RuneOverlayCard />
+      <NavTraceCard />
       <VizTester />
     </>
   )
@@ -301,8 +303,75 @@ function RuneOverlayCard() {
   )
 }
 
+
 /* ══════════════════════════════════════════════════════════
-   ④ 偵測測試器 — 對離線資料集(真實 / 合成 a·c·d·e)重跑偵測
+   ④ 導航行動軌跡
+   ──────────────────────────────────────────────────────────
+   把一趟導航【實際走的路線】依動作類型上色畫在小地圖上,並疊上【意圖】
+   (每段的 start→target 虛線)。兩層一起看才分得出「規劃到 A 卻走去 B」
+   與「同一段下跳按了兩次」——只看其中一層都看不出來。
+   記錄點掛在 navigator._dot() 裡面,記的是導航器【當下看到什麼】。
+   ══════════════════════════════════════════════════════════ */
+function NavTraceCard() {
+  const [runs, setRuns] = useState<string[]>([])
+  const [name, setName] = useState('')
+  const [src, setSrc] = useState('')
+  const [err, setErr] = useState('')
+  const [scale, setScale] = useState(4)
+
+  const refresh = async (pick?: string) => {
+    setErr('')
+    try {
+      const j: any = await navTrace.runs()
+      setRuns(j.runs ?? [])
+      const n = pick !== undefined ? pick : name
+      setName(n)
+      setSrc(navTrace.imgUrl(n ? { name: n, scale } : { scale }))
+    } catch { setErr('拿不到軌跡清單(連線?)') }
+  }
+
+  useEffect(() => { refresh() }, [])
+
+  return (
+    <Card full title="導航行動軌跡">
+      <div className="row">
+        <button className="btn sm" onClick={() => refresh()}>🔄 最新一趟</button>
+        <select className="sel" value={name} onChange={e => refresh(e.target.value)}>
+          <option value="">目前／最近那一趟</option>
+          {runs.map(r => <option key={r} value={r}>{r.replace('.jsonl', '')}</option>)}
+        </select>
+        <select className="sel" value={scale}
+                onChange={e => { setScale(+e.target.value); setTimeout(() => refresh(), 0) }}>
+          {[2, 3, 4, 6, 8].map(v => <option key={v} value={v}>{v}×</option>)}
+        </select>
+      </div>
+
+      {src && !err && (
+        <img className="dvt-prev" src={src} alt="導航軌跡"
+             onError={() => setErr('這一趟還沒有軌跡(跑一趟巡邏或導航就會有)')} />
+      )}
+      <div className="msg">{err}</div>
+
+      <details className="dvt">
+        <summary>怎麼看</summary>
+        <div className="hint">
+          <b>實線＝實際走的</b>，顏色是動作類型：
+          <span style={{ color: '#00dc00' }}>綠＝走位</span>、
+          <span style={{ color: '#ffa500' }}>橘＝上升(C)</span>、
+          <span style={{ color: '#0078ff' }}>藍＝下跳</span>、
+          <span style={{ color: '#c800ff' }}>紫＝二段跳</span>、
+          <span style={{ color: '#ff3333' }}>紅＝脫困</span>。<br />
+          <b>灰虛線＋十字＝意圖</b>（每段規劃的 start→target）。實線偏離虛線，就是那一段走錯了。<br />
+          <b>線上的圓點＝按鍵事件</b>。同一段藍線上出現兩個以上的點 ＝ <b>連續下跳</b>。<br />
+          白圈＝起點，白十字＝終點。只保留最近 50 趟。
+        </div>
+      </details>
+    </Card>
+  )
+}
+
+/* ══════════════════════════════════════════════════════════
+   ⑤ 偵測測試器 — 對離線資料集(真實 / 合成 a·c·d·e)重跑偵測
    每張都要重新推論(0.5~3 秒),所以不輪詢,只在展開/換來源/翻頁時打一次。
    ══════════════════════════════════════════════════════════ */
 function VizTester() {

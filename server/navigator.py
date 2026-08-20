@@ -18,6 +18,7 @@ import threading
 import time
 
 import minimap
+import nav_trace
 import pathgraph
 import paths
 
@@ -333,12 +334,17 @@ def status():
 
 # ---------- 底層動作 ----------
 def _dot():
-    """讀一次小地圖黃點 (x,y)。抓不到回 None。"""
+    """讀一次小地圖黃點 (x,y)。抓不到回 None。
+
+    【每一次讀值都會進軌跡記錄】記錄點刻意放在這裡而不是另開取樣執行緒 ——
+    要查的是「導航器讀到移動中的瞬時值就下判斷」,所以要記的是它【實際看到的
+    輸入】,不是另外量到的真相。細節見 server/nav_trace.py 檔頭。"""
     try:
         minimap.detect_once()
         s = minimap.status()
         d = s.get("dot")
         if d and s.get("found") and not s.get("dot_stale"):
+            nav_trace.sample(d["x"], d["y"], _state.get("phase"))
             return (d["x"], d["y"])
     except Exception:
         pass
@@ -363,6 +369,7 @@ def _settle(retries=8):
 
 
 def _press(k, hold=KEY_HOLD):
+    nav_trace.event("press", k, _state.get("phase"))
     _keyboard.key_down(k)
     time.sleep(hold)
     _keyboard.key_up(k)
@@ -628,6 +635,7 @@ def _fall_to_y(ty, skills=None):
                 _state["pos"] = list(p)
                 if p[1] >= ty - Y_TOL:
                     break
+            nav_trace.event("fall_jump", JUMP_K1, _state.get("phase"))
             _keyboard.key_down(JUMP_K1); time.sleep(0.08); _keyboard.key_up(JUMP_K1)
             if _fall_hold_atk:
                 _same_skills(skills)
@@ -970,6 +978,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             _log_move(_state.get("mode", "move"), mt,
                       list(p_start) if p_start else None, [nx, ny],
                       list(p_end) if p_end else None)
+            nav_trace.segment(mt, p_start, [nx, ny], p_end)
             prev_y = ny                                 # 這段的目標層,下一段據此校驗
         else:
             if not _replan.is_set():
@@ -1047,6 +1056,7 @@ def _goto_sync(tx, ty, skills=None, precise=False):
 
 
 def _run(tx, ty, skills, precise=False):
+    nav_trace.start(_state.get("mode", "move"), (tx, ty))
     try:
         _state.update({"phase": "settle", "steps": 0, "error": ""})
         if _focus_fn:
@@ -1067,6 +1077,7 @@ def _run(tx, ty, skills, precise=False):
                 pass
         _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
+        nav_trace.finish(_state.get("arrived"))
 
 
 # ---- 路過就打:走位途中經過巡邏點,就地平A 再繼續 ----
@@ -1342,6 +1353,7 @@ def _patrol_wrap(points_fn, attack_key, cast_mode):
                 pass
         _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
+        nav_trace.finish(_state.get("arrived"))
 
 
 def move_to(tx, ty, skills=None, precise=False):
