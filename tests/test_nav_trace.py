@@ -1,0 +1,197 @@
+# -*- coding: utf-8 -*-
+"""server/nav_trace.py 的測試 —— 純邏輯,不需要遊戲/小地圖。
+
+畫圖(render)不在這裡測:它要真的小地圖影格,而且「畫得對不對」只有看圖才算數
+(今天已經被「指標漂亮但畫出來是錯的」坑過兩次)。這裡守的是記錄本身:
+分類、起訖、上限、存檔與輪替。
+"""
+import json
+import os
+
+import pytest
+
+import nav_trace as nt
+
+
+@pytest.fixture(autouse=True)
+def _isolate(tmp_path, monkeypatch):
+    """每個測試用自己的檔案,不要碰到真的 logs/nav_trace.jsonl,也不要互相汙染。"""
+    monkeypatch.setattr(nt, "TRACE_FILE", str(tmp_path / "nav_trace.jsonl"))
+    monkeypatch.setattr(nt, "TRACE_DIR", str(tmp_path / "old"))   # 舊格式目錄(不存在)
+    monkeypatch.setattr(nt, "_run", None)
+    monkeypatch.setattr(nt, "_last_run", None)
+    yield
+
+
+# ---------- 分類 ----------
+def test_category_maps_navigator_phases():
+    """類別直接對應 navigator._state["phase"],不另外發明一套。"""
+    assert nt.category("g_walk") == "walk"
+    assert nt.category("move_x") == "walk"
+    assert nt.category("fine_x") == "walk"
+    assert nt.category("g_rope") == "rope"
+    assert nt.category("rope_up") == "rope"
+    assert nt.category("g_fall") == "fall"
+    assert nt.category("fall_adjust") == "fall"
+    assert nt.category("g_jump") == "jump"
+
+
+def test_category_deblock_wins_over_substrings():
+    """脫困要排在最前面比對 —— 它是獨立的狀態,不該被其他關鍵字搶走。"""
+    assert nt.category("deblock") == "deblock"
+
+
+def test_category_unknown_is_other_not_a_guess():
+    """認不得的 phase 一律 other。猜錯類別會讓軌跡圖說謊,寧可標成未知。"""
+    assert nt.category("settle") == "other"
+    assert nt.category("") == "other"
+    assert nt.category(None) == "other"
+
+
+# ---------- 記錄 ----------
+def test_sample_and_event_only_recorded_between_start_and_finish():
+    """沒開始就不該記 —— 否則巡邏之外的零星讀值會混進上一趟的軌跡裡。"""
+    nt.sample(1, 2, "g_walk")
+    assert nt.latest() is None
+    nt.start("patrol", (10, 20))
+    nt.sample(1, 2, "g_walk")
+    nt.event("press", "c", "g_rope")
+    r = nt.latest()
+    assert len(r["samples"]) == 1 and len(r["events"]) == 1
+    assert r["target"] == [10, 20]
+    nt.finish(arrived=True)
+    nt.sample(3, 4, "g_walk")                     # 結束後的讀值不該再進去
+    assert len(nt.latest()["samples"]) == 1
+
+
+def test_sample_records_phase_and_category_together():
+    """記 phase 也記類別:phase 是原始證據,類別是畫圖用的;只留一個都不夠。"""
+    nt.start("move")
+    nt.sample(5, 6, "fall_adjust")
+    s = nt.latest()["samples"][0]
+    assert s["phase"] == "fall_adjust" and s["cat"] == "fall"
+    assert s["x"] == 5 and s["y"] == 6
+
+
+def test_start_twice_flushes_the_previous_run():
+    """重複 start(例如上一趟異常中斷)不能把前一趟弄丟,要先收好再開新的。"""
+    nt.start("patrol", (1, 1))
+    nt.sample(1, 1, "g_walk")
+    nt.start("patrol", (2, 2))
+    assert len(nt._all()) == 1, "前一趟沒有被存檔"
+    assert nt.latest()["target"] == [2, 2]
+
+
+def test_finish_writes_one_line_with_duration_arrived_and_seq():
+    nt.start("patrol", (7, 8))
+    nt.sample(1, 1, "g_walk")
+    nt.finish(arrived=False)
+    recs = nt._all()
+    assert len(recs) == 1
+    assert recs[0]["arrived"] is False
+    assert recs[0]["target"] == [7, 8]
+    assert "dur" in recs[0]
+    assert recs[0]["seq"] == 1, "流水號要從 1 開始"
+
+
+def test_seq_increases_and_load_finds_by_seq():
+    """流水號是 UI 用來『點線知道是第幾趟』與『選區間』的依據,必須遞增且查得到。"""
+    for i in range(3):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert [r["seq"] for r in nt._all()] == [1, 2, 3]
+    assert nt.load(2)["target"] == [1, 1]
+    assert nt.load(99) is None
+    assert nt.load()["seq"] == 3, "不給 seq 就是最新那一趟"
+
+
+def test_runs_lists_newest_first_with_summary():
+    for i in range(2):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    rs = nt.runs()
+    assert [r["seq"] for r in rs] == [2, 1], "要新到舊"
+    assert rs[0]["mode"] == "patrol" and rs[0]["n"] == 1
+
+
+def test_sample_cap_stops_growth_on_a_stuck_navigation():
+    """卡住的導航會一直讀值。有上限才不會把記憶體吃光。"""
+    nt.start("patrol")
+    for i in range(nt.MAX_SAMPLES + 50):
+        nt.sample(i % 100, 1, "g_walk")
+    assert len(nt.latest()["samples"]) == nt.MAX_SAMPLES
+
+
+def test_prune_keeps_only_recent_runs(monkeypatch):
+    """檔案不能無限長大。留下來的必須是【最新】那幾趟。"""
+    monkeypatch.setattr(nt, "KEEP_RUNS", 3)
+    for i in range(6):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert [r["seq"] for r in nt._all()] == [4, 5, 6]
+
+
+def test_segment_records_intent_and_outcome():
+    """點到點那一段要同時留下 target(意圖)與 end(實際),畫圖才對照得起來。"""
+    nt.start("patrol")
+    nt.segment("fall", (10, 20), [10, 30], (10, 31))
+    seg = nt.latest()["segments"][0]
+    assert seg["act"] == "fall"
+    assert seg["target"] == [10, 30] and seg["end"] == [10, 31]
+
+
+def test_latest_returns_a_copy_not_the_live_buffer():
+    """回的是快照。呼叫端(端點序列化)拿到 live buffer 的話,導航還在寫就會
+    在序列化途中被改動。"""
+    nt.start("patrol")
+    nt.sample(1, 1, "g_walk")
+    snap = nt.latest()
+    nt.sample(2, 2, "g_walk")
+    assert len(snap["samples"]) == 1
+
+
+# ---------- 合併多趟 ----------
+def test_merged_combines_runs_on_one_timeline():
+    """一趟 = 一次點到點導航,巡邏時每趟只有 3~5 秒;不合併的話畫面一直重置,
+    看不出整體路線。合併後時間軸要以最早那趟為原點重新對齊。"""
+    import time as _t
+    for i in range(3):
+        nt.start("patrol", (i, i))
+        nt.sample(i, i, "g_walk")
+        nt.event("press", "c", "g_rope")
+        nt.finish(arrived=True)
+        _t.sleep(0.01)
+    m = nt.merged(5)
+    assert len(m["samples"]) == 3 and len(m["events"]) == 3
+    ts = [s["t"] for s in m["samples"]]
+    assert ts == sorted(ts), "合併後樣本要照時間排好"
+    assert min(ts) >= 0, "時間軸要以最早那趟為原點"
+    assert "合併" in m["note"]
+    assert all(s.get("seq") for s in m["samples"]), "合併後每筆要帶流水號(點線才知道是第幾趟)"
+
+
+def test_merged_does_not_draw_the_current_run_twice():
+    """導航剛結束時,latest() 與最後一個存檔是同一趟 —— 不能畫兩次。"""
+    nt.start("patrol", (1, 1))
+    nt.sample(1, 1, "g_walk")
+    nt.finish(arrived=True)
+    m = nt.merged(5)
+    assert len(m["samples"]) == 1
+
+
+def test_merged_returns_none_without_any_data():
+    assert nt.merged(5) is None
+
+
+def test_two_runs_in_the_same_second_do_not_overwrite_each_other():
+    """巡邏的短程(走一步就到)常常在同一秒內完成兩趟。舊的「一趟一個檔 + 秒級檔名」
+    會讓後一趟蓋掉前一趟,記錄無聲消失(實際發生過:巡邏 18 分鐘只留下幾筆)。
+    改成一行一趟之後,同一秒完成幾趟就是幾行,不可能互相覆蓋。"""
+    for i in range(2):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    assert len(nt._all()) == 2
+
+
+def test_merged_accepts_a_seq_range():
+    """UI 的「區間選」:指定流水號範圍,只畫那幾趟。"""
+    for i in range(5):
+        nt.start("patrol", (i, i)); nt.sample(i, i, "g_walk"); nt.finish(arrived=True)
+    m = nt.merged(seq_from=2, seq_to=4)
+    assert sorted({s["seq"] for s in m["samples"]}) == [2, 3, 4]

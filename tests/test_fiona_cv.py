@@ -287,3 +287,25 @@ def test_path_confidence_shape(ref):
     assert set(c) == {"median", "min", "weak_frac"}
     assert 0.0 <= c["weak_frac"] <= 1.0
     assert 0.0 <= c["min"] <= c["median"] <= 1.0
+
+
+# ---------- 彩色帶(採集端改存彩色之後) ----------
+def test_band_energy_accepts_color_and_matches_gray(ref):
+    """採集端改存彩色帶(見 fiona_collect 的註解:灰階下半透明蘑菇與聚光燈亮度
+    幾乎相同,顏色才分得開)。band_energy 必須兩種都吃,而且【彩色轉灰的結果要與
+    直接餵灰階完全一致】—— 追蹤行為不能因為這個改動而變。"""
+    bands = ref["bands"]
+    gray = bands if bands.ndim == 3 else np.array(
+        [cv2.cvtColor(b, cv2.COLOR_BGR2GRAY) for b in bands])
+    color = np.array([cv2.cvtColor(g, cv2.COLOR_GRAY2BGR) for g in gray])
+    Pg = F.band_energy(gray)
+    Pc = F.band_energy(color)
+    assert Pg is not None and Pc is not None
+    assert Pg.shape == Pc.shape
+    np.testing.assert_allclose(Pg, Pc, atol=1e-6)
+
+
+def test_band_energy_still_rejects_too_few_frames():
+    """少於 5 幀一律回 None,彩色也一樣。"""
+    tiny = np.zeros((4, 20, 30, 3), np.uint8)
+    assert F.band_energy(tiny) is None

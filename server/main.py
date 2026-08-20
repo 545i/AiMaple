@@ -151,6 +151,11 @@ async def lifespan(app):
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_terrain_fn(lambda: (mapdata.points(mapdata.current_map_id()),
                                       mapdata.platforms(mapdata.current_map_id())))
+    # 繩索位置:規劃器沒有它就只能猜「平台重疊區中點」,實測差 4~6 格 → 每次上繩的
+    # 第一按必定失敗。上繩成功時把真正有效的 x 寫回這張地圖,下次直接走對位置。
+    navigator.set_rope_fns(
+        get_fn=lambda: mapdata.ropes(mapdata.current_map_id()),
+        note_fn=lambda x: mapdata.note_rope(mapdata.current_map_id(), x))
     # 職業:第一次啟動把現況存成「蓮」,之後每次啟動套用上次選的那個。
     # navigator 的移動參數是模組級變數,不套用就會退回寫死的預設(=蓮的值)。
     jobs.ensure_default()
@@ -886,6 +891,83 @@ def nav_status(token: str = Query("")):
     s["jump_atk"] = bool(att.get("jump_atk", False))
     s["fall_atk"] = bool(att.get("fall_atk", False))
     return JSONResponse(s)
+
+
+@app.get("/nav/trace")
+def nav_trace_json(token: str = Query(""), seq: int = Query(0)):
+    """一趟導航的完整行動軌跡(JSON)。seq=0 表示目前/最近那一趟。
+
+    每一次位置讀值、每一次按鍵、每一段點到點的意圖都在裡面,並帶著當下的
+    phase 與類別(走位/上升/下跳/二段跳/脫困)。記錄點掛在 navigator._dot()
+    裡面 —— 記的是【導航器當下看到什麼】,不是另外量的真相,因為要查的正是
+    「它讀到移動中的瞬時值就下判斷」。詳見 server/nav_trace.py 檔頭。"""
+    _check_owner(token)
+    import nav_trace
+    r = nav_trace.load(seq) if seq else nav_trace.latest()
+    if r is None:
+        raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")
+    return JSONResponse(r)
+
+
+@app.get("/nav/trace/runs")
+def nav_trace_runs(token: str = Query("")):
+    """存下來的趟次清單(新到舊,只留最近 nav_trace.KEEP_RUNS 趟)。"""
+    _check_owner(token)
+    import nav_trace
+    return JSONResponse({"runs": nav_trace.runs(), "keep": nav_trace.KEEP_RUNS})
+
+
+@app.get("/nav/trace/overlay")
+def nav_trace_overlay(token: str = Query(""), merge: int = Query(6),
+                      seq_from: int = Query(0), seq_to: int = Query(0)):
+    """給前端疊在【遠端畫面】上的導航軌跡(正規化座標,不是影像)。
+
+    【為什麼不回圖】回圖等於再開一條影像通道:伺服器每張要多抓一次小地圖、
+    每張 37~64KB。遠端畫面本來就在跑,把座標疊上去就好 —— 與 /rune/overlay
+    同一個做法、同一個理由。這支是純讀(小地圖 bbox + 記憶體裡的軌跡),不抓畫面。
+
+    座標一路換算到相對遊戲影格的 0~1;前端用 letterbox.contentRect() 換算到
+    影像實際矩形,與遠端游標紅點、符文偵測框共用同一套黑邊換算。
+    is_window 是畫不畫的邊界:偵測跑在遊戲視窗的擷取上,串流來源設成「全螢幕」時
+    座標系不同,框會整片偏掉(同 /rune/overlay 的處理)。"""
+    _check_owner(token)
+    import nav_trace
+    return JSONResponse(nav_trace.overlay(
+        max(1, min(60, merge)),
+        seq_from=seq_from or None, seq_to=seq_to or None))
+
+
+@app.get("/nav/trace.jpg")
+def nav_trace_img(token: str = Query(""), seq: int = Query(0),
+                  scale: int = Query(4), merge: int = Query(1)):
+    """把軌跡畫在小地圖上(【離線分析用】,日常請用 /nav/trace/overlay 疊在遠端畫面)。
+
+    這支每呼叫一次都要重抓小地圖並偵測、回傳 37~64KB 影像 —— 不適合當即時預覽,
+    保留是因為它能單獨存檔、貼給別人看、以及在沒有遠端畫面時仍看得到軌跡。
+
+    走位=綠、上升(C)=橘、下跳=藍、二段跳=紫、脫困=紅。
+    虛線是【意圖】(每段的 start→target),實線是【實際走的】,兩層疊著看才知道
+    「規劃到 A 卻走去 B」或「同一段下跳按了兩次」。按鍵事件在線上打點。
+
+    merge=N 把最近 N 趟併成一張。【預設要 >1】一趟 = 一次點到點導航,巡邏時每趟
+    只有 3~5 秒,單看一趟畫面會一直重置,看不出整體路線。指定 seq 時忽略 merge
+    (那是明確要看某一趟)。
+
+    正在導航時可以持續重抓 —— latest() 回的是【當下這一趟】的即時內容,不必等它
+    結束才畫得出來。"""
+    _check_owner(token)
+    import nav_trace
+    if seq:
+        r = nav_trace.load(seq)
+    elif merge > 1:
+        r = nav_trace.merged(merge)
+    else:
+        r = nav_trace.latest()
+    jpg = nav_trace.render_jpeg(r, scale=max(1, min(8, scale)))
+    if jpg is None:
+        raise HTTPException(status_code=404, detail="還沒有任何導航軌跡")
+    return Response(content=jpg, media_type="image/jpeg",
+                    headers={"Cache-Control": "no-store"})
 
 
 @app.post("/nav/stop")

@@ -253,7 +253,13 @@ class FionaCollector:
         # ---- 洗牌中:累積蘑菇帶 ----
         band = F.crop(frame, win, F.BAND, sc)
         if band is not None and len(self.bands) < MAX_BAND_FRAMES:
-            self.bands.append(cv2.cvtColor(band, cv2.COLOR_BGR2GRAY))
+            # 【存彩色,不要在這裡轉灰】洗牌時蘑菇是半透明的,灰階下它跟明亮的
+            # 聚光燈【亮度幾乎相同】—— 實測:模板比對一律黏在背景上(分數 0.89
+            # 卻框在空舞台)、連通塊 82% 的幀糊成一塊、能量圖是一片模糊的斜帶。
+            # 但兩者【顏色】完全不同(粉紅蘑菇 vs 黃/綠/紫/粉聚光燈)。
+            # 參考資料集(Roboflow 1-gnqic v6,同一個謎題)也是彩色標註的。
+            # band_energy 內部仍會轉灰,追蹤行為完全不變;彩色只是【額外】留著。
+            self.bands.append(band)
         return None
 
     # ---------------------------------------------------------------- 預測

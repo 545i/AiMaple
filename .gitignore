@@ -108,3 +108,6 @@ webapp/tsconfig.tsbuildinfo
 
 # Claude Code 的本機設定與 worktree 工作區
 .claude/
+
+# Roboflow 蘑菇資料集(354MB,解壓自 Downloads\數據集.zip,可重新解壓)
+fiona_ds/

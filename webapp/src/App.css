@@ -237,3 +237,16 @@
 /* 觸控板跟著縮到影像那一塊(直向時滑動區就是畫面本身) */
 .port-play .touchpad { left: 0; right: 0; top: 0; height: 36vh; bottom: auto; }
 .port-play .deskhint { display: none; }
+
+/* 導航行動軌跡:向量疊在遠端畫面上(不是另一條影像通道) */
+.nav-trace { position: absolute; z-index: 26; pointer-events: none; overflow: visible; }
+
+/* 點到軌跡線之後顯示是第幾趟 */
+.trace-pick { position: absolute; z-index: 29; left: 50%; bottom: 12px; transform: translateX(-50%);
+              padding: 4px 10px; border-radius: 9px; font-size: 12px; color: #fff;
+              background: rgba(0,0,0,.72); border: 1px solid rgba(255,255,255,.25);
+              display: flex; gap: 8px; align-items: center; }
+.trace-pick .x { cursor: pointer; color: #ffb3b3; }
+
+.num { width: 72px; padding: 4px 6px; border-radius: 8px; background: rgba(0,0,0,.3);
+       border: 1px solid var(--line); color: var(--text); font-size: 12px; }

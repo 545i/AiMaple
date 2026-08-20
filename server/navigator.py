@@ -18,6 +18,7 @@ import threading
 import time
 
 import minimap
+import nav_trace
 import pathgraph
 import paths
 
@@ -197,6 +198,19 @@ def set_focus_fn(fn):
 
 
 _terrain_fn = None
+# 繩索位置的讀/寫。規劃器沒有它就只能拿「平台重疊區中點」猜,實測差 4~6 格,
+# 導致每次上繩的第一按必定失敗(見 mapdata.note_rope)。
+_ropes_fn = None      # () -> [{"x": int}, ...]
+_note_rope_fn = None  # (x) -> None  上繩成功時回報真正有效的 x
+
+
+def set_rope_fns(get_fn=None, note_fn=None):
+    """注入繩索位置的讀/寫(由 main 綁到 mapdata)。"""
+    global _ropes_fn, _note_rope_fn
+    if get_fn is not None:
+        _ropes_fn = get_fn
+    if note_fn is not None:
+        _note_rope_fn = note_fn
 
 
 def set_terrain_fn(fn):
@@ -333,12 +347,17 @@ def status():
 
 # ---------- 底層動作 ----------
 def _dot():
-    """讀一次小地圖黃點 (x,y)。抓不到回 None。"""
+    """讀一次小地圖黃點 (x,y)。抓不到回 None。
+
+    【每一次讀值都會進軌跡記錄】記錄點刻意放在這裡而不是另開取樣執行緒 ——
+    要查的是「導航器讀到移動中的瞬時值就下判斷」,所以要記的是它【實際看到的
+    輸入】,不是另外量到的真相。細節見 server/nav_trace.py 檔頭。"""
     try:
         minimap.detect_once()
         s = minimap.status()
         d = s.get("dot")
         if d and s.get("found") and not s.get("dot_stale"):
+            nav_trace.sample(d["x"], d["y"], _state.get("phase"))
             return (d["x"], d["y"])
     except Exception:
         pass
@@ -363,6 +382,7 @@ def _settle(retries=8):
 
 
 def _press(k, hold=KEY_HOLD):
+    nav_trace.event("press", k, _state.get("phase"))
     _keyboard.key_down(k)
     time.sleep(hold)
     _keyboard.key_up(k)
@@ -628,6 +648,7 @@ def _fall_to_y(ty, skills=None):
                 _state["pos"] = list(p)
                 if p[1] >= ty - Y_TOL:
                     break
+            nav_trace.event("fall_jump", JUMP_K1, _state.get("phase"))
             _keyboard.key_down(JUMP_K1); time.sleep(0.08); _keyboard.key_up(JUMP_K1)
             if _fall_hold_atk:
                 _same_skills(skills)
@@ -743,9 +764,19 @@ def _try_rope_here(ty):
     _rope_up()
     p1 = _dot() or p0
     if p1[1] < p0[1] - 3:                   # y 變小=上升成功
+        # 【把真正上得去的 x 記起來】規劃器沒有繩索資料時是猜重疊區中點,實測差
+        # 4~6 格,所以每次上繩的第一按都必定失敗、要靠下面的偏移掃描才找得到,
+        # 每次固定浪費約 2.3 秒。記一次之後,下次規劃就直接走到對的位置。
+        if _note_rope_fn:
+            try:
+                _note_rope_fn(int(p0[0]))
+            except Exception:
+                pass                        # 記錄失敗不能影響走位
+        nav_trace.event("rope_ok", ROPE_K, _state.get("phase"), note=f"x={p0[0]}")
         if p1[1] < ty - Y_TOL:             # 上過頭 → 下跳修正到目標層
             _fall_to_y(ty)
         return True
+    nav_trace.event("rope_fail", ROPE_K, _state.get("phase"), note=f"x={p0[0]}")
     return False
 
 
@@ -776,9 +807,18 @@ OFFLAYER_DROPS = 3      # 歸位動作最多做幾次
 OFFLAYER_LAND = 0.7     # 每次動作後等落地再讀位置(空中的讀數不可信,同 _unstick)
 
 
-def _on_some_platform(p, platforms):
-    """角色是否站在某塊平台的層上(只看 y;x 不管,掉在平台外的空隙也算該層)。"""
-    return bool(p and any(abs(p[1] - pf["y"]) <= Y_TOL for pf in platforms))
+def _on_some_platform(p, platforms, margin=2):
+    """角色是否真的站在某塊平台上(y 在容差內【而且 x 也在那塊平台的範圍內】)。
+
+    【x 不能不管】原本只看 y,結果「y 接近某塊平台、但 x 差了幾十格」也算在層上 ——
+    實測卡死案例:角色 (18,51),地圖有 y=53 的平台但 x 範圍是 44~62 與 85~124,
+    角色根本不在上面,脫困卻因此不觸發,人就一直卡著。
+    """
+    if not p:
+        return False
+    return any(abs(p[1] - pf["y"]) <= Y_TOL
+               and pf["xA"] - margin <= p[0] <= pf["xB"] + margin
+               for pf in platforms)
 
 
 def _deblock_layer(platforms):
@@ -883,6 +923,39 @@ def _go_vertical(nx, ty, skills=None):
     return _rope_to(nx, ty)
 
 
+def _merge_rope_chain(path):
+    """把【連續的上繩段】併成一段。
+
+    【為什麼要併】規劃器把上繩建模成「爬到相鄰的上一層」,所以跨兩層會排出
+    68→56、56→45 兩段 rope。但實際物理不是這樣:_rope_up 按一次 C 就【一路衝到
+    最頂層】(見它的 docstring),停不下來。照著兩段跑的結果(實測軌跡
+    20260820-143616):
+
+        按 C @68 → 衝到 21 → 下跳三次修正回 56(第一段目標)
+        按 C @56 → 又衝到 28 → 下跳兩次回 45(第二段目標)
+
+    而下跳修正的途中【就經過 45】—— 最終目標就在路上,卻先掉到 56 再爬一次。
+    整整多了一次上繩 + 一趟修正,約 6 秒。
+
+    併成一段之後:按一次 C 衝到頂,直接下跳修正到【最後那一段的目標層】,
+    中間那些層根本不必停。水平位置取最後一段的 x(上繩點都在同一條繩索上)。
+    """
+    out = []
+    i = 0
+    while i < len(path):
+        node, mt = path[i]
+        if mt == "rope":
+            j = i
+            while j + 1 < len(path) and path[j + 1][1] == "rope":
+                j += 1
+            out.append((path[j][0], "rope"))     # 只留最後一段:C 反正會到頂
+            i = j + 1
+        else:
+            out.append((node, mt))
+            i += 1
+    return out
+
+
 def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None):
     """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。
     skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。
@@ -901,6 +974,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # 先把角色弄回平台,這條路徑才有意義。
         if not _on_some_platform(p, platforms):
             _state["phase"] = "deblock"
+            nav_trace.event("deblock", note="不在任何平台層,先歸位再規劃")
             _deblock_layer(platforms)
             p = _settle() or p
         _state["pos"] = list(p)
@@ -908,16 +982,32 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # jump=JUMP_DX:飛距是【職業參數】,不能讓 pathgraph 用它自己的預設 30,
         # 否則換職業後規劃出來的跳躍邊與實際飛得到的距離對不上。
         nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
+                                              ropes=_ropes_fn() if _ropes_fn else None,
                                               jump=step_dx(),
                                               free_vertical=(MOVE_TYPE == "blink"),
                                               blink_dy=BLINK_DY_MAX,
                                               blink_up=BLINK_UP_MAX)
         start = pathgraph.nearest_node(nodes, p)
+        # 【起點跨層 = 這條路徑從第一步就不可能成立】執行端的第一個檢查就是「現在
+        # 的層是不是起點那一層」,跨層必定立刻失敗 → 重規劃 → 選到同一個節點 → 再
+        # 失敗,三次之後放棄,角色永遠停在原地(實測:角色 (18,51),最近節點 (26,45),
+        # 0.37 秒內三次 replan 然後卡死)。
+        # 這種情況表示角色所在的層【沒有任何節點】—— 掛在繩索上、或站在沒被記錄
+        # 巡邏點的平台上。先把它弄回有節點的層再說。
+        if start and abs(start[1] - p[1]) > Y_TOL:
+            print(f"[nav] 起點跨層(角色 y={p[1]},最近節點 y={start[1]}) → 先脫困歸位")
+            _state["phase"] = "deblock"
+            nav_trace.event("deblock", note=f"起點跨層 y={p[1]}→節點 y={start[1]}")
+            _deblock_layer(platforms)
+            p = _settle() or p
+            _state["pos"] = list(p)
+            start = pathgraph.nearest_node(nodes, p)
         path = pathgraph.shortest_path(edges, start, (int(tx), int(ty)))
         if path is None:
             _state["error"] = f"無路徑 {start}→({tx},{ty})"
             print(f"[nav] 無路徑 {start}→({tx},{ty})")
             return False
+        path = _merge_rope_chain(path)
         _state["path"] = [[list(n), mt] for n, mt in path]
         print(f"[nav] 路徑{'(重規劃 %d)' % attempt if attempt else ''} "
               f"{start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
@@ -935,6 +1025,10 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             cur = _dot()
             if cur and abs(cur[1] - prev_y) > Y_TOL:
                 print(f"[nav] 角色不在預期的層(y={cur[1]},應為 {prev_y}) → 重新規劃")
+                # 【這一筆是「第一次錯、第二次對」的關鍵訊號】使用者回報的症狀正是
+                # 這個:第一趟規劃走歪 → 重新規劃 → 第二趟才對。沒有記錄的話,事後
+                # 完全看不出「這一趟到底有沒有重規劃過」。
+                nav_trace.event("replan", note=f"y={cur[1]} 應為 {prev_y}")
                 break
             _state["phase"] = "g_" + mt
             p_start = _dot()
@@ -970,6 +1064,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             _log_move(_state.get("mode", "move"), mt,
                       list(p_start) if p_start else None, [nx, ny],
                       list(p_end) if p_end else None)
+            nav_trace.segment(mt, p_start, [nx, ny], p_end)
             prev_y = ny                                 # 這段的目標層,下一段據此校驗
         else:
             if not _replan.is_set():
@@ -983,6 +1078,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             break
     else:
         print(f"[nav] 重新規劃 {REPLAN_MAX} 次仍未走完,交給上層(巡邏會重挑點)")
+        nav_trace.event("replan_exhausted", note=f"{REPLAN_MAX} 次仍未走完")
     _replan.clear()
     if precise:
         _state["phase"] = "fine_x"
@@ -997,8 +1093,21 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
 
 def _goto_sync(tx, ty, skills=None, precise=False):
     """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。
-    precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。"""
+    precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。
+
+    【軌跡記錄掛在這裡,不是掛在 _run】_run 只有 move_to(手動導航/符文走位)在用,
+    巡邏迴圈是【直接】呼叫 _goto_sync 的。掛錯地方的話巡邏整段都不會被記錄 ——
+    實測就是這樣:巡邏跑了 18 分鐘,軌跡目錄只有符文那條路留下的幾筆。
+    這裡是兩條路唯一的共同出口。"""
     _state.update({"target": [tx, ty], "arrived": False})
+    nav_trace.start(_state.get("mode", "move"), (tx, ty))
+    try:
+        return _goto_sync_inner(tx, ty, skills, precise)
+    finally:
+        nav_trace.finish(_state.get("arrived"))
+
+
+def _goto_sync_inner(tx, ty, skills=None, precise=False):
     terr = _terrain_fn() if _terrain_fn else None
     _state["terr_n"] = (-1 if terr is None else (len(terr[1]) if terr[1] else 0))
     if terr and terr[1]:                   # 有平台 → 用平台重疊圖規劃跨層路徑(按鍵流程)
@@ -1342,6 +1451,7 @@ def _patrol_wrap(points_fn, attack_key, cast_mode):
                 pass
         _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
+        nav_trace.finish(_state.get("arrived"))
 
 
 def move_to(tx, ty, skills=None, precise=False):

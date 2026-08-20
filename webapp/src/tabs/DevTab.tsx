@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Card } from '../components/ui/Card'
 import { fiona, rune } from '../lib/api'
+import { useNavTrace, setNavTraceMerge, setNavTraceRange,
+         useNavTracePick, setNavTracePick } from '../hooks/useNavTrace'
+import { navTrace } from '../lib/api'
 import { useAppState, setAppState } from '../lib/appState'
 import { useRuneOverlay } from '../hooks/useRuneOverlay'
 
@@ -12,7 +15,8 @@ import { useRuneOverlay } from '../hooks/useRuneOverlay'
  *   ① 菲歐娜解謎觀察模式   /fiona/start|stop|status
  *   ② 符文一鍵測試         /rune/test?solve=1
  *   ③ 符文偵測框(疊在遠端畫面) /rune/overlay
- *   ④ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
+ *   ④ 導航行動軌跡         /nav/trace + /nav/trace.jpg
+ *   ⑤ 偵測測試器           /rune/viz  + /rune/viz/info  + /rune/viz/stats
  *
  * 【大段原理說明一律收進 details 摺疊區】——攤開來會蓋掉真正要看的數字。
  */
@@ -58,6 +62,13 @@ export function DevTab() {
         .dvt-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
         .dvt-chip { font-size: 11.5px; padding: 3px 8px; border-radius: 8px;
                     background: rgba(255,255,255,.05); border: 1px solid var(--line); }
+        .dvt-rows { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto;
+                    margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; }
+        .dvt-row { display: flex; gap: 8px; align-items: center; padding: 5px 8px; font-size: 11.5px;
+                   border-bottom: 1px solid var(--line); cursor: pointer; }
+        .dvt-row:last-child { border-bottom: none; }
+        .dvt-row:hover { background: rgba(255,255,255,.05); }
+        .dvt-row.on { background: rgba(90,160,255,.18); outline: 1px solid rgba(120,180,255,.5); }
         .dvt-rounds { display: flex; flex-direction: column; max-height: 320px; overflow-y: auto; }
         .dvt-rounds > div { font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--line); }
         .dvt-pre { font-size: 11.5px; line-height: 1.55; color: var(--text); margin-top: 8px;
@@ -73,6 +84,7 @@ export function DevTab() {
       <Fiona />
       <RuneProbe />
       <RuneOverlayCard />
+      <NavTraceCard />
       <VizTester />
     </>
   )
@@ -301,8 +313,152 @@ function RuneOverlayCard() {
   )
 }
 
+
 /* ══════════════════════════════════════════════════════════
-   ④ 偵測測試器 — 對離線資料集(真實 / 合成 a·c·d·e)重跑偵測
+   ④ 導航行動軌跡
+   ──────────────────────────────────────────────────────────
+   把一趟導航【實際走的路線】依動作類型上色畫在小地圖上,並疊上【意圖】
+   (每段的 start→target 虛線)。兩層一起看才分得出「規劃到 A 卻走去 B」
+   與「同一段下跳按了兩次」——只看其中一層都看不出來。
+   記錄點掛在 navigator._dot() 裡面,記的是導航器【當下看到什麼】。
+   ══════════════════════════════════════════════════════════ */
+function NavTraceCard() {
+  const { navTrace: on } = useAppState()
+  const [merge, setMerge] = useState(6)
+  const [runs, setRuns] = useState<any[]>([])
+  const [from, setFrom] = useState(0)
+  const [to, setTo] = useState(0)
+  const data = useNavTrace(on)
+  const picked = useNavTracePick()
+  const sm = data?.summary
+
+  // 趟次清單:開著就每 3 秒更新一次(巡邏中會一直新增),關著就不打
+  useEffect(() => {
+    if (!on) return
+    let alive = true
+    const tick = async () => {
+      try { const j: any = await navTrace.runs(); if (alive) setRuns(j.runs ?? j ?? []) }
+      catch { /* 清單拿不到不影響疊圖 */ }
+      if (alive) t = setTimeout(tick, 3000)
+    }
+    let t: any
+    tick()
+    return () => { alive = false; clearTimeout(t) }
+  }, [on])
+
+  const applyRange = (f: number, t2: number) => {
+    setFrom(f); setTo(t2)
+    if (f || t2) setNavTraceRange(f, t2)
+    else setNavTraceMerge(merge)
+  }
+
+  const seqs = runs.map(r => r.seq).filter((v: any) => typeof v === 'number')
+  const maxSeq = seqs.length ? Math.max(...seqs) : 0
+  const minSeq = seqs.length ? Math.min(...seqs) : 0
+
+  return (
+    <Card full title="導航行動軌跡">
+      <button className={`btn ${on ? 'on' : ''}`}
+              onClick={() => setAppState({ navTrace: !on })}>
+        🧭 在遠端畫面上顯示軌跡：{on ? '開' : '關'}
+      </button>
+
+      {on && (
+        <>
+          <div className="row" style={{ marginTop: 6 }}>
+            <select className="sel" value={from || to ? 'range' : String(merge)}
+                    onChange={e => {
+                      if (e.target.value === 'range') applyRange(Math.max(minSeq, maxSeq - 5), maxSeq)
+                      else { const m = +e.target.value; setMerge(m); applyRange(0, 0); setNavTraceMerge(m) }
+                    }}>
+              {[1, 3, 6, 12, 20, 40].map(v => <option key={v} value={v}>最近 {v} 趟</option>)}
+              <option value="range">自選區間…</option>
+            </select>
+            <span className="hint" style={{ alignSelf: 'center' }}>
+              共 {runs.length} 趟（#{minSeq}~#{maxSeq}）
+            </span>
+          </div>
+
+          {(from || to) ? (
+            <div className="row" style={{ marginTop: 6, alignItems: 'center', gap: 6 }}>
+              <span className="hint">從</span>
+              <input className="num" type="number" value={from} min={minSeq} max={maxSeq}
+                     onChange={e => applyRange(+e.target.value, to)} />
+              <span className="hint">到</span>
+              <input className="num" type="number" value={to} min={minSeq} max={maxSeq}
+                     onChange={e => applyRange(from, +e.target.value)} />
+              <button className="btn sm" onClick={() => applyRange(0, 0)}>取消</button>
+            </div>
+          ) : null}
+
+          <div className="msg">
+            {!data ? '啟動中…'
+              : data.ok === false
+                ? (data.reason === 'no_trace' ? '還沒有軌跡（跑一趟巡邏或導航就會有）'
+                  : data.reason === 'no_minimap' ? '⚠ 抓不到小地圖'
+                  : '⚠ ' + data.reason)
+                : `${sm?.mode ?? ''} → ${sm?.target ?? '—'}　${sm?.dur ?? '?'}s　`
+                  + `樣本 ${sm?.n ?? 0}　到達=${String(sm?.arrived)}　`
+                  + `事件 ${JSON.stringify(sm?.events ?? {})}`}
+          </div>
+
+          {/* 【趟次清單才是主要入口】在遠端畫面的小地圖上點線太小、又要在合併的
+              好幾趟裡挑,不實際。清單直接列出來,還標出哪幾趟重規劃過/沒到達 ——
+              那才是要查的目標。點一列 = 只 highlight 那一趟。 */}
+          <div className="dvt-rows">
+            {runs.length === 0 && <div className="hint">尚無趟次</div>}
+            {runs.map(r => {
+              const ev = r.events ?? {}
+              const bad = (ev.replan ?? 0) + (ev.replan_exhausted ?? 0) + (ev.deblock ?? 0)
+              const on = picked === r.seq
+              return (
+                <div key={r.seq} className={`dvt-row${on ? ' on' : ''}`}
+                     onClick={() => setNavTracePick(r.seq)}>
+                  <b>#{r.seq}</b>
+                  <span>{r.mode} → {Array.isArray(r.target) ? r.target.join(',') : '—'}</span>
+                  <span className="mono">{r.dur}s</span>
+                  <span style={{ color: r.arrived ? 'var(--dim)' : 'var(--orange)' }}>
+                    {r.arrived ? '到達' : '未到'}
+                  </span>
+                  {bad > 0 && <span style={{ color: 'var(--orange)' }}>
+                    {ev.replan ? `重規劃×${ev.replan}` : ''}
+                    {ev.replan_exhausted ? ' 放棄' : ''}
+                    {ev.deblock ? ` 脫困×${ev.deblock}` : ''}
+                  </span>}
+                  {ev.fall_jump ? <span className="hint">下跳×{ev.fall_jump}</span> : null}
+                </div>
+              )
+            })}
+          </div>
+        </>
+      )}
+
+      <details className="dvt">
+        <summary>怎麼看</summary>
+        <div className="hint">
+          <b>直接畫在遠端畫面的小地圖上</b>，只傳座標（幾 KB），伺服器不必為了畫面再抓一次小地圖。
+          與符文偵測框、遠端游標紅點共用同一套黑邊換算。<br />
+          <b>實線＝實際走的</b>：
+          <span style={{ color: '#00dc00' }}>綠＝走位</span>、
+          <span style={{ color: '#ffa500' }}>橘＝上升(C)</span>、
+          <span style={{ color: '#0078ff' }}>藍＝下跳</span>、
+          <span style={{ color: '#c800ff' }}>紫＝二段跳</span>、
+          <span style={{ color: '#ff3333' }}>紅＝脫困</span>。<br />
+          <b>白虛線＝意圖</b>（每段規劃的 start→target）。實線偏離虛線 ＝ 那段走錯了。<br />
+          <b>線上的圓點＝按鍵事件</b>。同一段藍線上兩個以上的點 ＝ 連續下跳。<br />
+          <b>點任何一條線</b> ＝ 只highlight那一趟，畫面下方顯示<b>第幾趟</b>與它的按鍵統計；
+          再點一次取消。（點線不會傳到遊戲裡）<br />
+          <b>一趟 = 一次點到點導航</b>，巡邏時每趟只有 3~5 秒；預設合併最近幾趟，也可以自選流水號區間。
+          全部存在單一檔 <code>logs/nav_trace.jsonl</code>（一行一趟），只留最近 200 趟。<br />
+          來源必須是<b>遊戲視窗</b>模式，否則座標對不上、不畫。
+        </div>
+      </details>
+    </Card>
+  )
+}
+
+/* ══════════════════════════════════════════════════════════
+   ⑤ 偵測測試器 — 對離線資料集(真實 / 合成 a·c·d·e)重跑偵測
    每張都要重新推論(0.5~3 秒),所以不輪詢,只在展開/換來源/翻頁時打一次。
    ══════════════════════════════════════════════════════════ */
 function VizTester() {

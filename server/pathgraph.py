@@ -49,9 +49,21 @@ def build(points, ropes, y_tol=4):
 
 
 def nearest_node(nodes, pos, tol=4):
-    """把當前黃點位置對應到最近的圖節點(同層優先);超出 tol 回最近點。"""
+    """把當前黃點位置對應到最近的圖節點。【同層的節點一律優先】,沒有同層的才退回
+    加權最近。
+
+    【為什麼要硬性優先,加權不夠】原本只把 y 差乘 3 當權重,結果不同層的近節點仍會
+    贏過同層的遠節點。實測卡死案例:角色在 (18,51),
+        節點 (26,45): |26-18| + |45-51|*3 = 26   ← 被選中
+        節點 (44,53): |44-18| + |53-51|*3 = 32
+    選到 45 之後,執行端第一個檢查就是「你現在的層是不是 45」,|51-45|=6 超過容差 →
+    立刻判定不在預期的層 → 重新規劃 → 再選同一個節點 → 再立刻失敗。三次之後放棄,
+    角色永遠停在原地。跨層的起點【本來就到不了】,不該當成路徑起點。
+    """
+    same = [n for n in nodes if abs(n[1] - pos[1]) <= tol]
+    pool = same or list(nodes)
     best, bd = None, 1e9
-    for n in nodes:
+    for n in pool:
         d = abs(n[0] - pos[0]) + abs(n[1] - pos[1]) * 3   # y 差權重高(層更重要)
         if d < bd:
             best, bd = n, d
@@ -205,8 +217,19 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     return nodes, edges
 
 
+def _rope_x(ropes, ox1, ox2):
+    """重疊區 [ox1,ox2] 內的繩索 x;沒有記錄到的就退回中點(猜)。
+
+    有多條時取最靠近重疊區中央的那條 —— 兩端可能貼著平台邊緣,站上去容易掉層。
+    """
+    mid = (ox1 + ox2) // 2
+    inside = [int(r["x"]) for r in (ropes or [])
+              if r.get("x") is not None and ox1 <= int(r["x"]) <= ox2]
+    return min(inside, key=lambda x: abs(x - mid)) if inside else mid
+
+
 def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
-                  free_vertical=False, blink_dy=22, blink_up=10):
+                  free_vertical=False, blink_dy=22, blink_up=10, ropes=None):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
@@ -315,7 +338,11 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
                 ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
                 if ox2 < ox1:
                     continue
-                cx = (ox1 + ox2) // 2
+                # 【有記錄的繩索就用真的位置,沒有才退回猜中點】中點只是「兩塊平台
+                # 重疊區的中間」,跟繩索實際在哪毫無關係。實測猜出來的 x 與真正
+                # 上得去的位置差 4~6 格,導致每次上繩的第一按必失敗(見
+                # mapdata.note_rope 的說明)。
+                cx = _rope_x(ropes, ox1, ox2)
                 if blocked(cx, a["y"], b["y"]):
                     continue
                 addn((cx, a["y"]), i); addn((cx, b["y"]), j)

@@ -97,6 +97,20 @@ export const job = {
   remove: (name: string) => post('/job/delete', { name }),
 }
 
+// ───────────────────────────────────────────── 導航行動軌跡
+export const navTrace = {
+  /** 存下來的趟次(新到舊):流水號 + 摘要 */
+  runs: () => get('/nav/trace/runs'),
+  /** 一趟的完整記錄(JSON);seq 省略 = 最近那一趟 */
+  json: (seq?: number) => get('/nav/trace', seq ? { seq } : undefined),
+  /** 疊在【遠端畫面】上的軌跡(正規化座標,不是影像)。讀它不會讓伺服器多抓畫面。 */
+  overlay: (merge = 6, seqFrom?: number, seqTo?: number) =>
+    get('/nav/trace/overlay', seqFrom || seqTo
+      ? { seq_from: seqFrom ?? 0, seq_to: seqTo ?? 0 } : { merge }),
+  /** 畫好的軌跡圖。【離線分析用】每張要重抓小地圖 + 37~64KB,不要拿來當即時預覽。 */
+  imgUrl: (p: Record<string, unknown>) => streamUrl('/nav/trace.jpg', { ...p, t: Date.now() }),
+}
+
 // ───────────────────────────────────────────── 符文
 export const rune = {
   status: () => get('/rune/status'),
