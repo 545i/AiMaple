@@ -321,6 +321,8 @@
 /* 電腦端:舞台左緣讓開常駐 rail(56px),rail 不再蓋住遠端畫面。固定位移、不隨面板
    開合變動,所以影像比例穩定不跳。展開的面板仍浮在畫面上(暫時、使用者自己開)。 */
 .app.desk .stage { left: 56px; }
+/* 收起 rail 後畫面補滿整寬(rail 讓出的 56px 收回) */
+.app.desk.rail-hidden .stage { left: 0; }
 /* 電腦端影像置中(rail 已讓開,面板才是浮層) */
 .app.desk .stage video, .app.desk .stage img { object-position: center !important; }
 /* 電腦端提示改貼底部中央(底部抽屜的 --panel-h 定位在左側版面下沒意義) */

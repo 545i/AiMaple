@@ -44,6 +44,8 @@ export default function App() {
   // deskOpen 只管左側面板展開/收合;預設收合(只留 rail),遊戲畫面一開始就完整露出。
   const isDesk = !IS_TOUCH
   const [deskOpen, setDeskOpen] = useState(false)
+  // 收起整條 rail(列表):連舞台讓給 rail 的 56px 一起收回、畫面補滿整寬(.rail-hidden)
+  const [railHidden, setRailHidden] = useState(false)
 
   const [isWide, setIsWide] = useState(() => matchMedia('(min-width:900px)').matches)
   const [autoPortrait, setAutoPortrait] = useState(() => matchMedia('(orientation:portrait)').matches)
@@ -102,6 +104,7 @@ export default function App() {
          className={`app snap-${drawer.snap} ${isWide ? 'wide' : 'narrow'}`
         + ` ${IS_TOUCH ? 'touch' : 'desk'} ${minimal ? 'minimal' : ''} ${rotate ? 'rotate' : ''}`
         + ` ${drawer.dragH != null ? 'dragging' : ''}`
+        + ` ${isDesk && railHidden ? 'rail-hidden' : ''}`
         + ` ${IS_TOUCH && portrait && playing ? 'port-play' : ''}`}>
       <StageStream video={video} cursor={input.cursor} overlay={overlay} trace={trace}
                    hint={!IS_TOUCH && canPlay && !over ? '滑鼠移到遊戲畫面上即可操控（移開自動釋放）' : ''} />
@@ -129,7 +132,9 @@ export default function App() {
                     snap={drawer.snap} height={drawer.panelH} dragging={drawer.dragH != null}
                     handlers={drawer.handlers}
                     isDesk={isDesk} deskOpen={deskOpen}
-                    onDeskToggle={() => setDeskOpen(o => !o)} onDeskOpen={() => setDeskOpen(true)} />
+                    onDeskToggle={() => setDeskOpen(o => !o)} onDeskOpen={() => setDeskOpen(true)}
+                    railHidden={railHidden}
+                    onRailHide={() => setRailHidden(true)} onRailShow={() => setRailHidden(false)} />
     </div>
   )
 }

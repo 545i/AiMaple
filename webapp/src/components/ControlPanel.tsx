@@ -41,6 +41,11 @@ interface Props {
   deskOpen: boolean
   onDeskToggle: () => void
   onDeskOpen: () => void
+  /** 收起整條 rail(列表):藏起來、畫面補滿整寬,留一顆小鈕拉回。狀態放在 App,
+   *  因為舞台的左緣內縮(讓開 rail)也要跟著取消,由 App 掛 .rail-hidden 控制。 */
+  railHidden: boolean
+  onRailHide: () => void
+  onRailShow: () => void
 }
 
 /**
@@ -52,10 +57,9 @@ interface Props {
  */
 export function ControlPanel(props: Props) {
   const { isWide, minimal, tab, onTab, snap, height, dragging, handlers,
-          isDesk, deskOpen, onDeskToggle, onDeskOpen } = props
+          isDesk, deskOpen, onDeskToggle, onDeskOpen, railHidden, onRailHide, onRailShow } = props
 
   const [alphaPct, setAlphaPct] = useState(100)
-  const [hidden, setHidden] = useState(false)   // 完全收起:連 rail 一起收掉
 
   // 半透明初值向主行程要(不然滑桿一開始都停在 100%,跟實際視窗透明度對不上)
   useEffect(() => {
@@ -68,9 +72,9 @@ export function ControlPanel(props: Props) {
                  idle: IdleTab, hw: HardwareTab, dev: DevTab }[tab]
 
   if (isDesk) {
-    // 完全收起後只留一顆貼左緣的小重開鈕
-    if (hidden) {
-      return <button className="rail-reopen" title="重開控制列" onClick={() => setHidden(false)}>▸</button>
+    // 收起整條 rail 後只留一顆貼左緣的小重開鈕(畫面已由 App 的 .rail-hidden 補滿整寬)
+    if (railHidden) {
+      return <button className="rail-reopen" title="展開控制列" onClick={onRailShow}>▸</button>
     }
 
     const setAlpha = (v: number) => { setAlphaPct(v); if (hasFc) fc!.setAlpha(v / 100).catch(() => {}) }
@@ -106,8 +110,8 @@ export function ControlPanel(props: Props) {
               </div>
             )}
             <button className="rail-btn sm" title="全螢幕" onClick={toggleFull}>⛶</button>
-            <button className="rail-btn sm" title="完全收起(連導覽列一起;點左緣小鈕重開)"
-                    onClick={() => setHidden(true)}>⤓</button>
+            <button className="rail-btn sm" title="收起控制列(畫面補滿整寬;點左緣小鈕展開)"
+                    onClick={onRailHide}>«</button>
             {hasFc && <button className="rail-btn sm" title="改設定(重新輸入網址)"
                               onClick={() => fc!.openSettings()}>⚙</button>}
             {hasFc && <button className="rail-btn sm close" title="關閉浮動客戶端"
