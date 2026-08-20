@@ -1006,8 +1006,21 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
 
 def _goto_sync(tx, ty, skills=None, precise=False):
     """同步導航到 (tx,ty),阻塞到完成。回是否到達。move_to 與巡邏循環共用。
-    precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。"""
+    precise=True:水平照用二段跳/走路到容差內(可過衝),再走路回正到 ±PRECISE_X_TOL。
+
+    【軌跡記錄掛在這裡,不是掛在 _run】_run 只有 move_to(手動導航/符文走位)在用,
+    巡邏迴圈是【直接】呼叫 _goto_sync 的。掛錯地方的話巡邏整段都不會被記錄 ——
+    實測就是這樣:巡邏跑了 18 分鐘,軌跡目錄只有符文那條路留下的幾筆。
+    這裡是兩條路唯一的共同出口。"""
     _state.update({"target": [tx, ty], "arrived": False})
+    nav_trace.start(_state.get("mode", "move"), (tx, ty))
+    try:
+        return _goto_sync_inner(tx, ty, skills, precise)
+    finally:
+        nav_trace.finish(_state.get("arrived"))
+
+
+def _goto_sync_inner(tx, ty, skills=None, precise=False):
     terr = _terrain_fn() if _terrain_fn else None
     _state["terr_n"] = (-1 if terr is None else (len(terr[1]) if terr[1] else 0))
     if terr and terr[1]:                   # 有平台 → 用平台重疊圖規劃跨層路徑(按鍵流程)
@@ -1056,7 +1069,6 @@ def _goto_sync(tx, ty, skills=None, precise=False):
 
 
 def _run(tx, ty, skills, precise=False):
-    nav_trace.start(_state.get("mode", "move"), (tx, ty))
     try:
         _state.update({"phase": "settle", "steps": 0, "error": ""})
         if _focus_fn:
@@ -1077,7 +1089,6 @@ def _run(tx, ty, skills, precise=False):
                 pass
         _release_atk()                     # 放開按住的移動攻擊鍵
         _state["running"] = False
-        nav_trace.finish(_state.get("arrived"))
 
 
 # ---- 路過就打:走位途中經過巡邏點,就地平A 再繼續 ----

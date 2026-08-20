@@ -95,34 +95,47 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
         )
       })}
 
-      {trace?.ok && rectFor(trace) && (
-        <svg className="nav-trace" viewBox="0 0 1 1" preserveAspectRatio="none"
-             style={{ left: rectFor(trace)!.ox, top: rectFor(trace)!.oy,
-                      width: rectFor(trace)!.dw, height: rectFor(trace)!.dh }}>
-          {/* 意圖:每段 start→target 的虛線。實線偏離虛線 = 那一段走錯了。 */}
-          {(trace.intent ?? []).map((it, i) => (
-            <line key={'i' + i} x1={it.a[0]} y1={it.a[1]} x2={it.b[0]} y2={it.b[1]}
-                  stroke="rgba(255,255,255,.45)" strokeWidth={0.0015}
-                  strokeDasharray="0.006 0.006" vectorEffect="non-scaling-stroke" />
-          ))}
-          {/* 實際走的:依動作類型上色 */}
-          {(trace.lines ?? []).map((ln, i) => (
-            <polyline key={'l' + i} fill="none" stroke={TRACE_COLOR[ln.cat] ?? '#999'}
-                      strokeWidth={0.0025} strokeLinejoin="round" strokeLinecap="round"
-                      vectorEffect="non-scaling-stroke"
-                      points={ln.pts.map(p => `${p[0]},${p[1]}`).join(' ')} />
-          ))}
-          {/* 按鍵事件:同一段藍線上兩個以上的點 = 連續下跳 */}
-          {(trace.events ?? []).map((e, i) => (
-            <circle key={'e' + i} cx={e.p[0]} cy={e.p[1]} r={0.0035}
-                    fill={TRACE_COLOR[e.cat] ?? '#999'} stroke="#fff" strokeWidth={0.001}
-                    vectorEffect="non-scaling-stroke" />
-          ))}
-          {trace.start && <circle cx={trace.start[0]} cy={trace.start[1]} r={0.005}
-                                  fill="none" stroke="#fff" strokeWidth={0.002}
-                                  vectorEffect="non-scaling-stroke" />}
-        </svg>
-      )}
+      {(() => {
+        // 【座標直接算成像素,不靠 SVG 的 viewBox 縮放】踩過的坑:用
+        // viewBox="0 0 1 1" 配 vector-effect:non-scaling-stroke 時,strokeWidth
+        // 會以【螢幕像素】解讀 —— 填 0.0025 等於 0.0025 個像素,線完全看不見。
+        // 改成把正規化座標乘上影像矩形換成像素,線寬/半徑就都是真的像素。
+        const r = trace?.ok ? rectFor(trace) : null
+        if (!r || !trace) return null
+        const P = (p: [number, number]) => `${(p[0] * r.dw).toFixed(1)},${(p[1] * r.dh).toFixed(1)}`
+        return (
+          <svg className="nav-trace" width={r.dw} height={r.dh}
+               style={{ left: r.ox, top: r.oy }}>
+            {/* 意圖:每段 start→target 的虛線。實線偏離虛線 = 那一段走錯了。 */}
+            {(trace.intent ?? []).map((it, i) => (
+              <line key={'i' + i}
+                    x1={it.a[0] * r.dw} y1={it.a[1] * r.dh}
+                    x2={it.b[0] * r.dw} y2={it.b[1] * r.dh}
+                    stroke="rgba(255,255,255,.5)" strokeWidth={1} strokeDasharray="3 3" />
+            ))}
+            {/* 實際走的:依動作類型上色 */}
+            {(trace.lines ?? []).map((ln, i) => (
+              <polyline key={'l' + i} fill="none" stroke={TRACE_COLOR[ln.cat] ?? '#999'}
+                        strokeWidth={2.5} strokeLinejoin="round" strokeLinecap="round"
+                        points={ln.pts.map(P).join(' ')} />
+            ))}
+            {/* 按鍵事件:同一段藍線上兩個以上的點 = 連續下跳 */}
+            {(trace.events ?? []).map((e, i) => (
+              <circle key={'e' + i} cx={e.p[0] * r.dw} cy={e.p[1] * r.dh} r={3}
+                      fill={TRACE_COLOR[e.cat] ?? '#999'} stroke="#fff" strokeWidth={1} />
+            ))}
+            {trace.start && (
+              <circle cx={trace.start[0] * r.dw} cy={trace.start[1] * r.dh} r={5}
+                      fill="none" stroke="#fff" strokeWidth={1.5} />
+            )}
+            {trace.end && (
+              <path d={`M${(trace.end[0] * r.dw - 5).toFixed(1)},${(trace.end[1] * r.dh).toFixed(1)}h10
+                        M${(trace.end[0] * r.dw).toFixed(1)},${(trace.end[1] * r.dh - 5).toFixed(1)}v10`}
+                    stroke="#fff" strokeWidth={1.5} fill="none" />
+            )}
+          </svg>
+        )
+      })()}
 
       {trace && trace.ok === false && trace.reason === 'no_minimap' && (
         <div className="rune-warn">軌跡已停用：抓不到小地圖</div>

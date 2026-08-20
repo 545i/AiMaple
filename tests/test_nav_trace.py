@@ -170,3 +170,13 @@ def test_merged_does_not_draw_the_current_run_twice():
 
 def test_merged_returns_none_without_any_data():
     assert nt.merged(5) is None
+
+
+def test_two_runs_in_the_same_second_do_not_overwrite_each_other():
+    """巡邏的短程(走一步就到)常常在同一秒內完成兩趟。檔名只有秒的解析度時
+    後一趟會蓋掉前一趟,記錄無聲消失 —— 實際發生過(巡邏 18 分鐘只留下幾筆)。"""
+    for i in range(2):
+        nt.start("patrol", (i, i))
+        nt.sample(i, i, "g_walk")
+        nt.finish(arrived=True)
+    assert len(os.listdir(nt.TRACE_DIR)) == 2, "同一秒完成的兩趟被互相覆蓋了"

@@ -123,8 +123,17 @@ def _finish_locked(arrived, note):
     _run = None
     try:
         os.makedirs(TRACE_DIR, exist_ok=True)
-        p = os.path.join(TRACE_DIR, time.strftime("%Y%m%d-%H%M%S",
-                                                  time.localtime(_last_run["t0"])) + ".jsonl")
+        # 【檔名要保證不撞】只有秒的解析度時,同一秒內完成的兩趟會互相覆蓋 ——
+        # 巡邏的短程(走一步就到)很容易撞在一起,記錄會無聲消失(實際發生過:
+        # 巡邏 18 分鐘,目錄裡只有零星幾筆)。毫秒仍可能相同,所以撞到就加序號。
+        t0 = _last_run["t0"]
+        base = (time.strftime("%Y%m%d-%H%M%S", time.localtime(t0))
+                + f"-{int(t0 % 1 * 1000):03d}")
+        p = os.path.join(TRACE_DIR, base + ".jsonl")
+        n = 0
+        while os.path.exists(p):
+            n += 1
+            p = os.path.join(TRACE_DIR, f"{base}_{n}.jsonl")
         with open(p, "w", encoding="utf-8") as f:
             f.write(json.dumps(_last_run, ensure_ascii=False) + "\n")
         _prune()
