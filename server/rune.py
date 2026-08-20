@@ -1361,27 +1361,54 @@ def _check_spot(px, py):
     return True, info
 
 
+EARLY_CHECK_GAP = 0.3       # 走位途中多久問一次「現在就按得到了嗎」
+
+
+def _ready_here(px, py):
+    """現在【這一刻】站的位置就按得到符文嗎?走位途中每 EARLY_CHECK_GAP 問一次。
+
+    【刻意不抓紫標】_check_spot 會呼叫 _purple_now()(多一次擷取)。這支是走位
+    途中高頻問的,不能每次都多抓一張畫面 —— 只讀黃點 + 幾何判斷,幾乎零成本。
+    條件與 solve() 判定「本來就在環內」用的是同一組(距離在環內 + 同層 + 同一塊
+    平台),所以提早停下來的位置與正常走完的落點是同一個標準,不會放寬。
+    """
+    pos = _dot_now()
+    if not pos:
+        return False
+    if not (RADIUS_MIN <= abs(pos[0] - px) <= RADIUS_MAX):
+        return False
+    if abs(pos[1] - py) > SAME_LEVEL_DY:
+        return False
+    return _same_platform(pos, px, py) is not False
+
+
 def _approach(px, py, side):
     """從 side 側走到符文旁(px + side*APPROACH_DX)。只負責走,判定交給 _check_spot。"""
     tx, ty = int(px + side * APPROACH_DX), int(py)
-    arrived = _goto(tx, ty)
+    early = lambda: _ready_here(px, py)          # noqa: E731  走到一半就按得到 → 別走完
+    arrived = _goto(tx, ty, early=early)
     # Y_TOL=4 會把差 4 層當成已到達 → 上面那趟可能原地不動。沒對齊就往上
     # 超推一段逼它真的爬(navigator 內建「上繩過頭 → 下跳修正到目標層」)。
     p = _dot_now()
     if p and abs(p[1] - py) > SAME_LEVEL_DY:
         print(f"[rune] dy={abs(p[1] - py)} 仍不同層,往上超推 {Y_OVERSHOOT} 再試")
-        arrived = _goto(tx, ty - Y_OVERSHOOT)
+        arrived = _goto(tx, ty - Y_OVERSHOOT, early=early)
     # 補正走位:落點超出可用環就用實際誤差反推目標再走一次,把落點拉回環內。
     p = _dot_now()
     if p and not (RADIUS_MIN <= abs(p[0] - px) <= RADIUS_MAX):
         err_x = p[0] - tx
         print(f"[rune] 落點離符文 {abs(p[0] - px)} 格(誤差 {err_x}),補正走位")
-        _goto(tx - err_x, ty)
+        _goto(tx - err_x, ty, early=early)
     return bool(arrived), [tx, ty]
 
 
-def _goto(tx, ty, precise=True):
+def _goto(tx, ty, precise=True, early=None):
     """導航到 (tx,ty) 並等它跑完。回是否成功啟動並抵達。
+
+    【early:走到一半就按得到就提早收手】導航一旦開始就會走完整趟,即使角色早就
+    經過了可按的位置。最壞情況一側要走三趟(原路 → 超推 → 補正)、兩側六趟,每趟
+    3~7 秒。early() 為真就立刻停,省下剩下的路。判定條件與正常落點【完全相同】
+    (見 _ready_here),不是放寬標準換速度。
 
     【一律用精確模式】navigator 的預設容差 X_TOL=3 會讓落點在離符文 3~9 格之間浮動,
     而可用環只有 5~7 格(RADIUS_MIN..MAX) —— 誤差範圍比環還寬,落在環外是常態。
@@ -1398,11 +1425,39 @@ def _goto(tx, ty, precise=True):
         _last["err"] = f"導航失敗: {msg}"
         return False
     t0 = time.monotonic()
+    last_chk = 0.0
+    early_hit = False
     while time.monotonic() - t0 < ARRIVE_TIMEOUT:
         if not _navigator.status().get("running"):
             break
+        now = time.monotonic()
+        if early and now - last_chk >= EARLY_CHECK_GAP:
+            last_chk = now
+            try:
+                early_hit = bool(early())
+            except Exception:
+                early_hit = False            # 檢查壞掉就當作沒到,照原本走完
+            if early_hit:
+                print("[rune] 走位途中已進入可按範圍 → 提早停止,不走完整趟")
+                _navigator.stop()
+                break
         time.sleep(0.05)
+    if early_hit:
+        # 【一定要等它真的停穩】stop() 只是要求停止,角色還有慣性。不等的話下一步
+        # 的 _check_spot 會拿到移動中的位置,判定就不可信了(這正是導航那邊「用瞬時
+        # 值下判斷」踩過的同一個坑)。
+        t1 = time.monotonic()
+        while _navigator.status().get("running") and time.monotonic() - t1 < 2.0:
+            time.sleep(0.05)
+        _settle_pause()
+        return True
     return bool(_navigator.status().get("arrived"))
+
+
+def _settle_pause():
+    """停止後的緩衝,讓角色慣性走完。與 navigator._settle 的用意相同,但這裡不需要
+    自己讀值 —— 呼叫端接著就會 _check_spot,那裡會讀。"""
+    time.sleep(0.35)
 
 
 def _attempt(px, py):
