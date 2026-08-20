@@ -113,8 +113,16 @@ function mergeIntoHandle(handle, doc, api, cfg) {
   // React 版 class 是 .grip、舊版是 .ph-grip。
   const grip = handle.querySelector(".grip, .ph-grip");
   if (grip) {
-    grip.style.cssText += ";-webkit-app-region:drag;cursor:move;height:14px;min-width:60px";
-    grip.title = "拖曳這裡移動視窗";
+    // 【做大做明顯】原本只有 58×5 的小 pill,使用者常按不到、以為「拖不動」。放大成
+    // 一塊置中的寬條(140×24)當明確的「拖我移窗」把手。不設成整條把手是因為:全收時
+    // 開抽屜的唯一入口就是點把手本體(TopHud 開合鈕全收時不顯示),整條吃成 drag 會
+    // 讓抽屜再也打不開。左右仍留把手空白區可點擊開合抽屜。
+    // 【Wayland 只能這樣移窗】setPosition 在 Wayland 是無效呼叫,靠 app-region:drag
+    // 觸發合成器(Mutter)的互動式移動是唯一路;X11 工作階段一樣有效。
+    grip.style.cssText += ";-webkit-app-region:drag;cursor:move;flex:0 0 140px;width:140px;"
+                        + "height:24px;border-radius:8px;background:rgba(255,255,255,.16);"
+                        + "align-self:center";
+    grip.title = "拖曳這條移動視窗(Wayland 若仍無效,請改用 X11 工作階段登入)";
   }
   // 藏掉右側提示文字(React 的段位標籤 / 舊版 COLLAPSE),把橫向空間讓給控制項。
   const hint = handle.querySelector(".r, .ph-right");
