@@ -151,6 +151,11 @@ async def lifespan(app):
     navigator.set_focus_fn(lambda: video_pipeline.guard_focus(GUARD_EXE))
     navigator.set_terrain_fn(lambda: (mapdata.points(mapdata.current_map_id()),
                                       mapdata.platforms(mapdata.current_map_id())))
+    # 繩索位置:規劃器沒有它就只能猜「平台重疊區中點」,實測差 4~6 格 → 每次上繩的
+    # 第一按必定失敗。上繩成功時把真正有效的 x 寫回這張地圖,下次直接走對位置。
+    navigator.set_rope_fns(
+        get_fn=lambda: mapdata.ropes(mapdata.current_map_id()),
+        note_fn=lambda x: mapdata.note_rope(mapdata.current_map_id(), x))
     # 職業:第一次啟動把現況存成「蓮」,之後每次啟動套用上次選的那個。
     # navigator 的移動參數是模組級變數,不套用就會退回寫死的預設(=蓮的值)。
     jobs.ensure_default()

@@ -205,8 +205,19 @@ def build_overlap(points, platforms, jump_dy=11, jump_dx=30, y_tol=4):
     return nodes, edges
 
 
+def _rope_x(ropes, ox1, ox2):
+    """重疊區 [ox1,ox2] 內的繩索 x;沒有記錄到的就退回中點(猜)。
+
+    有多條時取最靠近重疊區中央的那條 —— 兩端可能貼著平台邊緣,站上去容易掉層。
+    """
+    mid = (ox1 + ox2) // 2
+    inside = [int(r["x"]) for r in (ropes or [])
+              if r.get("x") is not None and ox1 <= int(r["x"]) <= ox2]
+    return min(inside, key=lambda x: abs(x - mid)) if inside else mid
+
+
 def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
-                  free_vertical=False, blink_dy=22, blink_up=10):
+                  free_vertical=False, blink_dy=22, blink_up=10, ropes=None):
     """完整移動模型建圖(用實測落點):
       * walk:同平台。
       * jump:二段跳——從平台端點/中點朝左右飛約 jump(30)px,落到落點 x 處的平台
@@ -315,7 +326,11 @@ def build_physics(points, platforms, jump=30, jump_up=8, y_tol=4,
                 ox1, ox2 = max(a["xA"], b["xA"]), min(a["xB"], b["xB"])
                 if ox2 < ox1:
                     continue
-                cx = (ox1 + ox2) // 2
+                # 【有記錄的繩索就用真的位置,沒有才退回猜中點】中點只是「兩塊平台
+                # 重疊區的中間」,跟繩索實際在哪毫無關係。實測猜出來的 x 與真正
+                # 上得去的位置差 4~6 格,導致每次上繩的第一按必失敗(見
+                # mapdata.note_rope 的說明)。
+                cx = _rope_x(ropes, ox1, ox2)
                 if blocked(cx, a["y"], b["y"]):
                     continue
                 addn((cx, a["y"]), i); addn((cx, b["y"]), j)

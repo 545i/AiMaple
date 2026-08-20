@@ -178,6 +178,28 @@ def add_rope(mid, x):
         return len(d["ropes"])
 
 
+def note_rope(mid, x, tol=2):
+    """【上繩成功時呼叫】把真正上得去的 x 記進這張地圖。回是否有新增。
+
+    規劃器(pathgraph.build_physics)在沒有繩索資料時,是用「兩塊平台重疊區的中點」
+    猜繩索在哪 —— 而繩索是固定位置,跟重疊區中點沒有關係。實測(50 趟軌跡):
+    規劃 x 永遠是 29,真正上得去的是 23~25,所以【每一次上繩的第一按都必定失敗】,
+    要靠 _rope_to 沿 -4/+4/-8… 掃描才找得到,每次固定浪費約 2.3 秒(佔巡邏時間 6.4%)。
+
+    這裡不做統計(中位數/門檻/衰減都不必):「按 C 之後角色有沒有上升」是硬訊號,
+    成功就是成功。繩索移位或地圖改版時,下一次成功會補上新的位置,舊的那筆再也
+    不會被選中(選的是離目標最近、且落在重疊區內的那條),不需要淘汰邏輯。
+    """
+    with _lock:
+        d = load(mid)
+        rp = d.setdefault("ropes", [])
+        if any(abs(int(r.get("x", -999)) - int(x)) <= tol for r in rp):
+            return False                      # 已經有很接近的一條,不重複記
+        rp.append({"x": int(x), "auto": True})
+        save(mid, d)
+        return True
+
+
 def remove_rope(mid, index):
     with _lock:
         d = load(mid)

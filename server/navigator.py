@@ -198,6 +198,19 @@ def set_focus_fn(fn):
 
 
 _terrain_fn = None
+# 繩索位置的讀/寫。規劃器沒有它就只能拿「平台重疊區中點」猜,實測差 4~6 格,
+# 導致每次上繩的第一按必定失敗(見 mapdata.note_rope)。
+_ropes_fn = None      # () -> [{"x": int}, ...]
+_note_rope_fn = None  # (x) -> None  上繩成功時回報真正有效的 x
+
+
+def set_rope_fns(get_fn=None, note_fn=None):
+    """注入繩索位置的讀/寫(由 main 綁到 mapdata)。"""
+    global _ropes_fn, _note_rope_fn
+    if get_fn is not None:
+        _ropes_fn = get_fn
+    if note_fn is not None:
+        _note_rope_fn = note_fn
 
 
 def set_terrain_fn(fn):
@@ -751,9 +764,19 @@ def _try_rope_here(ty):
     _rope_up()
     p1 = _dot() or p0
     if p1[1] < p0[1] - 3:                   # y 變小=上升成功
+        # 【把真正上得去的 x 記起來】規劃器沒有繩索資料時是猜重疊區中點,實測差
+        # 4~6 格,所以每次上繩的第一按都必定失敗、要靠下面的偏移掃描才找得到,
+        # 每次固定浪費約 2.3 秒。記一次之後,下次規劃就直接走到對的位置。
+        if _note_rope_fn:
+            try:
+                _note_rope_fn(int(p0[0]))
+            except Exception:
+                pass                        # 記錄失敗不能影響走位
+        nav_trace.event("rope_ok", ROPE_K, _state.get("phase"), note=f"x={p0[0]}")
         if p1[1] < ty - Y_TOL:             # 上過頭 → 下跳修正到目標層
             _fall_to_y(ty)
         return True
+    nav_trace.event("rope_fail", ROPE_K, _state.get("phase"), note=f"x={p0[0]}")
     return False
 
 
@@ -891,6 +914,39 @@ def _go_vertical(nx, ty, skills=None):
     return _rope_to(nx, ty)
 
 
+def _merge_rope_chain(path):
+    """把【連續的上繩段】併成一段。
+
+    【為什麼要併】規劃器把上繩建模成「爬到相鄰的上一層」,所以跨兩層會排出
+    68→56、56→45 兩段 rope。但實際物理不是這樣:_rope_up 按一次 C 就【一路衝到
+    最頂層】(見它的 docstring),停不下來。照著兩段跑的結果(實測軌跡
+    20260820-143616):
+
+        按 C @68 → 衝到 21 → 下跳三次修正回 56(第一段目標)
+        按 C @56 → 又衝到 28 → 下跳兩次回 45(第二段目標)
+
+    而下跳修正的途中【就經過 45】—— 最終目標就在路上,卻先掉到 56 再爬一次。
+    整整多了一次上繩 + 一趟修正,約 6 秒。
+
+    併成一段之後:按一次 C 衝到頂,直接下跳修正到【最後那一段的目標層】,
+    中間那些層根本不必停。水平位置取最後一段的 x(上繩點都在同一條繩索上)。
+    """
+    out = []
+    i = 0
+    while i < len(path):
+        node, mt = path[i]
+        if mt == "rope":
+            j = i
+            while j + 1 < len(path) and path[j + 1][1] == "rope":
+                j += 1
+            out.append((path[j][0], "rope"))     # 只留最後一段:C 反正會到頂
+            i = j + 1
+        else:
+            out.append((node, mt))
+            i += 1
+    return out
+
+
 def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None):
     """用平台重疊圖規劃到 (tx,ty),沿路徑分段執行按鍵流程(walk/jump/rope/fall)。
     skills:移動攻擊鍵(僅水平走位穿插;繩索/下跳/二段跳等垂直動作暫停,避免中斷)。
@@ -917,6 +973,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
         # jump=JUMP_DX:飛距是【職業參數】,不能讓 pathgraph 用它自己的預設 30,
         # 否則換職業後規劃出來的跳躍邊與實際飛得到的距離對不上。
         nodes, edges = pathgraph.build_physics(pts + [(int(tx), int(ty))], platforms,
+                                              ropes=_ropes_fn() if _ropes_fn else None,
                                               jump=step_dx(),
                                               free_vertical=(MOVE_TYPE == "blink"),
                                               blink_dy=BLINK_DY_MAX,
@@ -927,6 +984,7 @@ def _goto_via_graph(tx, ty, points_dicts, platforms, precise=False, skills=None)
             _state["error"] = f"無路徑 {start}→({tx},{ty})"
             print(f"[nav] 無路徑 {start}→({tx},{ty})")
             return False
+        path = _merge_rope_chain(path)
         _state["path"] = [[list(n), mt] for n, mt in path]
         print(f"[nav] 路徑{'(重規劃 %d)' % attempt if attempt else ''} "
               f"{start}→({tx},{ty}): {[(list(n), mt) for n, mt in path]}")
