@@ -7,6 +7,19 @@ import { useNavTracePick, setNavTracePick } from '../hooks/useNavTrace'
 import { contentRect } from '../lib/letterbox'
 
 /**
+ * contentRect 回傳【視窗座標】(給掛在 document 上、用 e.clientX 的滑鼠映射用)。但這裡的
+ * 疊層(紅點/偵測框/軌跡)是 .stage 的絕對定位子元素,left/top 是【相對 .stage】的。
+ * 電腦端 .stage 左移讓開 rail(left:56)後,直接用視窗座標會把那 56px 多算一次 → 疊層
+ * 整片右偏。影像填滿 .stage,所以減掉影像自己的 rect.left/top 就換算成相對 .stage 的座標。
+ */
+function contentRectRel(v: HTMLVideoElement | HTMLImageElement) {
+  const c = contentRect(v)
+  if (!c) return null
+  const r = v.getBoundingClientRect()
+  return { ox: c.ox - r.left, oy: c.oy - r.top, dw: c.dw, dh: c.dh }
+}
+
+/**
  * 遊戲畫面層。永遠在最底下 —— 控制台是疊在它上面的,不是取代它。
  *
  * 紅點 = 伺服器回報的【主機端真實游標位置】,不是本地滑鼠。兩者可能不同:
@@ -37,7 +50,7 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
     const calc = () => {
       const v = videoRef.current
       if (!v) return setBox(null)
-      const c = contentRect(v)
+      const c = contentRectRel(v)
       if (!c) return setBox(null)
       setBox({ x: c.ox + cursor.x * c.dw, y: c.oy + cursor.y * c.dh, w: c.dw, h: c.dh })
     }
@@ -67,13 +80,13 @@ export function StageStream({ video, cursor, hint, overlay, trace }: {
     if (!v || !t.is_window || !t.frame) return null
     if (!v.videoWidth || !v.videoHeight) return null
     if (Math.abs(v.videoWidth / v.videoHeight - t.frame[0] / t.frame[1]) > 0.01) return null
-    return contentRect(v)
+    return contentRectRel(v)
   }
   const drawBoxes = usable && (overlay?.boxes.length ?? 0) > 0
   useEffect(() => {
     if (!drawBoxes) { setRect(null); return }
     const v = videoRef.current
-    setRect(v ? contentRect(v) : null)
+    setRect(v ? contentRectRel(v) : null)
   }, [overlay, drawBoxes, videoRef])
 
   return (
