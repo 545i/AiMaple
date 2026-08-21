@@ -105,6 +105,7 @@ export default function App() {
         + ` ${IS_TOUCH ? 'touch' : 'desk'} ${minimal ? 'minimal' : ''} ${rotate ? 'rotate' : ''}`
         + ` ${drawer.dragH != null ? 'dragging' : ''}`
         + ` ${isDesk && railHidden ? 'rail-hidden' : ''}`
+        + ` ${isDesk && deskOpen && !railHidden ? 'panel-open' : ''}`
         + ` ${IS_TOUCH && portrait && playing ? 'port-play' : ''}`}>
       <StageStream video={video} cursor={input.cursor} overlay={overlay} trace={trace}
                    hint={!IS_TOUCH && canPlay && !over ? '滑鼠移到遊戲畫面上即可操控（移開自動釋放）' : ''} />

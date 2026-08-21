@@ -246,6 +246,10 @@
    收合後只剩 rail、遊戲畫面幾乎全露。面板只覆蓋左邊,右側畫面照樣互動。整條 rail 是
    視窗拖曳把手(app-region:drag),不再靠 overlay 注入獨立 UI。手機/觸控維持底部抽屜。
    ══════════════════════════════════════════════════════════════════ */
+/* rail 與面板寬度集中成變數,舞台左緣才能依同一組寬度動態讓開(見底部 .stage 規則) */
+.app.desk { --rail-w: 56px; --side-w: min(460px, 44vw); }
+@media (min-width: 1400px) { .app.desk { --side-w: min(780px, 48vw); } }
+
 .panel.dock-left {
   position: absolute; left: 0; top: 60px; bottom: 0; right: auto;
   width: auto;                       /* top:60 讓開頂部 HUD(z-30) */
@@ -260,12 +264,14 @@
 /* 常駐細條。整條是視窗拖曳把手(浮動客戶端 Electron 才有作用,瀏覽器忽略);
    按鈕/滑桿是 no-drag 例外,不然點它們會變成拖視窗。 */
 .dock-left .rail {
-  flex: 0 0 auto; width: 56px; height: 100%;
+  flex: 0 0 auto; width: var(--rail-w); height: 100%;
   display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0;
   background: rgba(20, 23, 34, .92); border-right: 1px solid rgba(255, 255, 255, .08);
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
   -webkit-app-region: drag;
+  overflow-y: auto; scrollbar-width: none;   /* 矮視窗時 rail 內容可滾輪滑動 */
 }
+.dock-left .rail::-webkit-scrollbar { display: none; }
 .dock-left .rail button, .dock-left .rail input, .dock-left .rail .rail-alpha-wrap {
   -webkit-app-region: no-drag;
 }
@@ -293,7 +299,7 @@
 
 /* 展開的面板本體(內容),靠 rail 右側、滿高 */
 .dock-left .side {
-  flex: 0 0 auto; align-self: stretch; width: min(460px, 44vw);
+  flex: 0 0 auto; align-self: stretch; width: var(--side-w);
   display: flex; flex-direction: column; overflow: hidden;
   background: rgba(30, 34, 51, .96); border-right: 1px solid rgba(255, 255, 255, .08);
   box-shadow: 18px 0 44px rgba(0, 0, 0, .42);
@@ -305,7 +311,6 @@
                                     grid-template-columns: 1fr; gap: 14px; }
 .dock-left .side .panel-body.cols > .full { grid-column: 1 / -1; }
 @media (min-width: 1400px) {
-  .dock-left .side { width: min(780px, 48vw); }
   .dock-left .side .panel-body.cols { grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
 }
 
@@ -320,8 +325,10 @@
 
 /* 電腦端:舞台左緣讓開常駐 rail(56px),rail 不再蓋住遠端畫面。固定位移、不隨面板
    開合變動,所以影像比例穩定不跳。展開的面板仍浮在畫面上(暫時、使用者自己開)。 */
-.app.desk .stage { left: 56px; }
-/* 收起 rail 後畫面補滿整寬(rail 讓出的 56px 收回) */
+/* 舞台左緣依「在外」的 rail/面板寬度動態讓開,rail 與展開的面板都在遊戲畫面左側之外、
+   絕不遮擋。收起 rail 則補滿整寬。 */
+.app.desk .stage { left: var(--rail-w); transition: left .28s cubic-bezier(.4,0,.2,1); }
+.app.desk.panel-open .stage { left: calc(var(--rail-w) + var(--side-w)); }
 .app.desk.rail-hidden .stage { left: 0; }
 /* 電腦端影像置中(rail 已讓開,面板才是浮層) */
 .app.desk .stage video, .app.desk .stage img { object-position: center !important; }
