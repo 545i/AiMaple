@@ -85,6 +85,10 @@ export function ControlPanel(props: Props) {
 
     return (
       <section className={`panel dock-left ${deskOpen ? 'open' : 'closed'}`}>
+        {/* 收起鈕:貼在 rail 右上角、往右凸出的小拉片(不放進 rail 裡,免得被 rail 的
+            overflow 裁掉) */}
+        <button className="rail-collapse" title="收起控制列(畫面補滿整寬;點左緣小鈕展開)"
+                onClick={onRailHide}>«</button>
         <div className="rail">
           <div className="rail-tabs">
             {TABS.map(t => (
@@ -110,8 +114,6 @@ export function ControlPanel(props: Props) {
               </div>
             )}
             <button className="rail-btn sm" title="全螢幕" onClick={toggleFull}>⛶</button>
-            <button className="rail-btn sm" title="收起控制列(畫面補滿整寬;點左緣小鈕展開)"
-                    onClick={onRailHide}>«</button>
             {hasFc && <button className="rail-btn sm" title="改設定(重新輸入網址)"
                               onClick={() => fc!.openSettings()}>⚙</button>}
             {hasFc && <button className="rail-btn sm close" title="關閉浮動客戶端"

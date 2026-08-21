@@ -272,6 +272,19 @@
   overflow-y: auto; scrollbar-width: none;   /* 矮視窗時 rail 內容可滾輪滑動 */
 }
 .dock-left .rail::-webkit-scrollbar { display: none; }
+
+/* 收起鈕:貼 rail 右上角、往右凸出的小拉片。放在 .dock-left(非 rail)裡,才不會被
+   rail 的 overflow 裁掉;.dock-left 是 position:absolute,當它的定位基準。 */
+.dock-left .rail-collapse {
+  position: absolute; top: 6px; left: calc(var(--rail-w) - 9px); z-index: 3;
+  width: 20px; height: 30px; border-radius: 0 9px 9px 0; font-size: 14px; line-height: 1;
+  background: rgba(20, 23, 34, .96); color: var(--dim);
+  border: 1px solid rgba(255, 255, 255, .12); border-left: none;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: auto; -webkit-app-region: no-drag;
+  box-shadow: 3px 0 8px rgba(0, 0, 0, .3);
+}
+.dock-left .rail-collapse:hover { color: var(--text); background: rgba(30, 34, 51, .98); }
 .dock-left .rail button, .dock-left .rail input, .dock-left .rail .rail-alpha-wrap {
   -webkit-app-region: no-drag;
 }
@@ -325,10 +338,9 @@
 
 /* 電腦端:舞台左緣讓開常駐 rail(56px),rail 不再蓋住遠端畫面。固定位移、不隨面板
    開合變動,所以影像比例穩定不跳。展開的面板仍浮在畫面上(暫時、使用者自己開)。 */
-/* 舞台左緣依「在外」的 rail/面板寬度動態讓開,rail 與展開的面板都在遊戲畫面左側之外、
-   絕不遮擋。收起 rail 則補滿整寬。 */
+/* 舞台左緣讓開常駐 rail(rail 不遮擋遊戲);展開的面板浮在畫面上、不推畫面。
+   收起 rail 則補滿整寬。 */
 .app.desk .stage { left: var(--rail-w); transition: left .28s cubic-bezier(.4,0,.2,1); }
-.app.desk.panel-open .stage { left: calc(var(--rail-w) + var(--side-w)); }
 .app.desk.rail-hidden .stage { left: 0; }
 /* 電腦端影像置中(rail 已讓開,面板才是浮層) */
 .app.desk .stage video, .app.desk .stage img { object-position: center !important; }
