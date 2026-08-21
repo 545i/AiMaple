@@ -1544,6 +1544,20 @@ def clear_user_stop():
     _user_stop.clear()
 
 
+def force_pause(reason):
+    """無條件停止巡邏/導航,並把原因寫進狀態(給網頁與 /nav/status 看)。
+
+    【與 pause_purple() 的差別,不能互相取代】pause_purple 的前提是「場上還有
+    (非放行中的)紫標」,沒有就直接 return 不停。符文連續解不掉時正好是那個狀態
+    ——那個紫標已經被 rune 放行了,`_purple_present()` 會回 False ——所以靠
+    pause_purple 停不下來。這支是給「我們自己判定不能再跑下去」的情況用的,
+    不看畫面上有什麼,叫了就一定停。"""
+    _state["error"] = f"已強制暫停:{reason}"
+    _state["phase"] = "forced_pause"
+    print(f"[nav] 強制暫停 → {reason}")
+    stop()
+
+
 def pause_purple():
     """紫標偵測 hook 呼叫:標記原因後停止巡邏/導航(危險規避)。
     若由巡邏執行緒自身觸發(_dot→detect→hook),stop() 只 set 事件、不 join 自己→安全。

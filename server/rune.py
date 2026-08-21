@@ -125,7 +125,26 @@ GIVEUP_COOLDOWN = 600.0                # 放棄後多久內不再自動接手同
 GIVEUP_TOL = 6                         # 視為「同一個符文」的位置容差(小地圖 px)。
                                        # 同一個符文的偵測座標會飄:實測 (16,90)→(16,92)
                                        # →(12,90),差到 4 格,容差抓太小就認不出是同一個。
-_giveup = {"pos": None, "at": 0.0}
+_giveup = {"pos": None, "at": 0.0, "streak": 0}
+
+# 【連續放棄要停機,不能一直放行下去】上面那段放行機制解掉的是「一次解不掉就把人
+# 鎖在原地」;但它反過來也帶了一個問題:每次放棄都照常接回巡邏,所以「這張圖的符文
+# 我們【根本解不掉】」與「這次運氣不好」在行為上完全一樣,人不盯著就會掛著白刷。
+# 所以【連續】放棄到這個次數就強制暫停巡航(navigator.force_pause)並發 Telegram,
+# 中間只要成功解掉一次就歸零。單次放棄的行為完全不變。
+GIVEUP_STREAK_MAX = 2
+
+
+def _record_giveup():
+    """記一次放棄。回傳「是否已連續放棄到該強制暫停的程度」。"""
+    _giveup["streak"] = _giveup.get("streak", 0) + 1
+    return _giveup["streak"] >= GIVEUP_STREAK_MAX
+
+
+def reset_giveup_streak():
+    """連續放棄計數歸零。兩個時機:解掉了(解得掉就不該累積到誤停機)、
+    以及使用者自己重新按下開始巡邏(人已經知道了,從頭算)。"""
+    _giveup["streak"] = 0
 
 
 def _given_up(marks):
@@ -517,6 +536,10 @@ def status():
             "lines": {"cv": _line_cv, "claude": _line_claude},
             "model": MODEL, "radius": [RADIUS_MIN, RADIUS_MAX],
             "approach_dx": APPROACH_DX, "last": dict(_last),
+            # 連續放棄了幾次 / 幾次會強制暫停巡航 —— 放進狀態才看得到「快要停機了」,
+            # 不然這件事只有在真的停下來時才被發現。
+            "giveup_streak": _giveup.get("streak", 0),
+            "giveup_streak_max": GIVEUP_STREAK_MAX,
             "stats": _stats_summary()}
 
 
@@ -1737,6 +1760,7 @@ def _solve_flow(purple, resume=True):
             elif solved:
                 # 解掉了 → 放行標記作廢(同位置若再刷出符文要正常接手/暫停)
                 _giveup.update({"pos": None, "at": 0.0})
+                reset_giveup_streak()
                 try:
                     _navigator.clear_purple_ignore()
                 except Exception:
@@ -1752,10 +1776,23 @@ def _solve_flow(purple, resume=True):
                 gx, gy = (purple[0] if purple else (None, None))
                 _giveup.update({"pos": (gx, gy) if gx is not None else None,
                                 "at": time.monotonic()})
-                print(f"[rune] 放棄,{GIVEUP_COOLDOWN:.0f}s 內不再接手該位置,巡邏照常")
+                too_many = _record_giveup()
                 if gx is not None:
                     _navigator.ignore_purple_at(gx, gy, GIVEUP_COOLDOWN, GIVEUP_TOL)
-                if resume and _resume_fn:
+                if too_many:
+                    # 【連續解不掉 → 不再默默放行】接回巡邏等於掛著白刷,而且下一輪
+                    # 大概率又是同樣的結果。停下來讓人知道,並且【不】接回巡邏。
+                    reason = (f"符文連續 {_giveup['streak']} 次解不掉"
+                              f"(最後一次:{_last.get('err') or '無錯誤訊息'})")
+                    print(f"[rune] {reason} → 強制暫停巡航")
+                    _navigator.force_pause(reason)
+                    try:
+                        import notify
+                        notify.telegram(f"⛔ {reason},已強制暫停巡航")
+                    except Exception:
+                        pass
+                elif resume and _resume_fn:
+                    print(f"[rune] 放棄,{GIVEUP_COOLDOWN:.0f}s 內不再接手該位置,巡邏照常")
                     _resume_fn()                # 接回巡邏(有別的紫標的話兜底會再停)
                 else:
                     _navigator.pause_purple()   # 手動測試路徑:維持原本的安全行為

@@ -870,6 +870,9 @@ def nav_patrol(token: str = Query(""), minutes: int = Query(-1)):
     # _start_patrol_current:那個函式解符文接回巡邏時也會走,清在那裡等於讓自動流程
     # 有機會抹掉人按下的停止。
     navigator.clear_user_stop()
+    # 使用者自己重新開巡邏 = 已經看到「符文連續解不掉、已強制暫停」那則通知了。
+    # 連續放棄計數從頭算,否則停過一次之後【每一次】放棄都會立刻再停一次。
+    rune.reset_giveup_streak()
     ok, msg = _start_patrol_current()
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
