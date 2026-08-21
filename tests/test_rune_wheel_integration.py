@@ -162,7 +162,7 @@ def test_solve_wheel_shifts_boxes_and_restores_full_rate(monkeypatch):
 
     captured = {}
 
-    def _fake_solve(frames, boxes4):
+    def _fake_solve(frames, boxes4, labels=None):
         captured["n_frames"] = len(frames)
         captured["boxes4"] = boxes4
         return ["up", "down", "left", "right"]
@@ -203,7 +203,7 @@ def test_solve_wheel_restores_full_rate_even_when_solve_raises(monkeypatch):
     rate_calls = []
     monkeypatch.setattr(wgc, "request_full_rate", lambda on: rate_calls.append(on))
 
-    def _boom(frames, boxes4):
+    def _boom(frames, boxes4, labels=None):
         raise RuntimeError("模擬 solve() 內部錯誤")
     monkeypatch.setattr(rune_wheel, "solve", _boom)
 
@@ -408,10 +408,10 @@ def test_wheel_path_passes_averaged_boxes_to_solver(monkeypatch):
 
     def _boxes(frames):
         seen["n"] = len(frames)
-        return boxes
+        return boxes, [None] * 4
     monkeypatch.setattr(rune, "_wheel_boxes", _boxes)
     monkeypatch.setattr(rune, "_solve_wheel",
-                        lambda b: (["down", "down", "up", "up"], "") if b is boxes else ([], "框不對"))
+                        lambda b, lab=None: (["down", "down", "up", "up"], "") if b is boxes else ([], "框不對"))
 
     dirs, err = rune._wheel_path(frame)
     assert dirs == ["down", "down", "up", "up"]
@@ -427,11 +427,11 @@ def test_wheel_boxes_tolerates_frames_where_detection_misses(monkeypatch):
     monkeypatch.setattr(rune_detr, "available", lambda: True)
     good = [(10.0, 10.0, 20.0, 20.0), (30.0, 10.0, 40.0, 20.0),
             (50.0, 10.0, 60.0, 20.0), (70.0, 10.0, 80.0, 20.0)]
-    seq = [None, good, None, good, None]          # 5 幀只有 2 幀選得出 4 支
+    seq = [None, (good, ["up"] * 4), None, (good, ["up"] * 4), None]   # 5 幀只有 2 幀選得出 4 支
     it = iter(seq)
-    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+    monkeypatch.setattr(rune_detr, "detect_labeled", lambda f: next(it))
 
-    boxes = rune._wheel_boxes([_dummy_frame()] * 5)
+    boxes, _labels = rune._wheel_boxes([_dummy_frame()] * 5)
     assert boxes == good
 
 
@@ -440,9 +440,9 @@ def test_wheel_boxes_needs_at_least_two_hits(monkeypatch):
     import rune_detr
     monkeypatch.setattr(rune_detr, "available", lambda: True)
     good = [(10.0, 10.0, 20.0, 20.0)] * 4
-    seq = [None, good, None]
+    seq = [None, (good, ["up"] * 4), None]
     it = iter(seq)
-    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+    monkeypatch.setattr(rune_detr, "detect_labeled", lambda f: next(it))
     assert rune._wheel_boxes([_dummy_frame()] * 3) is None
 
 
@@ -452,6 +452,79 @@ def test_wheel_boxes_rejects_jittering_boxes(monkeypatch):
     monkeypatch.setattr(rune_detr, "available", lambda: True)
     a = [(10.0, 10.0, 20.0, 20.0)] * 4
     b = [(10.0 + rune.ROTATE_BOX_JITTER * 3, 10.0, 20.0, 20.0)] * 4
-    it = iter([a, b])
-    monkeypatch.setattr(rune_detr, "detect_arrows", lambda f: next(it))
+    it = iter([(a, ["up"] * 4), (b, ["up"] * 4)])
+    monkeypatch.setattr(rune_detr, "detect_labeled", lambda f: next(it))
     assert rune._wheel_boxes([_dummy_frame()] * 2) is None
+
+
+# ---------- 模型方向類別要一路傳到 rune_wheel(靜止箭頭的答案來源) ----------
+# 【為什麼】rune_collect 300 輪實測:解放輪固定是 2 支旋轉 + 2 支靜止,而靜止那
+# 幾支的漸層跑到色環另一側,rune_wheel.angle_of 對它們結構性失效(380/1188 支
+# 整段 ~200 幀一幀都讀不出角度),整輪因此失敗的比例 86%。方向其實在定位時就已經
+# 由 rune_detr 算出來了,只是這條路徑一直把它丟掉 —— 這幾個測試守住那條線。
+def test_wheel_boxes_returns_majority_voted_model_labels(monkeypatch):
+    """_wheel_boxes 除了框,還要回四支的方向類別;跨幀不一致時取多數決。"""
+    import rune_detr
+    monkeypatch.setattr(rune_detr, "available", lambda: True)
+    good = [(10.0, 10.0, 20.0, 20.0), (30.0, 10.0, 40.0, 20.0),
+            (50.0, 10.0, 60.0, 20.0), (70.0, 10.0, 80.0, 20.0)]
+    seq = [(good, ["up", "left", "down", "right"]),
+           (good, ["up", "left", "down", "right"]),
+           (good, ["up", "right", "down", "right"])]   # 第 2 支這一幀讀成 right
+    it = iter(seq)
+    monkeypatch.setattr(rune_detr, "detect_labeled", lambda f: next(it))
+
+    boxes, labels = rune._wheel_boxes([_dummy_frame()] * 3)
+
+    assert boxes == good
+    assert labels == ["up", "left", "down", "right"]
+
+
+def test_solve_wheel_forwards_model_labels_to_rune_wheel(monkeypatch):
+    """_solve_wheel 要把方向類別原封不動交給 rune_wheel.solve。"""
+    import minimap
+    import rune_wheel
+    import wgc
+
+    monkeypatch.setattr(rune, "WHEEL_CAPTURE_SECS", 0.03)
+    monkeypatch.setattr(rune, "WHEEL_POLL_GAP", 0.005)
+    monkeypatch.setattr(rune, "WHEEL_MIN_FRAMES", 1)
+    monkeypatch.setattr(minimap, "_grab_window", lambda: np.zeros((200, 400, 3), dtype=np.uint8))
+    monkeypatch.setattr(wgc, "request_full_rate", lambda on: None)
+
+    captured = {}
+
+    def _fake_solve(frames, boxes4, labels=None):
+        captured["labels"] = labels
+        return ["up", "down", "left", "right"]
+    monkeypatch.setattr(rune_wheel, "solve", _fake_solve)
+
+    boxes4 = [(50, 50, 90, 90), (120, 52, 160, 92), (190, 51, 230, 91), (260, 50, 300, 90)]
+    dirs, err = rune._solve_wheel(boxes4, ["up", "right", "down", "left"])
+
+    assert dirs == ["up", "down", "left", "right"]
+    assert err == ""
+    assert captured["labels"] == ["up", "right", "down", "left"]
+
+
+def test_wheel_path_forwards_labels_from_localisation_to_solver(monkeypatch):
+    """_wheel_path:定位階段拿到的方向類別要接到 _solve_wheel,不能中途掉。"""
+    import minimap
+    frame = _dummy_frame()
+    monkeypatch.setattr(minimap, "_grab_window", lambda: frame)
+    monkeypatch.setattr(rune, "WHEEL_BOX_GAP", 0.0)
+    boxes = [(1.0, 2.0, 3.0, 4.0)] * 4
+    labels = ["left", "left", "up", "down"]
+    monkeypatch.setattr(rune, "_wheel_boxes", lambda frames: (boxes, labels))
+
+    seen = {}
+
+    def _fake_solve_wheel(b, lab=None):
+        seen["labels"] = lab
+        return ["down", "down", "up", "up"], ""
+    monkeypatch.setattr(rune, "_solve_wheel", _fake_solve_wheel)
+
+    dirs, err = rune._wheel_path(frame)
+
+    assert dirs == ["down", "down", "up", "up"]
+    assert seen["labels"] == labels

@@ -252,7 +252,7 @@ def _circular_r(angles):
     return math.hypot(s, c) / len(angles)
 
 
-def solve_from_angles(per_arrow_angles, frame_idxs):
+def solve_from_angles(per_arrow_angles, frame_idxs, labels=None):
     """solve() 的核心邏輯,輸入換成已經算好的角度序列。
 
     抽出來獨立成一個函式是因為單元測試要餵合成的角度序列驗證邏輯(反轉偵測 /
@@ -263,9 +263,35 @@ def solve_from_angles(per_arrow_angles, frame_idxs):
     None,代表那一幀讀不出來)。frame_idxs:與序列等長的幀索引(可以有跳號,
     代表該幀之前已被上層濾掉,不能算角速度)。
 
-    回 4 個方向的 list(左到右),或 None(任一支箭頭判不出來)。"""
+    labels:長度 4 的 list(由左到右,與 per_arrow_angles 對齊),rune_detr 對
+    這四支箭頭給的方向類別,沒有就給 None。【只用於靜止的箭頭】,理由見下。
+
+    回 4 個方向的 list(左到右),或 None(任一支箭頭判不出來)。
+
+    【為什麼靜止的箭頭要吃模型類別,而不是 angle_of 的角度】
+    angle_of 假設箭頭固定是「綠尾→黃→紅頭」漸層。旋轉的那幾支確實是;但靜止
+    那幾支的漸層會跑到色環另一側(綠→青→藍→洋紅),沒有紅端或沒有綠端,
+    angle_of 對它們是【結構性失效】,不是偶爾失手 —— rune_collect 300 輪實測:
+    380/1188 支箭頭在整段 ~200 幀裡【一幀都讀不出角度】(0/200),而且 100%
+    落在靜止那一側;旋轉的 591 支則 100% 讀得到。結果整體只有 38/297 = 12.8%
+    的輪次給得出答案,絕大多數是「兩支旋轉都算對了,卻被靜止那支拖垮」。
+    而 rune_detr 在定位這四支框時【本來就已經算出方向類別】(rune_cv 的靜態
+    符文路徑用的就是它:115 筆未參與訓練樣本上單支 95.0%,色度分割 86.5%),
+    這條路徑以前整個丟掉沒用。
+
+    【為什麼旋轉的箭頭不能吃模型類別】線上模型(models/rune_detr_ar)只有四個
+    方向類別、沒有 rot,它會硬給旋轉中的箭頭一個「這一瞬間指哪」的方向,而那個
+    值對持續旋轉的箭頭沒有意義(答案是晃動當下的角度,不是任意瞬間的角度)。
+    所以旋轉那幾支一律走晃動偵測,模型類別碰都不碰。
+
+    【讀不到角度的箭頭視為靜止,殘留風險如實記著】角度讀不出來時無從判斷它是
+    靜止還是旋轉,這裡採信模型類別 = 假設它是靜止的。實測 591 支旋轉箭頭
+    100% 讀得到角度,所以「讀不到 ⇒ 不是旋轉」在 300 輪真實資料上沒有反例;
+    但那是同一批資料,不算獨立驗證。若模型也沒給類別就回 None,不自己編。"""
     if len(per_arrow_angles) != 4:
         return None
+    if labels is None:
+        labels = [None] * 4
 
     kinds = []                        # 'static' | 'rotating' | None(樣本不足)
     static_angle = [None] * 4
@@ -289,8 +315,12 @@ def solve_from_angles(per_arrow_angles, frame_idxs):
 
     dirs = []
     for i in range(4):
-        if kinds[i] == "static":
-            a = nearest_cardinal(static_angle[i]) if static_angle[i] is not None else None
+        if kinds[i] == "static" or kinds[i] is None:
+            # 模型類別優先,angle_of 的平均角度當備援(kinds 是 None 時沒有角度
+            # 可用,只剩模型);兩者都沒有就回 None,不自己編一個方向。
+            a = labels[i] if labels[i] in CARDINALS else None
+            if a is None and static_angle[i] is not None:
+                a = nearest_cardinal(static_angle[i])
             if a is None:
                 return None
             dirs.append(a)
@@ -302,19 +332,20 @@ def solve_from_angles(per_arrow_angles, frame_idxs):
             if mean_a is None:
                 return None
             dirs.append(nearest_cardinal(mean_a))
-        else:
-            return None
     return dirs
 
 
-def solve(frames, boxes4):
+def solve(frames, boxes4, labels=None):
     """完整流程:4 支箭頭在連續影格裡的角度 →(逐支獨立)判斷靜止/旋轉 →
-    靜止取當下角度、旋轉走晃動偵測(含同步假影過濾)→ 最近的上下左右。
+    靜止取模型類別(備援才用角度)、旋轉走晃動偵測(含同步假影過濾)→
+    最近的上下左右。
 
     frames:連續影格 list(BGR ndarray)。
     boxes4:4 支箭頭的框,長度 4 的 (x0,y0,x1,y1) list,由左到右——這段期間
         箭頭只在框內原地旋轉或靜止不動,框位置本身視為不變(呼叫端的定位責任,
         這裡不做追蹤)。
+    labels:與 boxes4 對齊的 rune_detr 方向類別,沒有就給 None。只有靜止的
+        箭頭會用到,理由見 solve_from_angles 的說明。
 
     回 4 個方向的 list(左到右,值域同其餘符文模組:"up"/"down"/"left"/
     "right"),或 None(任一支箭頭判不出來)。"""
@@ -331,7 +362,7 @@ def solve(frames, boxes4):
             angs.append(angle_of(crop))
         per_arrow_angles.append(angs)
 
-    return solve_from_angles(per_arrow_angles, frame_idxs)
+    return solve_from_angles(per_arrow_angles, frame_idxs, labels=labels)
 
 
 # ---------- 「這是不是解放輪」判別 ----------

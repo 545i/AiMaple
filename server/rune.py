@@ -12,6 +12,7 @@
 流程:紫標 → 停巡邏 → 預熱 worker → move_to(紫標側邊) → 按啟動鍵 → 裁圖 → claude 判向
       → 依序按方向鍵 → 驗證紫標消失 → 續巡邏。失敗則交還給「暫停巡邏 + Telegram 通知」。
 """
+import collections
 import json
 import os
 import queue
@@ -891,10 +892,11 @@ def _stable_avg_boxes(boxes_hist):
     return avg_boxes
 
 
-def _solve_wheel(boxes4):
+def _solve_wheel(boxes4, labels=None):
     """旋轉款符文路徑:全速連拍 ~WHEEL_CAPTURE_SECS 秒 → rune_wheel.solve()。
     回 (dirs, err)。boxes4 是 _rotating_signal 判定時已經拿到的、四支箭頭的
-    穩定框(整幀座標)。
+    穩定框(整幀座標)。labels 是同一批定位時 rune_detr 給的方向類別(與 boxes4
+    對齊),交給 rune_wheel 當【靜止】那幾支的答案來源;沒有就給 None。
 
     只裁切「四支箭頭聯集外接矩形」那一小塊存進 frames list,不存整幀 ——
     全速連拍 WHEEL_CAPTURE_SECS 秒可能有數百格,整幀存的話記憶體會爆
@@ -930,14 +932,21 @@ def _solve_wheel(boxes4):
 
     if len(frames) < WHEEL_MIN_FRAMES:
         return [], f"旋轉路徑連拍樣本不足({len(frames)} 幀 < {WHEEL_MIN_FRAMES})"
-    dirs = rune_wheel.solve(frames, rel_boxes)
+    dirs = rune_wheel.solve(frames, rel_boxes, labels=labels)
     if not dirs:
         return [], f"旋轉路徑判不出方向(連拍 {len(frames)} 幀,晃動事件不足或被同步假影濾光)"
     return dirs, ""
 
 
 def _wheel_boxes(frames):
-    """解放輪專用的箭頭定位:回 4 支的平均框,定位不到回 None。
+    """解放輪專用的箭頭定位:回 (4 支的平均框, 4 支的方向類別),定位不到回 None。
+
+    【為什麼連方向類別一起回】解放輪固定是 2 支旋轉 + 2 支靜止(rune_collect
+    300 輪實測,每一輪都是),而靜止那幾支的答案 rune_wheel.angle_of 讀不出來
+    (漸層跑到色環另一側,380/1188 支整段一幀都讀不到)。方向其實在這裡定位的
+    同時就已經算出來了 —— detect_arrows 只是 detect_labeled 的薄包裝、把類別
+    丟掉而已,改叫 detect_labeled 不多花任何一次推論。
+    跨幀不一致時取多數決:個別幀會被怪物/傷害數字壓到而讀錯,多數決比取第一幀穩。
 
     【與 _rotating_signal 的差別:允許部分幀失敗】那個函式是用來【判斷是不是
     旋轉款】的,所以「任一幀選不滿 4 支」本身就是「不是旋轉款」的證據,要求全中
@@ -955,17 +964,36 @@ def _wheel_boxes(frames):
     import rune_detr
     if not rune_detr.available():
         return None
-    hits = []
+    hits, label_hits = [], []
     for f in frames:
         try:
-            b = rune_detr.detect_arrows(f)
+            res = rune_detr.detect_labeled(f)
         except Exception:
             continue
+        if res is None:
+            continue
+        b, lab = res
         if b is not None and len(b) == 4:
             hits.append(b)
+            label_hits.append(lab)
     if len(hits) < WHEEL_BOX_MIN_HITS:
         return None
-    return _stable_avg_boxes(hits)
+    avg = _stable_avg_boxes(hits)
+    if avg is None:
+        return None
+    return avg, _vote_labels(label_hits)
+
+
+def _vote_labels(label_hits):
+    """幾幀各自的 4 個方向類別 → 一組多數決結果(該支全部是 None 就給 None)。
+    label_hits 的每一項與 _stable_avg_boxes 吃的 boxes_hist 同順序(detect_labeled
+    已依 x 由左到右排序),所以直接依索引投票。"""
+    out = []
+    for k in range(4):
+        votes = collections.Counter(
+            lab[k] for lab in label_hits if lab and k < len(lab) and lab[k])
+        out.append(votes.most_common(1)[0][0] if votes else None)
+    return out
 
 
 def _wheel_path(frame):
@@ -982,11 +1010,12 @@ def _wheel_path(frame):
         f = minimap._grab_window()
         if f is not None:
             frames.append(f)
-    boxes4 = _wheel_boxes(frames)
-    if not boxes4:
+    located = _wheel_boxes(frames)
+    if not located:
         _stat("wheel_no_boxes")
         return [], f"解放輪:{len(frames)} 幀裡定位不到穩定的 4 支箭頭(箭頭被怪物/名牌擋住?)"
-    return _solve_wheel(boxes4)
+    boxes4, labels = located
+    return _solve_wheel(boxes4, labels)
 
 
 def _detect():

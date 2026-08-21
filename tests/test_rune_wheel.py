@@ -228,3 +228,81 @@ def test_title_score_returns_minus_one_on_tiny_image():
     """比模板還小的圖(單元測試常用的 dummy frame)不能讓 matchTemplate 拋例外。"""
     assert rw.title_score(np.zeros((10, 10, 3), dtype=np.uint8)) == -1.0
     assert rw.looks_like_wheel(None) == (False, -1.0)
+
+
+# ---------- 5. 靜止箭頭改吃模型類別(angle_of 的「紅頭綠尾」假設對它們無效) ----------
+# 【為什麼需要這一組】rune_collect 300 輪真實解放輪的量測(2026-08-20):
+#   * 每一輪都是【2 支旋轉 + 2 支靜止】的混合款,不是四支全轉。
+#   * 旋轉那 591 支 angle_of 全部讀得到(中位淨轉角 571°)。
+#   * 靜止那 594 支只有 214 支讀得到;另外 380 支在【整段 ~200 幀裡一幀都讀不到】
+#     ——它們的漸層跑到色環另一側(綠→青→藍→洋紅),沒有紅端或沒有綠端,
+#     angle_of 的「紅頭綠尾」假設整支失效,不是偶爾失手。
+#   * 結果 solve_from_angles 只有 38/297 = 12.8% 給得出答案。
+# 而 rune_detr 在定位這四支框的時候【本來就已經算出方向類別】(rune_cv 走靜態
+# 符文用的就是它,115 筆未參與訓練樣本上單支 95.0%,色度分割只有 86.5%),
+# 解放輪這條路徑卻整個丟掉沒用。以下四個測試守住「靜止吃模型、旋轉不吃模型」。
+def test_solve_from_angles_uses_model_label_when_angle_is_unreadable():
+    """靜止箭頭整段讀不出角度時,方向改吃模型類別 —— 不能因為它整輪失敗。"""
+    n = 120
+    frame_idxs = list(range(n))
+    unreadable = [None] * n
+    rotating_down = _rotating_with_wobbles(
+        n, start=15.0, rate=-13.0, wobble_frames=[20, 50, 80, 108], target_angle=270.0)
+    rotating_left = _rotating_with_wobbles(
+        n, start=200.0, rate=-11.0, wobble_frames=[15, 45, 75, 105], target_angle=180.0)
+    labels = ["up", "right", "down", "left"]
+
+    result = rw.solve_from_angles(
+        [unreadable, unreadable, rotating_down, rotating_left], frame_idxs, labels=labels)
+
+    assert result == ["up", "right", "down", "left"], result
+
+
+def test_solve_from_angles_prefers_model_label_over_chroma_for_static_arrow():
+    """靜止箭頭就算讀得到角度,也以模型類別為準(單支 95.0% vs 色度 86.5%)。
+    這裡刻意讓色度算出的角度(90°=up)與模型類別(left)衝突,答案要是模型的。"""
+    n = 60
+    frame_idxs = list(range(n))
+    angs = [_static(n, 90.0)] + [_static(n, a) for a in (0.0, 180.0, 270.0)]
+    labels = ["left", "right", "left", "down"]
+
+    result = rw.solve_from_angles(angs, frame_idxs, labels=labels)
+
+    assert result[0] == "left", result
+
+
+def test_solve_from_angles_ignores_model_label_for_rotating_arrow():
+    """旋轉中的箭頭【不能】吃模型類別:線上模型只有四個方向類別、沒有 rot,
+    它會硬給旋轉箭頭一個瞬間方向,而那個值對持續旋轉的箭頭沒有意義。
+    答案必須來自晃動偵測。"""
+    n = 120
+    frame_idxs = list(range(n))
+    rotating_down = _rotating_with_wobbles(
+        n, start=15.0, rate=-13.0, wobble_frames=[20, 50, 80, 108], target_angle=270.0)
+    rotating_left = _rotating_with_wobbles(
+        n, start=200.0, rate=-11.0, wobble_frames=[15, 45, 75, 105], target_angle=180.0)
+    rotating_up = _rotating_with_wobbles(
+        n, start=40.0, rate=-12.0, wobble_frames=[18, 48, 78, 106], target_angle=90.0)
+    rotating_right = _rotating_with_wobbles(
+        n, start=310.0, rate=-14.0, wobble_frames=[22, 52, 82, 110], target_angle=0.0)
+    wrong_labels = ["up", "up", "up", "up"]     # 模型對旋轉箭頭給的瞬間方向,全錯
+
+    result = rw.solve_from_angles(
+        [rotating_down, rotating_left, rotating_up, rotating_right],
+        frame_idxs, labels=wrong_labels)
+
+    assert result == ["down", "left", "up", "right"], result
+
+
+def test_solve_from_angles_returns_none_when_unreadable_arrow_has_no_label():
+    """讀不到角度、模型也沒給類別時,回 None —— 不能自己編一個方向出來。
+    按錯方向鍵的代價是白燒一次符文冷卻,寧可整輪重來。"""
+    n = 120
+    frame_idxs = list(range(n))
+    unreadable = [None] * n
+    rotating = _rotating_with_wobbles(
+        n, start=15.0, rate=-13.0, wobble_frames=[20, 50, 80, 108], target_angle=270.0)
+    labels = [None, "right", "down", "left"]
+
+    assert rw.solve_from_angles(
+        [unreadable, unreadable, rotating, rotating], frame_idxs, labels=labels) is None
