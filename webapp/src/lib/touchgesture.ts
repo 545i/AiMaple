@@ -13,9 +13,10 @@
  *   雙指上下拖曳                    → mw(累積到 40 才送一格)
  *   【輕點後 300ms 內】再次觸控並移動 → md left … mu left(拖曳鎖定)
  *
- * 【沒有長按手勢,不要再加回來】舊版沒有任何計時器。手指放著不動、或移動得夠慢
- * (每次 touchmove 位移都 <=2px,moved 一直是 false),在新版都會觸發長按而讓
- * 之後所有移動變成按住左鍵拖曳 —— 那正是使用者回報的問題。
+ * 【沒有長按手勢,不要再加回來】舊版沒有任何計時器。新版曾經自己加了一個 420ms
+ * 長按,手指放著不動就會進入按住左鍵拖曳,那正是使用者回報的問題。
+ *
+ * 【與舊版唯一刻意不同的地方:moved 用累積距離,不用單次差值】見 MOVE_EPS。
  */
 export type TouchMsg =
   | { t: 'md'; b: 'left' }
@@ -27,14 +28,25 @@ export interface Pt { x: number; y: number }
 
 /** 輕點結束後多久內再次觸控算「拖曳鎖定」(毫秒,舊版值)。 */
 export const DRAG_LOCK_WINDOW = 300
-/** 位移超過這個像素數才算「有移動過」(舊版值)。 */
-export const MOVE_EPS = 2
+/** 從按下位置起算,移動超過這個像素數才算「有移動過」。
+ *
+ * 【一定要用「從按下起算的累積距離」,不能用單次 touchmove 的差值】舊版 #look 是
+ * 看單次差值(`if(Math.abs(dx)+Math.abs(dy) > 2) tp.moved = true`),那在現在的
+ * 手機上會壞:touchmove 可以到 120Hz,慢慢拖時每個事件只有 1px,位移照樣累積、
+ * 游標確實在動,但 moved 從頭到尾是 false —— 放開時就被判成輕點而多送一次
+ * mc left(使用者回報「移動後放開還是會算點擊一次」)。
+ * 門檻取 4 是舊版自己在另一處(編輯模式拖按鈕)對累積距離用的值:
+ *     if(Math.abs(t.clientX-sx)+Math.abs(t.clientY-sy)>4) moved=true;
+ * 比原本的單次 >2 更能容忍輕點時的手指抖動,不會把真正的輕點吃掉。 */
+export const MOVE_EPS = 4
 /** 雙指累積多少像素送一格滾輪(舊版值)。 */
 export const WHEEL_STEP = 40
 
 export class TouchGesture {
   private lastX = 0
   private lastY = 0
+  private startX = 0
+  private startY = 0
   private moved = false
   private dragging = false
   private dragLockPending = false
@@ -55,8 +67,8 @@ export class TouchGesture {
   start(touches: Pt[], now: number): TouchMsg[] {
     this.maxFingers = Math.max(this.maxFingers, touches.length)
     if (touches.length === 1) {
-      this.lastX = touches[0].x
-      this.lastY = touches[0].y
+      this.lastX = this.startX = touches[0].x
+      this.lastY = this.startY = touches[0].y
       this.moved = false
       this.dragLockPending = now - this.lastTapEnd < DRAG_LOCK_WINDOW
     }
@@ -70,7 +82,10 @@ export class TouchGesture {
     const dx = t.x - this.lastX, dy = t.y - this.lastY
     this.lastX = t.x
     this.lastY = t.y
-    if (Math.abs(dx) + Math.abs(dy) > MOVE_EPS) this.moved = true
+    // 累積距離,不是單次差值(見 MOVE_EPS 的說明)。一旦成立就不再回頭 ——
+    // 手指繞一圈回到原點也算移動過,不該變成輕點。
+    if (Math.abs(t.x - this.startX) + Math.abs(t.y - this.startY) > MOVE_EPS)
+      this.moved = true
 
     if (touches.length >= 2) {
       // 雙指 = 滾輪。累積到門檻才送一格,避免一次噴出大量事件。

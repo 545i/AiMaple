@@ -89,3 +89,22 @@ test('拖曳中被 touchcancel 打斷 → 一定要放開左鍵,不能卡住', (
   g.move([P(70, 50)], 220)                      // md left
   assert.deepEqual(g.cancel(), [{ t: 'mu', b: 'left' }])
 })
+
+// 【高取樣率的慢速拖曳】使用者回報:「手機端移動後放開,他還是會算點擊一次」。
+// moved 原本只在【單次 touchmove 的位移】>2px 時才成立(舊版 #look 就是這樣寫的,
+// 我照抄了)。現在的手機 touchmove 可以到 120Hz,慢慢拖時每個事件只有 1px ——
+// 位移會照樣累積、游標確實在動,但 moved 從頭到尾是 false,放開時就被判成輕點
+// 送出 mc left。判斷「有沒有移動過」必須看【從按下起算的累積距離】,不能看單次差值。
+test('高取樣率的慢速拖曳(每次 1px、總共 120px)放開後不可以算成點擊', () => {
+  const g = new TouchGesture()
+  g.start([P(100, 100)], 0)
+  for (let i = 1; i <= 120; i++) g.move([P(100 + i, 100)], i * 8)   // 120Hz 拖了 120px
+  assert.deepEqual(g.end(0, 1000), [])
+})
+
+test('真的只是輕點(手指幾乎沒動)仍然要送 mc left', () => {
+  const g = new TouchGesture()
+  g.start([P(100, 100)], 0)
+  g.move([P(101, 100)], 20)          // 手指抖一下,還在輕點的容許範圍內
+  assert.deepEqual(g.end(0, 60), [{ t: 'mc', b: 'left' }])
+})
