@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 
-from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M,
+from config import (MEDIAMTX_PATH, VIDEO_MONITOR, VIDEO_FPS, VIDEO_BITRATE_M, VIDEO_SCALE,
                     VIDEO_INTRA_REFRESH, VIDEO_VBV_FRAMES)
 import wgc
 import paths
@@ -52,7 +52,8 @@ state = {
     "monitor": VIDEO_MONITOR,
     "fps": VIDEO_FPS,
     "bitrate": VIDEO_BITRATE_M,
-    "scale": 0,         # 縮放後寬度(0=原始)；降解析度以省頻寬/延遲
+    "scale": VIDEO_SCALE,   # 目標高度(p,0=原始)；降解析度以省頻寬/延遲。
+                            # (是高度不是寬度:下面 scale=-2:min(ih,{sh}) 比的是 ih)
     "gray": 0,          # 1=黑白(去色)，chroma 壓到最省，進一步降頻寬
 }
 

@@ -97,8 +97,13 @@ MEDIAMTX_API = _env("MAPLE_MTX_API", "http://127.0.0.1:9997")
 MEDIAMTX_PATH = _env("MAPLE_MTX_PATH", "screen")
 FFMPEG_BIN = _env("MAPLE_FFMPEG", "bin/ffmpeg/bin/ffmpeg.exe")  # 相對 maple 根目錄
 VIDEO_MONITOR = int(_env("MAPLE_VMON", "1"))    # 1=主螢幕（對應 ddagrab output_idx=0）
+# 【預設值 = 前端「快速」預設】webapp/src/tabs/RemoteTab.tsx 的
+# PRESETS.fast = { scale: 540, fps: 60, bitrate: 8, gray: 0 }。
+# 以前預設是 60fps/25M/原始解析度,那組數字不對應任何一顆預設按鈕(剛連上時四顆
+# 都不會亮),而且吃掉 25Mbps。兩邊由 tests/test_video_default_preset.py 釘在一起。
 VIDEO_FPS = int(_env("MAPLE_VFPS", "60"))
-VIDEO_BITRATE_M = int(_env("MAPLE_VBITRATE", "25"))  # Mbps
+VIDEO_BITRATE_M = int(_env("MAPLE_VBITRATE", "8"))   # Mbps
+VIDEO_SCALE = int(_env("MAPLE_VSCALE", "540"))       # 目標高度(p),0=原始
 # 延遲/抗丟包調校(P0)：
 #  - INTRA_REFRESH：預設【關閉】。它用「週期性條帶內更新」取代 IDR，理論上抗丟包更好，
 #    但與本專案的 MediaMTX WHEP 架構【不相容】：WHEP 對「新加入的觀眾」要等一個關鍵影格
