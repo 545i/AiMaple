@@ -1,15 +1,17 @@
 import { useEffect, useRef } from 'react'
 import type { InputChannel } from '../hooks/useInput'
+import { TouchGesture } from '../lib/touchgesture'
 
 /**
  * 觸控板 — 把手指動作翻成滑鼠事件送給主機。
  *
- * 手勢(與舊版一致):
- *   單指拖曳            → 相對移動 mm
- *   單指輕點            → 左鍵 mc
- *   雙指輕點            → 右鍵 mc
- *   雙指上下拖曳        → 滾輪 mw
- *   長按後拖曳          → 按住左鍵拖曳 md → mm → mu
+ * 手勢判斷本身在 `lib/touchgesture.ts`(純函式,有 node --test 測試),這裡只負責
+ * 綁事件、把 TouchEvent 轉成座標陣列、以及每幀送出累積位移。
+ *
+ * 【為什麼手勢要抽出去】這裡曾經自己多長出一個舊版沒有的手勢(420ms 長按 →
+ * 按住左鍵),使用者回報「舊版 html 不會在移動時附帶左鍵按住,新版會」——
+ * 手指放著不動、或移動得夠慢(每次 touchmove 位移都 <=2px)就會觸發長按,
+ * 之後所有移動都變成按住左鍵拖曳。藏在事件處理器裡沒人測就是會這樣。
  *
  * 【移動要累積再送,不能每個 touchmove 都送】原始事件頻率遠高於畫面更新,
  * 逐一送會塞爆 WS 也讓遊戲內指標抖動。這裡累積到每一幀(rAF)才送一次。
@@ -18,21 +20,16 @@ export function TouchPad({ input, sensitivity = 3, active }: {
   input: InputChannel; sensitivity?: number; active: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  const acc = useRef({ x: 0, y: 0 })
-  const st = useRef({
-    moved: false, dragging: false, holdTimer: 0,
-    maxFingers: 1, lastX: 0, lastY: 0, wheelAcc: 0,
-  })
+  const gRef = useRef(new TouchGesture())
 
   // 累積的位移每幀送一次
   useEffect(() => {
     if (!active) return
     let raf = 0
     const flush = () => {
-      const a = acc.current
-      if (a.x || a.y) {
-        input.send({ t: 'mm', dx: Math.round(a.x * sensitivity), dy: Math.round(a.y * sensitivity) })
-        a.x = 0; a.y = 0
+      const { dx, dy } = gRef.current.takeAccum()
+      if (dx || dy) {
+        input.send({ t: 'mm', dx: Math.round(dx * sensitivity), dy: Math.round(dy * sensitivity) })
       }
       raf = requestAnimationFrame(flush)
     }
@@ -43,62 +40,18 @@ export function TouchPad({ input, sensitivity = 3, active }: {
   useEffect(() => {
     const el = ref.current
     if (!el || !active) return
-    const s = st.current
-
-    const reset = () => {
-      clearTimeout(s.holdTimer)
-      s.moved = false; s.maxFingers = 1; s.wheelAcc = 0
+    const g = gRef.current
+    const pts = (e: TouchEvent) =>
+      Array.from(e.touches, t => ({ x: t.clientX, y: t.clientY }))
+    const emit = (msgs: ReturnType<TouchGesture['start']>) => {
+      for (const m of msgs) input.send(m)
     }
 
-    const onStart = (e: TouchEvent) => {
-      e.preventDefault()
-      const t = e.touches[0]
-      s.lastX = t.clientX; s.lastY = t.clientY
-      s.maxFingers = Math.max(s.maxFingers, e.touches.length)
-      s.moved = false
-      // 長按 → 進入拖曳(按住左鍵)
-      clearTimeout(s.holdTimer)
-      s.holdTimer = window.setTimeout(() => {
-        if (!s.moved && e.touches.length === 1) {
-          input.send({ t: 'md', b: 'left' }); s.dragging = true
-        }
-      }, 420)
-    }
-
-    const onMove = (e: TouchEvent) => {
-      e.preventDefault()
-      s.maxFingers = Math.max(s.maxFingers, e.touches.length)
-      const t = e.touches[0]
-      const dx = t.clientX - s.lastX, dy = t.clientY - s.lastY
-      s.lastX = t.clientX; s.lastY = t.clientY
-      if (Math.abs(dx) + Math.abs(dy) > 2) s.moved = true
-
-      if (e.touches.length >= 2) {
-        // 雙指 = 滾輪。累積到門檻才送一格,避免一次噴出大量事件
-        s.wheelAcc += dy
-        while (s.wheelAcc >= 40) { input.send({ t: 'mw', d: -1 }); s.wheelAcc -= 40 }
-        while (s.wheelAcc <= -40) { input.send({ t: 'mw', d: 1 }); s.wheelAcc += 40 }
-        return
-      }
-      acc.current.x += dx
-      acc.current.y += dy
-    }
-
-    const onEnd = (e: TouchEvent) => {
-      e.preventDefault()
-      clearTimeout(s.holdTimer)
-      if (s.dragging) { input.send({ t: 'mu', b: 'left' }); s.dragging = false }
-      else if (!s.moved) {
-        input.send({ t: 'mc', b: s.maxFingers >= 2 ? 'right' : 'left' })
-      }
-      if (e.touches.length === 0) reset()
-    }
-
-    const onCancel = () => {
-      clearTimeout(s.holdTimer)
-      if (s.dragging) { input.send({ t: 'mu', b: 'left' }); s.dragging = false }
-      reset()
-    }
+    const onStart = (e: TouchEvent) => { e.preventDefault(); emit(g.start(pts(e), performance.now())) }
+    const onMove = (e: TouchEvent) => { e.preventDefault(); emit(g.move(pts(e), performance.now())) }
+    // touchend 的 e.touches 已經【不含】剛離開的那根手指,正好就是「還剩幾根」。
+    const onEnd = (e: TouchEvent) => { e.preventDefault(); emit(g.end(e.touches.length, performance.now())) }
+    const onCancel = () => { emit(g.cancel()) }
 
     el.addEventListener('touchstart', onStart, { passive: false })
     el.addEventListener('touchmove', onMove, { passive: false })
@@ -109,7 +62,7 @@ export function TouchPad({ input, sensitivity = 3, active }: {
       el.removeEventListener('touchmove', onMove)
       el.removeEventListener('touchend', onEnd)
       el.removeEventListener('touchcancel', onCancel)
-      onCancel()
+      onCancel()     // 拆監聽時若還按著左鍵,一定要放開,避免卡鍵
     }
   }, [active, input])
 
