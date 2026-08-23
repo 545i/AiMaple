@@ -346,6 +346,28 @@ _API_LOG_MAX = 4 * 1024 * 1024
 # 另一個待查的問題;這裡調門檻只是不讓它每次都觸發,不是修掉它。
 _API_SLOW_GET_MS = 1500
 _API_SKIP = {"/video"}             # 無限 MJPEG 串流:永遠不會結束,記了只會誤導
+# 【把 WS 進來的滑鼠訊息原樣記下來】前端送了什麼是沒辦法從主機端推論的,而觸控那類
+# 問題又只在手機上重現。2026-08-23 就是靠這份記錄一眼定案:103 筆全是 mc left、
+# 沒有半筆 mc right —— 兩指輕點連 maxFingers 都沒到 2,證明問題不在門檻算錯(我前
+# 兩次都在調門檻),而是手勢狀態被 React 每 50ms 清掉一次。成本很低,留著。
+_INPUT_LOG = os.path.join(paths.data_dir("logs"), "input_debug.jsonl")
+_INPUT_LOG_MAX = 2 * 1024 * 1024
+_input_log_n = 0
+
+
+def _input_write(client, msg):
+    global _input_log_n
+    try:
+        with open(_INPUT_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"clock": _api_clock(), "client": client, "msg": msg},
+                               ensure_ascii=False) + chr(10))
+        _input_log_n += 1
+        if _input_log_n % 100 == 0 and os.path.getsize(_INPUT_LOG) > _INPUT_LOG_MAX:
+            os.replace(_INPUT_LOG, _INPUT_LOG + ".1")
+    except Exception:
+        pass
+
+
 _api_lock = threading.Lock()
 _api_inflight = 0
 _api_last = {}                     # "METHOD PATH" -> 上次到達的 monotonic
@@ -391,7 +413,11 @@ async def api_log(request: Request, call_next):
         _api_last[key] = now
     gap = round(now - prev, 2) if prev is not None else None
 
-    watched = method != "GET"          # 非 GET 一律記;GET 只記慢的(見上面說明)
+    # 【/assets/ 的 GET 一律記】一次頁面載入只發生一兩次,成本可以忽略,但它回答了
+    # 一個沒有它就只能用猜的問題:「這台裝置現在跑的是哪一支 bundle」。
+    # 2026-08-23 靠它才確定手機連續兩次都沒載到新版(最後一次抓 js 停在 00:22,
+    # 之後兩次部署都沒被請求過)—— 在那之前我改了兩輪都在修不存在的問題。
+    watched = method != "GET" or path.startswith("/assets/")
     clock = _api_clock()
     if watched:
         print(f"[api] → {clock} {method} {path}  in-flight {n_in}", flush=True)
@@ -1791,6 +1817,10 @@ async def ws_input(ws: WebSocket, token: str = Query("")):
                 continue
             # 追蹤按著的鍵,斷線時才能全數放開(避免卡住的鍵讓字母鍵失效)
             t = msg.get("t")
+            # 滑鼠訊息落檔(見 _input_write)。mm 量大,只記非 mm 的(md/mu/mc/ma/mw)
+            # —— 要找的是「多出來的那個按鍵」,mm 記了只會把檔案洗爆。
+            if t in ("md", "mu", "mc", "ma", "mw"):
+                _input_write(ws.client.host if ws.client else None, msg)
             if t == "kd":
                 held_keys.add(msg.get("k"))
             elif t == "ku":
