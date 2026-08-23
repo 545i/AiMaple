@@ -78,8 +78,30 @@ Start-Process -FilePath (Join-Path $root "bin\mediamtx.exe") `
               -WorkingDirectory $root -WindowStyle Hidden
 Say "[restart] 啟動 FastAPI"
 $env:MAPLE_TOKEN = $token
-Start-Process -FilePath $venvPy -ArgumentList "server\main.py" `
-              -WorkingDirectory $root -WindowStyle Minimized
+# 【stdout/stderr 一律導到檔案,不要留主控台】2026-08-23 實測:伺服器在 02:17 整個
+# 卡死約 9 小時 —— 進程活著、port 8000 還在監聽,但 10 條執行緒全部 Wait、其中一條
+# 的 wait reason 是 EventPairLow(卡在 Windows 主控台 I/O 的特徵)。死前 /exp/status
+# 的延遲一路爆走 1005→2940→4884→23804ms,正是「主控台寫入逐漸阻塞」的曲線。
+# 這個坑 main.py 與 restart-admin.bat 的註解都記過(視窗被點進 QuickEdit 選取模式
+# 就會擋住寫入),但當時只有 PowerShell 階段導向檔案,FastAPI 自己仍然開著一個
+# -WindowStyle Minimized 的真主控台在收 print。沒有主控台就沒有這條阻塞路徑。
+#
+# 【一定要加 -u】導向檔案後 Python 的 stdout 會變成整塊緩衝(4~8KB),日誌要等湊滿
+# 才寫得出來,出事時看到的會是舊資料。-u 關掉緩衝,行為與原本的主控台一致。
+$logDir = Join-Path $root "logs"
+if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
+$srvOut = Join-Path $logDir "server_out.log"
+$srvErr = Join-Path $logDir "server_err.log"
+# 輪替:重導向是覆寫,但長期跑仍可能單檔膨脹,超過 8MB 先留一份再蓋。
+foreach ($f in @($srvOut, $srvErr)) {
+  if ((Test-Path $f) -and ((Get-Item $f).Length -gt 8MB)) {
+    Move-Item $f "$f.1" -Force -ErrorAction SilentlyContinue
+  }
+}
+Start-Process -FilePath $venvPy -ArgumentList "-u", "server\main.py" `
+              -WorkingDirectory $root -WindowStyle Hidden `
+              -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
+Say "[restart] 伺服器輸出 -> logs\server_out.log / server_err.log"
 
 # 輪詢而非固定 sleep:冷啟(WGC/序列埠/模型載入)有時要十幾秒,固定 6 秒會誤報 FAIL
 $deadline = (Get-Date).AddSeconds(30)

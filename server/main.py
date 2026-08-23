@@ -338,7 +338,13 @@ async def tunnel_guard(request: Request, call_next):
 _API_LOG_ON = os.environ.get("MAPLE_API_LOG", "1") != "0"
 _API_LOG = os.path.join(paths.data_dir("logs"), "api_calls.jsonl")
 _API_LOG_MAX = 4 * 1024 * 1024
-_API_SLOW_GET_MS = 1000            # GET 只有超過這個毫秒數才記
+# GET 只有超過這個毫秒數才記。【不要調回 1000】/exp/status 的實際耗時是
+# 1005~1009ms,剛好卡在 1000 上,於是【每一次輪詢都印一行】—— 前端每秒輪詢、
+# 兩個客戶端就是每秒兩行,掛整晚必然把主控台塞爆。2026-08-23 伺服器卡死 9 小時
+# 就是這樣來的(見 scripts/restart-admin.ps1 啟動段的說明)。
+# 註:/exp/status 的 docstring 寫「實測 0.9ms」,與實際的 1005ms 差一千倍 —— 那是
+# 另一個待查的問題;這裡調門檻只是不讓它每次都觸發,不是修掉它。
+_API_SLOW_GET_MS = 1500
 _API_SKIP = {"/video"}             # 無限 MJPEG 串流:永遠不會結束,記了只會誤導
 _api_lock = threading.Lock()
 _api_inflight = 0
