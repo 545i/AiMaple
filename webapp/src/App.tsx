@@ -110,7 +110,7 @@ export default function App() {
                    hint={!IS_TOUCH && canPlay && !over ? '滑鼠移到遊戲畫面上即可操控（移開自動釋放）' : ''} />
 
       {IS_TOUCH && portrait && playing && <div className="padbg" />}
-      {IS_TOUCH && playing && <TouchPad input={input} sensitivity={sens} active />}
+      {IS_TOUCH && playing && <TouchPad input={input} sensitivity={sens} />}
       <VirtualPad input={input} portrait={portrait} edit={editPad}
                   visible={playing && padOn && IS_TOUCH} />
 

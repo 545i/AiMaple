@@ -90,21 +90,37 @@ test('拖曳中被 touchcancel 打斷 → 一定要放開左鍵,不能卡住', (
   assert.deepEqual(g.cancel(), [{ t: 'mu', b: 'left' }])
 })
 
-// 【高取樣率的慢速拖曳】使用者回報:「手機端移動後放開,他還是會算點擊一次」。
-// moved 原本只在【單次 touchmove 的位移】>2px 時才成立(舊版 #look 就是這樣寫的,
-// 我照抄了)。現在的手機 touchmove 可以到 120Hz,慢慢拖時每個事件只有 1px ——
-// 位移會照樣累積、游標確實在動,但 moved 從頭到尾是 false,放開時就被判成輕點
-// 送出 mc left。判斷「有沒有移動過」必須看【從按下起算的累積距離】,不能看單次差值。
-test('高取樣率的慢速拖曳(每次 1px、總共 120px)放開後不可以算成點擊', () => {
+// 【以下兩條記錄舊版的已知取捨,不是要求改掉它】舊版 moved 用【單次 touchmove 的
+// 差值】>2。理論上 120Hz 的慢速拖曳每次只有 1px,moved 會一直是 false 而在放開時
+// 多送一次 mc left。但實機上使用者確認舊版完全正常,而真正的成因是 React 那邊每
+// 50ms 把手勢狀態 reset 掉(見 TouchPad.tsx)。使用者明確要求「一動不動照搬舊版、
+// 不要任何邊界」,所以這裡把舊版行為原樣釘住,不再自作主張改門檻。
+test('舊版行為:每次差值都 <=2px 時 moved 不成立(已知取捨,照舊版原樣)', () => {
   const g = new TouchGesture()
   g.start([P(100, 100)], 0)
-  for (let i = 1; i <= 120; i++) g.move([P(100 + i, 100)], i * 8)   // 120Hz 拖了 120px
-  assert.deepEqual(g.end(0, 1000), [])
+  for (let i = 1; i <= 120; i++) g.move([P(100 + i, 100)], i * 8)
+  assert.deepEqual(g.end(0, 1000), [{ t: 'mc', b: 'left' }])
+})
+
+test('一般速度的拖曳(每次 >2px)放開後不算點擊', () => {
+  const g = new TouchGesture()
+  const T = 10_000                    // performance.now() 的真實量級;用 0 會落在
+                                      // 「輕點後 300ms 內」而誤觸拖曳鎖定(lastTapEnd 初始 0)
+  g.start([P(100, 100)], T)
+  for (let i = 1; i <= 20; i++) g.move([P(100 + i * 6, 100)], T + i * 16)
+  assert.deepEqual(g.end(0, T + 400), [])
 })
 
 test('真的只是輕點(手指幾乎沒動)仍然要送 mc left', () => {
   const g = new TouchGesture()
   g.start([P(100, 100)], 0)
-  g.move([P(101, 100)], 20)          // 手指抖一下,還在輕點的容許範圍內
+  g.move([P(101, 100)], 20)
   assert.deepEqual(g.end(0, 60), [{ t: 'mc', b: 'left' }])
+})
+
+test('橫向鎖定時位移要轉 90 度(舊版 rotVec)', () => {
+  const g = new TouchGesture()
+  g.start([P(100, 100)], 0)
+  g.move([P(110, 100)], 16, true)          // dx=10, dy=0 → rotVec = [0, -10]
+  assert.deepEqual(g.takeAccum(), { dx: 0, dy: -10 })
 })
