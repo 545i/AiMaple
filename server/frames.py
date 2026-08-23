@@ -41,6 +41,34 @@ def _mss():
     return inst
 
 
+# ---- 慢速取格的計時記錄 ----
+# 【為什麼需要】/exp/status 每次都要 1005~1009ms(12205 筆記錄、輪詢週期 1000ms、
+# 相鄰記錄間隔中位數 1.02s → 幾乎每一次呼叫都這麼慢)。這條路徑上唯一的 1 秒等待
+# 就是下面 get() 的 wait_first 迴圈:WGC 給不出影格時會耗滿整整一秒才退回 mss。
+# 但「WGC 為什麼給不出影格」只有在遊戲真的開著時才量得到,靠讀程式碼推論不出來
+# (已經推錯過)。所以留一支節流過的記錄,下次遊戲開著就會自己把答案寫進
+# logs/server_out.log,不必再猜。
+_SLOW_MS = 300.0          # 超過這個毫秒數才記
+_SLOW_GAP = 5.0           # 最多每幾秒記一次(避免每秒一行洗版)
+_slow_last = 0.0
+
+
+def _slow_note(elapsed, why, hwnd):
+    global _slow_last
+    ms = elapsed * 1000.0
+    if ms < _SLOW_MS:
+        return
+    now = time.monotonic()
+    if now - _slow_last < _SLOW_GAP:
+        return
+    _slow_last = now
+    import wgc
+    print(f"[frames] 取格慢 {ms:.0f}ms ({why}) hwnd={hwnd} "
+          f"wgc.running={wgc.running()} frame_age="
+          f"{time.time() - wgc.latest_ts():.2f}s full_rate={wgc._full_rate_users}",
+          flush=True)
+
+
 def get(wait_first=1.0):
     """遊戲視窗的原始 BGR 影格。回 (frame, is_window);拿不到回 (None, False)。
 
@@ -50,6 +78,7 @@ def get(wait_first=1.0):
     """
     import video_pipeline
     import wgc
+    _t0 = time.monotonic()
     # 【用 detect_hwnd 而不是 force_window_target】偵測只需要知道遊戲視窗在哪,
     # 不該順手把使用者在畫面設定裡選的串流來源改掉。用後者的話,只要開著巡邏
     # 分頁(小地圖每秒輪詢),使用者選的「全螢幕」就會被改回 window。
@@ -59,13 +88,17 @@ def get(wait_first=1.0):
 
     if wgc.ensure(hwnd):
         f = wgc.latest(max_age=1.0)
+        waited = 0.0
         if f is None and wait_first > 0:          # 剛啟動:等第一格
             deadline = time.monotonic() + wait_first
             while f is None and time.monotonic() < deadline:
                 time.sleep(0.05)
                 f = wgc.latest(max_age=1.0)
+            waited = time.monotonic() - _t0
         if f is not None:
+            _slow_note(waited, "wgc", hwnd)
             return cv2.cvtColor(f, cv2.COLOR_BGRA2BGR), True
+        _slow_note(time.monotonic() - _t0, "wgc逾時→退mss", hwnd)
 
     bbox = video_pipeline.window_abs_bbox(hwnd)   # 備援:依視窗座標做螢幕區域裁切
     if not bbox:
